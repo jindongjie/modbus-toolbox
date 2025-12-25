@@ -5,10 +5,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures::{
-    stream::{AbortHandle, Abortable},
-    StreamExt,
-};
+use futures::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
@@ -17,9 +14,9 @@ use ratatui::{
     Terminal,
 };
 use std::{future, io, sync::Arc, time::Duration};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_modbus::{prelude::*, server::rtu::Server};
-use tokio_serial::{DataBits, FlowControl, Parity, StopBits};
+use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum DisplayBase {
@@ -136,12 +133,72 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     }
 }
 
+// --- NEW: register worker command channel (avoids block_on in Service) ---
+enum RegCmd {
+    ReadHolding {
+        addr: usize,
+        cnt: usize,
+        resp: oneshot::Sender<std::result::Result<Vec<u16>, ExceptionCode>>,
+    },
+    WriteSingle {
+        addr: usize,
+        value: u16,
+        resp: oneshot::Sender<std::result::Result<(), ExceptionCode>>,
+    },
+    WriteMultiple {
+        addr: usize,
+        values: Vec<u16>,
+        resp: oneshot::Sender<std::result::Result<(), ExceptionCode>>,
+    },
+}
+
+async fn reg_worker_loop(
+    state: Arc<RwLock<AppState>>,
+    holding_len: usize,
+    mut rx: mpsc::UnboundedReceiver<RegCmd>,
+) {
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            RegCmd::ReadHolding { addr, cnt, resp } => {
+                let out = if addr + cnt > holding_len {
+                    Err(ExceptionCode::IllegalDataAddress)
+                } else {
+                    let s = state.read().await;
+                    Ok(s.holding[addr..addr + cnt].to_vec())
+                };
+                let _ = resp.send(out);
+            }
+            RegCmd::WriteSingle { addr, value, resp } => {
+                let out = if addr >= holding_len {
+                    Err(ExceptionCode::IllegalDataAddress)
+                } else {
+                    let mut s = state.write().await;
+                    s.holding[addr] = value;
+                    Ok(())
+                };
+                let _ = resp.send(out);
+            }
+            RegCmd::WriteMultiple { addr, values, resp } => {
+                let out = if addr + values.len() > holding_len {
+                    Err(ExceptionCode::IllegalDataAddress)
+                } else {
+                    let mut s = state.write().await;
+                    s.holding[addr..addr + values.len()].copy_from_slice(&values);
+                    Ok(())
+                };
+                let _ = resp.send(out);
+            }
+        }
+    }
+}
+
 // ---------------- Modbus server (holding registers only) ----------------
 
 #[derive(Clone)]
 struct HoldingService {
-    state: Arc<RwLock<AppState>>,
+    tx: mpsc::UnboundedSender<RegCmd>,
     holding_len: usize,
+    unit: u8,
 }
 
 impl tokio_modbus::server::Service for HoldingService {
@@ -151,9 +208,9 @@ impl tokio_modbus::server::Service for HoldingService {
     type Future = future::Ready<std::result::Result<Self::Response, Self::Exception>>;
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        // Only serve a single unit id; reject others.
-        if req.slave != Slave(req.slave).into() {
-            // (kept simple; alternatively check against configured unit if you store it)
+        // Enforce single unit id
+        if req.slave != self.unit {
+            return future::ready(Err(ExceptionCode::IllegalFunction));
         }
 
         match req.request {
@@ -163,45 +220,66 @@ impl tokio_modbus::server::Service for HoldingService {
                 if addr + cnt > self.holding_len {
                     return future::ready(Err(ExceptionCode::IllegalDataAddress));
                 }
-                    let s = state.read().await;
-                    Response::ReadHoldingRegisters(s.holding[addr..addr + cnt].to_vec())
-                })
+                let (resp_tx, mut resp_rx) = oneshot::channel();
+                let _ = self.tx.send(RegCmd::ReadHolding {
+                    addr,
+                    cnt,
+                    resp: resp_tx,
+                });
+                // Must be ready immediately per trait; fall back to ServerDeviceFailure if worker stalled.
+                match resp_rx.try_recv() {
+                    Ok(Ok(values)) => future::ready(Ok(Response::ReadHoldingRegisters(values))),
+                    Ok(Err(ex)) => future::ready(Err(ex)),
+                    Err(_not_ready) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
+                }
             }
-
             Request::WriteSingleRegister(addr, value) => {
-                let addr_usize = addr as usize;
-                if addr_usize >= self.holding_len {
+                let addr = addr as usize;
+                if addr >= self.holding_len {
                     return future::ready(Err(ExceptionCode::IllegalDataAddress));
                 }
-
-                let state = Arc::clone(&self.state);
-                future::ready(Ok(tokio::runtime::Handle::current().block_on(async move {
-                    let mut s = state.write().await;
-                    s.holding[addr_usize] = value;
-                    Response::WriteSingleRegister(addr, value)
-                })))
+                let (resp_tx, mut resp_rx) = oneshot::channel();
+                let _ = self.tx.send(RegCmd::WriteSingle {
+                    addr,
+                    value,
+                    resp: resp_tx,
+                });
+                match resp_rx.try_recv() {
+                    Ok(Ok(())) => {
+                        future::ready(Ok(Response::WriteSingleRegister(addr as u16, value)))
+                    }
+                    Ok(Err(ex)) => future::ready(Err(ex)),
+                    Err(_) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
+                }
             }
-
             Request::WriteMultipleRegisters(addr, values) => {
                 let addr_usize = addr as usize;
                 if addr_usize + values.len() > self.holding_len {
                     return future::ready(Err(ExceptionCode::IllegalDataAddress));
                 }
-
                 let qty = values.len() as u16;
-                let state = Arc::clone(&self.state);
-                future::ready(Ok(tokio::runtime::Handle::current().block_on(async move {
-                    let mut s = state.write().await;
-                    s.holding[addr_usize..addr_usize + (qty as usize)].copy_from_slice(&values);
-                    Response::WriteMultipleRegisters(addr, qty)
-                })))
+                let (resp_tx, mut resp_rx) = oneshot::channel();
+                let _ = self.tx.send(RegCmd::WriteMultiple {
+                    addr: addr_usize,
+                    values: values.to_vec(),
+                    resp: resp_tx,
+                });
+                match resp_rx.try_recv() {
+                    Ok(Ok(())) => future::ready(Ok(Response::WriteMultipleRegisters(addr, qty))),
+                    Ok(Err(ex)) => future::ready(Err(ex)),
+                    Err(_) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
+                }
             }
-
             _ => future::ready(Err(ExceptionCode::IllegalFunction)),
         }
     }
+}
 
-async fn run_modbus_rtu_server(args: Args, state: Arc<RwLock<AppState>>) -> Result<()> {
+async fn run_modbus_rtu_server(
+    args: Args,
+    _state: Arc<RwLock<AppState>>,
+    tx: mpsc::UnboundedSender<RegCmd>,
+) -> Result<()> {
     let parity = parse_parity(&args.parity)?;
     let flow = parse_flow(&args.flow)?;
     let databits = parse_databits(args.databits)?;
@@ -212,20 +290,21 @@ async fn run_modbus_rtu_server(args: Args, state: Arc<RwLock<AppState>>) -> Resu
         .flow_control(flow)
         .data_bits(databits)
         .stop_bits(stopbits);
-    // let server_serial = tokio_serial::SerialStream;
-    let server_serial = tokio_serial::SerialStream::open(&builder).unwrap();
+
+    // async open (correct for tokio-modbus rtu server)
+    let port = builder.open_native_async().context("open serial")?;
 
     let service = HoldingService {
-        state,
+        tx,
         holding_len: args.holding_count,
+        unit: args.unit,
     };
 
-    let server = Server::new(server_serial);
+    let server = Server::new(port);
     server
         .serve_forever(service)
         .await
         .map_err(|e| anyhow!("{e}"))?;
-    println!("everything ok!");
     Ok(())
 }
 
@@ -274,7 +353,12 @@ fn set_status(ui: &mut Ui, msg: impl Into<String>) {
     ui.status_msg = Some(msg.into());
 }
 
-async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
+async fn run_ui(
+    state: Arc<RwLock<AppState>>,
+    tx: mpsc::UnboundedSender<RegCmd>,
+    args: Args,
+    server_status: Arc<RwLock<Option<String>>>, // NEW
+) -> Result<()> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
@@ -291,6 +375,7 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
         tokio::select! {
             _ = interval.tick() => {
                 let s = state.read().await;
+                let server_err = server_status.read().await.clone(); // NEW
                 terminal.draw(|f| {
                     let chunks = Layout::vertical([
                         Constraint::Min(5),
@@ -340,7 +425,10 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
 
                     f.render_stateful_widget(t, chunks[0], &mut table_state);
 
-                    let status_line = if let Some(m) = ui.status_msg.as_deref() {
+                    // Status line priority: server/modbus error > local ui status > normal
+                    let status_line = if let Some(m) = server_err.as_deref() {
+                        format!("Modbus/RTU 错误: {m}")
+                    } else if let Some(m) = ui.status_msg.as_deref() {
                         m.to_string()
                     } else if ui.edit_mode {
                         format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
@@ -350,7 +438,12 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
 
                     f.render_widget(
                         ratatui::widgets::Paragraph::new(status_line)
-                            .block(Block::default().borders(Borders::ALL).title("状态")),
+                            .block(Block::default().borders(Borders::ALL).title("状态"))
+                            .style(if server_err.is_some() {
+                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            }),
                         chunks[1],
                     );
 
@@ -376,6 +469,12 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
 
                 match ev {
                     Event::Key(KeyEvent { code, modifiers, .. }) => {
+                        // NEW: allow clearing server error from UI
+                        if !ui.edit_mode && code == KeyCode::Char('c') && !modifiers.contains(KeyModifiers::CONTROL) {
+                            *server_status.write().await = None;
+                            ui.status_msg = None;
+                        }
+
                         if !ui.edit_mode && (code == KeyCode::Char('q') || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))) {
                             break Ok(());
                         }
@@ -390,19 +489,19 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
                                 KeyCode::Enter => {
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
                                         Ok(new_val) => {
-                                            {
-                                                let mut s = state.write().await;
-                                                if ui.selected < s.holding.len() {
-                                                    s.holding[ui.selected] = new_val;
+                                            let (resp_tx, resp_rx) = oneshot::channel();
+                                            let _ = tx.send(RegCmd::WriteSingle { addr: ui.selected, value: new_val, resp: resp_tx });
+                                            match resp_rx.await {
+                                                Ok(Ok(())) => {
+                                                    ui.edit_mode = false;
+                                                    ui.edit_buf.clear();
+                                                    ui.status_msg = None;
                                                 }
+                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, "Worker disconnected"),
                                             }
-                                            ui.edit_mode = false;
-                                            ui.edit_buf.clear();
-                                            ui.status_msg = None;
                                         }
-                                        Err(e) => {
-                                            set_status(&mut ui, format!("Invalid value: {e}"));
-                                        }
+                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e}")),
                                     }
                                 }
                                 KeyCode::Backspace => {
@@ -479,54 +578,37 @@ async fn run_ui(state: Arc<RwLock<AppState>>, args: Args) -> Result<()> {
 // ---------------- main ----------------
 
 #[tokio::main]
-
 async fn main() -> Result<()> {
     let args = Args::parse();
 
     let holding = vec![0u16; args.holding_count];
     let state = Arc::new(RwLock::new(AppState { holding }));
 
-    // ----- server setup -----
-    let server_args = Args { ..args.clone() };
+    // NEW: shared server error/status
+    let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+
+    // worker channel
+    let (tx, rx) = mpsc::unbounded_channel::<RegCmd>();
+    tokio::spawn(reg_worker_loop(Arc::clone(&state), args.holding_count, rx));
+
+    // server (NEW: push errors into server_status)
+    let server_args = args.clone();
     let server_state = Arc::clone(&state);
-
-    // Create an abort handle for the server future
-    let (abort_handle, abort_reg) = AbortHandle::new_pair();
-
-    let server_fut = async move {
-        // run_modbus_rtu_server must be: async fn ... -> Result<()>
-        run_modbus_rtu_server(server_args, server_state).await
-    };
-
-    // Wrap with Abortable, then spawn
-    let server_task = tokio::spawn(Abortable::new(server_fut, abort_reg));
-
-    // ----- run UI in foreground -----
-    // run_ui must also be: async fn ... -> Result<()>
-    let ui_res = run_ui(Arc::clone(&state), args).await;
-
-    // UI finished (success or error) -> abort server
-    abort_handle.abort();
-
-    // Wait for server to exit; treat "aborted" as normal shutdown
-    match server_task.await {
-        Err(join_err) => {
-            // tokio JoinError (panic / cancellation of task itself)
-            return Err(join_err.into());
+    let server_tx = tx.clone();
+    let server_status_bg = Arc::clone(&server_status);
+    let server_task = tokio::spawn(async move {
+        if let Err(e) = run_modbus_rtu_server(server_args, server_state, server_tx).await {
+            *server_status_bg.write().await = Some(format!("{e:#}"));
+            return Err(e);
         }
-        Ok(Ok(server_res)) => {
-            // Server finished on its own, with Result<()>:
-            // if it's an Err, propagate; if Ok, do nothing
-            server_res?;
-        }
-        Ok(Err(_other)) => {
-            // Abortable error but not "aborted" – propagate
-            // (very rare, but be explicit if you like)
-        }
-    }
+        Ok::<_, anyhow::Error>(())
+    });
 
-    // Finally, return UI result:
-    // - if UI failed -> whole program fails
-    // - if UI ok + server ok/aborted -> ok
+    // ui (pass server_status)
+    let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
+
+    server_task.abort();
+    let _ = server_task.await;
+
     ui_res
 }
