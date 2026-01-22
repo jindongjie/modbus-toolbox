@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table, TableState},
     Terminal,
 };
-use std::{future, io, sync::Arc, time::Duration};
+use std::{io, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_modbus::{prelude::*, server::rtu::Server};
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
@@ -32,11 +32,13 @@ enum DisplayBase {
 )]
 #[derive(Clone)]
 struct Args {
-    /// Serial device path, e.g. /dev/ttyUSB0, COM3
+    /// Serial Port device path eg: /dev/ttyUSB0
+    /// 串口设备路径, 例： /dev/ttyUSB0
     #[arg(short, long, default_value = "dev/null")]
     device: String,
 
-    /// Slave/unit id (1..=247)
+    /// Slave/unit id (1~247)
+    /// 从设备地址（1~247)
     #[arg(short = 'u', long, default_value_t = 1)]
     unit: u8,
 
@@ -56,14 +58,17 @@ struct Args {
     flow: String,
 
     /// Number of holding registers to expose (starting at 0)
+    /// 保持型寄存器列表长度（0~value)
     #[arg(short = 'n', long, default_value_t = 512)]
     holding_count: usize,
 
     /// UI refresh period (ms)
+    /// UI 刷新间隔
     #[arg(long, default_value_t = 50)]
     ui_tick_ms: u64,
 
     /// Initial display base
+    /// 界面初始化时间
     #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
     base: DisplayBase,
 }
@@ -205,72 +210,112 @@ impl tokio_modbus::server::Service for HoldingService {
     type Request = SlaveRequest<'static>;
     type Response = Response;
     type Exception = ExceptionCode;
-    type Future = future::Ready<std::result::Result<Self::Response, Self::Exception>>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Exception>> + Send>,
+    >;
 
     fn call(&self, req: Self::Request) -> Self::Future {
         // Enforce single unit id
         if req.slave != self.unit {
-            return future::ready(Err(ExceptionCode::IllegalFunction));
+            return Box::pin(async { Err(ExceptionCode::IllegalFunction) });
         }
 
         match req.request {
             Request::ReadHoldingRegisters(addr, cnt) => {
                 let addr = addr as usize;
                 let cnt = cnt as usize;
-                if addr + cnt > self.holding_len {
-                    return future::ready(Err(ExceptionCode::IllegalDataAddress));
-                }
-                let (resp_tx, mut resp_rx) = oneshot::channel();
-                let _ = self.tx.send(RegCmd::ReadHolding {
-                    addr,
-                    cnt,
-                    resp: resp_tx,
-                });
-                // Must be ready immediately per trait; fall back to ServerDeviceFailure if worker stalled.
-                match resp_rx.try_recv() {
-                    Ok(Ok(values)) => future::ready(Ok(Response::ReadHoldingRegisters(values))),
-                    Ok(Err(ex)) => future::ready(Err(ex)),
-                    Err(_not_ready) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
-                }
+                let holding_len = self.holding_len;
+                let tx = self.tx.clone();
+
+                Box::pin(async move {
+                    if addr + cnt > holding_len {
+                        return Err(ExceptionCode::IllegalDataAddress);
+                    }
+
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(RegCmd::ReadHolding {
+                            addr,
+                            cnt,
+                            resp: resp_tx,
+                        })
+                        .is_err()
+                    {
+                        // worker dropped
+                        return Err(ExceptionCode::ServerDeviceFailure);
+                    }
+
+                    match resp_rx.await {
+                        Ok(Ok(values)) => Ok(Response::ReadHoldingRegisters(values)),
+                        Ok(Err(ex)) => Err(ex),
+                        Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
+                    }
+                })
             }
+
             Request::WriteSingleRegister(addr, value) => {
                 let addr = addr as usize;
-                if addr >= self.holding_len {
-                    return future::ready(Err(ExceptionCode::IllegalDataAddress));
-                }
-                let (resp_tx, mut resp_rx) = oneshot::channel();
-                let _ = self.tx.send(RegCmd::WriteSingle {
-                    addr,
-                    value,
-                    resp: resp_tx,
-                });
-                match resp_rx.try_recv() {
-                    Ok(Ok(())) => {
-                        future::ready(Ok(Response::WriteSingleRegister(addr as u16, value)))
+                let holding_len = self.holding_len;
+                let tx = self.tx.clone();
+
+                Box::pin(async move {
+                    if addr >= holding_len {
+                        return Err(ExceptionCode::IllegalDataAddress);
                     }
-                    Ok(Err(ex)) => future::ready(Err(ex)),
-                    Err(_) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
-                }
+
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(RegCmd::WriteSingle {
+                            addr,
+                            value,
+                            resp: resp_tx,
+                        })
+                        .is_err()
+                    {
+                        return Err(ExceptionCode::ServerDeviceFailure);
+                    }
+
+                    match resp_rx.await {
+                        Ok(Ok(())) => Ok(Response::WriteSingleRegister(addr as u16, value)),
+                        Ok(Err(ex)) => Err(ex),
+                        Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
+                    }
+                })
             }
+
             Request::WriteMultipleRegisters(addr, values) => {
                 let addr_usize = addr as usize;
-                if addr_usize + values.len() > self.holding_len {
-                    return future::ready(Err(ExceptionCode::IllegalDataAddress));
-                }
-                let qty = values.len() as u16;
-                let (resp_tx, mut resp_rx) = oneshot::channel();
-                let _ = self.tx.send(RegCmd::WriteMultiple {
-                    addr: addr_usize,
-                    values: values.to_vec(),
-                    resp: resp_tx,
-                });
-                match resp_rx.try_recv() {
-                    Ok(Ok(())) => future::ready(Ok(Response::WriteMultipleRegisters(addr, qty))),
-                    Ok(Err(ex)) => future::ready(Err(ex)),
-                    Err(_) => future::ready(Err(ExceptionCode::ServerDeviceFailure)),
-                }
+                let holding_len = self.holding_len;
+                let tx = self.tx.clone();
+                let values_vec = values.to_vec();
+                let qty = values_vec.len() as u16;
+
+                Box::pin(async move {
+                    if addr_usize + values_vec.len() > holding_len {
+                        return Err(ExceptionCode::IllegalDataAddress);
+                    }
+
+                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+                    if tx
+                        .send(RegCmd::WriteMultiple {
+                            addr: addr_usize,
+                            values: values_vec,
+                            resp: resp_tx,
+                        })
+                        .is_err()
+                    {
+                        return Err(ExceptionCode::ServerDeviceFailure);
+                    }
+
+                    match resp_rx.await {
+                        Ok(Ok(())) => Ok(Response::WriteMultipleRegisters(addr, qty)),
+                        Ok(Err(ex)) => Err(ex),
+                        Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
+                    }
+                })
             }
-            _ => future::ready(Err(ExceptionCode::IllegalFunction)),
+
+            _ => Box::pin(async { Err(ExceptionCode::IllegalFunction) }),
         }
     }
 }
@@ -503,6 +548,26 @@ async fn run_ui(
                                         }
                                         Err(e) => set_status(&mut ui, format!("Invalid value: {e}")),
                                     }
+                                }
+                                KeyCode::Char('a') => {
+                                    match parse_u16_str(&ui.edit_buf, ui.base) {
+                                        Ok(new_val) => {
+                                            let (resp_tx, resp_rx) = oneshot::channel();
+                                            let values = vec![new_val;100];
+                                            let _ = tx.send(RegCmd::WriteMultiple { addr: (ui.selected), values: (values), resp: (resp_tx) });
+                                            match resp_rx.await {
+                                                Ok(Ok(())) => {
+                                                    ui.edit_mode = false;
+                                                    ui.edit_buf.clear();
+                                                    ui.status_msg = None;
+                                                }
+                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, "Worker disconnected"),
+                                            }
+                                        }
+                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e}")),
+                                    }
+
                                 }
                                 KeyCode::Backspace => {
                                     ui.edit_buf.pop();
