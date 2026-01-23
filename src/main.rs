@@ -525,7 +525,10 @@ async fn run_ui(
                 };
 
                 match ev {
-                    Event::Key(KeyEvent { code, modifiers, .. }) => {
+                    Event::Key(KeyEvent { code, modifiers,kind, .. }) => {
+                        if kind != crossterm::event::KeyEventKind::Press {
+                            continue;
+                        }
                         if !ui.edit_mode && code == KeyCode::Char('c') && !modifiers.contains(KeyModifiers::CONTROL) {
                             *server_status.write().await = None;
                             ui.status_msg = None;
@@ -542,6 +545,7 @@ async fn run_ui(
                                     ui.edit_buf.clear();
                                     ui.status_msg = None;
                                 }
+
                                 KeyCode::Enter => {
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
                                         Ok(new_val) => {
@@ -559,6 +563,10 @@ async fn run_ui(
                                         }
                                         Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
                                     }
+                                }
+                               KeyCode::Backspace => {
+                                    ui.edit_buf.pop();
+                                    ui.status_msg = None;
                                 }
                                 KeyCode::Char('m') => {
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
@@ -578,12 +586,8 @@ async fn run_ui(
                                         }
                                         Err(e) => set_status(&mut ui, format!("Invalid value: {e} 非法输入值")),
                                     }
+                                }
 
-                                }
-                                KeyCode::Backspace => {
-                                    ui.edit_buf.pop();
-                                    ui.status_msg = None;
-                                }
                                 KeyCode::Char(ch) => {
                                     if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
                                         ui.edit_buf.push(ch);
@@ -592,6 +596,8 @@ async fn run_ui(
                                         set_status(&mut ui, "Rejected character for current base 无法输入该字符");
                                     }
                                 }
+
+
                                 _ => {}
                             }
                         } else {
@@ -604,10 +610,10 @@ async fn run_ui(
                                     ui.selected = 0;
                                 }
 
-                                KeyCode::Char('k') => {
+                                KeyCode::Char('k') | KeyCode::Up => {
                                     ui.selected = ui.selected.saturating_sub(1);
                                 }
-                                KeyCode::Char('j') => {
+                                KeyCode::Char('j') | KeyCode::Down  => {
                                     let len = state.read().await.holding.len();
                                     ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
                                 }
@@ -660,14 +666,12 @@ async fn main() -> Result<()> {
     let holding = vec![0u16; args.holding_count];
     let state = Arc::new(RwLock::new(AppState { holding }));
 
-    // NEW: shared server error/status
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
     // worker channel
     let (tx, rx) = mpsc::unbounded_channel::<RegCmd>();
     tokio::spawn(reg_worker_loop(Arc::clone(&state), args.holding_count, rx));
 
-    // server (NEW: push errors into server_status)
     let server_args = args.clone();
     let server_state = Arc::clone(&state);
     let server_tx = tx.clone();
@@ -680,7 +684,6 @@ async fn main() -> Result<()> {
         Ok::<_, anyhow::Error>(())
     });
 
-    // ui (pass server_status)
     let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
 
     server_task.abort();
