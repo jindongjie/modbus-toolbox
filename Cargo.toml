@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time"] }
-tokio-modbus = { version = "0.16", default-features = false, features = ["rtu-server"] }
+tokio-modbus = { version = "0.17",default-features = true,features = ["rtu-server","tcp-server"]}
 tokio-serial = "5.4"
 
 clap = { version = "4.5", features = ["derive"] }

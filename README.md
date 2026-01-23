@@ -2,14 +2,14 @@
 
 <img src="art/logo.png" alt="简介图片" width="300" height="300">  
 
-Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus 通讯协议所创建的工具集，实现了 RTU/TCP 传输层的服务器端与客户端，还特增加对 RTU 通讯进行侦听的功能。界面通过命令行图形界面的方式呈现，精简高效，所有主流操作系统都可通过命令行运行软件，单文件，无任何依赖，是男女老少调试的不可或缺之工具。
+Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus 通讯协议所创建的工具集，实现了 RTU/TCP 传输层的服务器端与客户端，还特增加对 RTU 通讯进行静默侦听的功能。界面通过命令行图形界面的方式呈现，精简高效，所有主流操作系统都可通过命令行运行软件，单文件，无任何依赖，是男女老少调试的不可或缺之工具。
 
 ## 主要功能列表
 <img src="art/breif.png" alt="主要功能图片" width="300" height="300">  
 
 1. Modbus TCP 服务端/客户端
 2. Modbus RTU 服务端/客户端
-3. Modbus RTU 监听分析
+3. Modbus RTU 静默监听分析
 
 ## 兼容性(后有详细列表)
 <img src="art/comp.png" alt="兼容性图片" width="300" height="300">  
@@ -26,6 +26,11 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 3. MacOS 无版本限制
 4. 其余 UNIX 操作系统
 
+### 操作指南
+
+
+### 配置文件
+
 
 
 
@@ -35,7 +40,7 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 
 
 ### 兼容性列表
-| Target Architecture               | GCC Version | Clang Version | C++ Support | Rust Version | Status |
+| 目标架构               | GCC 版本 | Clang 版本 | C++ 支持 | Rust 版本 | 状态 |
 |----------------------------------|-------------|---------------|-------------|--------------|--------|
 | arch64-linux-android [1]         | 9.0.8       | 9.0.8         | ✓           | 6.1.0        | ✓      |
 | aarch64-unknown-linux-gnu        | 2.23        | 5.4.0         | ✓           | 5.1.0        | ✓      |

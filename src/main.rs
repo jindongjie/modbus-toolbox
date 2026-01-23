@@ -28,7 +28,7 @@ enum DisplayBase {
 #[derive(Parser, Debug)]
 #[command(
     name = "modbus 工具箱",
-    about = "简洁的 TUI 程序，包含 RTU/TCP 服务器/客户端 与静默侦听"
+    about = "TUI 程序，包含 RTU/TCP 服务器/客户端与静默侦听"
 )]
 #[derive(Clone)]
 struct Args {
@@ -42,18 +42,24 @@ struct Args {
     #[arg(short = 'u', long, default_value_t = 1)]
     unit: u8,
 
+    ///Serial Port baudrate, fllow the serial port driver maxium as it up limit.
+    ///串口波特率 合适值，根据串口驱动允许的最大波特率为上限
     #[arg(short, long, default_value_t = 9600)]
     baudrate: u32,
 
+    ///串口数据位 5/6/7/8
     #[arg(long, default_value_t = 8)]
     databits: u8,
 
+    ///串口校验位 n=none e=even o=odd
     #[arg(long, default_value = "n")]
     parity: String,
 
+    ///串口停止位 1/2
     #[arg(long, default_value_t = 1)]
     stopbits: u8,
 
+    ///串口流控 none=无 soft=软件 hard=硬件
     #[arg(long, default_value = "none")]
     flow: String,
 
@@ -63,7 +69,7 @@ struct Args {
     holding_count: usize,
 
     /// UI refresh period (ms)
-    /// UI 刷新间隔
+    /// UI 刷新间隔(ms)
     #[arg(long, default_value_t = 50)]
     ui_tick_ms: u64,
 
@@ -83,15 +89,19 @@ fn parse_parity(s: &str) -> Result<Parity> {
         "n" | "none" => Ok(Parity::None),
         "e" | "even" => Ok(Parity::Even),
         "o" | "odd" => Ok(Parity::Odd),
-        _ => Err(anyhow!("invalid parity: {s} (use n/e/o or none/even/odd)")),
+        _ => Err(anyhow!(
+            "invalid parity 非法串口校验位: {s} (use n/e/o or none/even/odd)"
+        )),
     }
 }
 fn parse_flow(s: &str) -> Result<FlowControl> {
     match s.to_ascii_lowercase().as_str() {
         "none" => Ok(FlowControl::None),
-        "hardware" | "hw" | "rtscts" => Ok(FlowControl::Hardware),
-        "software" | "sw" | "xonxoff" => Ok(FlowControl::Software),
-        _ => Err(anyhow!("invalid flow: {s} (use none/hardware/software)")),
+        "hard" | "hw" | "rtscts" => Ok(FlowControl::Hardware),
+        "soft" | "sw" | "xonxoff" => Ok(FlowControl::Software),
+        _ => Err(anyhow!(
+            "invalid flow 非法串口流控: {s} (use none/hardware/software)"
+        )),
     }
 }
 fn parse_databits(v: u8) -> Result<DataBits> {
@@ -100,14 +110,16 @@ fn parse_databits(v: u8) -> Result<DataBits> {
         6 => Ok(DataBits::Six),
         7 => Ok(DataBits::Seven),
         8 => Ok(DataBits::Eight),
-        _ => Err(anyhow!("invalid databits: {v} (use 5/6/7/8)")),
+        _ => Err(anyhow!(
+            "invalid databits 非法串口数据位: {v} (use 5/6/7/8)"
+        )),
     }
 }
 fn parse_stopbits(v: u8) -> Result<StopBits> {
     match v {
         1 => Ok(StopBits::One),
         2 => Ok(StopBits::Two),
-        _ => Err(anyhow!("invalid stopbits: {v} (use 1/2)")),
+        _ => Err(anyhow!("invalid stopbits 非法串口停止位: {v} (use 1/2)")),
     }
 }
 
@@ -122,9 +134,9 @@ fn format_u16(v: u16, base: DisplayBase) -> String {
 fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     let t = s.trim();
     if t.is_empty() {
-        return Err(anyhow!("empty value"));
+        return Err(anyhow!("empty value 空值"));
     }
-    // Allow explicit prefixes regardless of current base.
+    //允许通过前缀强制定义输入类型
     if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         return u16::from_str_radix(rest, 16).context("parse hex");
     }
@@ -138,25 +150,26 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     }
 }
 
-// --- NEW: register worker command channel (avoids block_on in Service) ---
+//寄存器指令枚举
 enum RegCmd {
     ReadHolding {
         addr: usize,
         cnt: usize,
         resp: oneshot::Sender<std::result::Result<Vec<u16>, ExceptionCode>>,
     },
-    WriteSingle {
+    WriteSingleHolding {
         addr: usize,
         value: u16,
         resp: oneshot::Sender<std::result::Result<(), ExceptionCode>>,
     },
-    WriteMultiple {
+    WriteMultipleHolding {
         addr: usize,
         values: Vec<u16>,
         resp: oneshot::Sender<std::result::Result<(), ExceptionCode>>,
     },
 }
 
+//寄存器指令执行循环
 async fn reg_worker_loop(
     state: Arc<RwLock<AppState>>,
     holding_len: usize,
@@ -173,7 +186,7 @@ async fn reg_worker_loop(
                 };
                 let _ = resp.send(out);
             }
-            RegCmd::WriteSingle { addr, value, resp } => {
+            RegCmd::WriteSingleHolding { addr, value, resp } => {
                 let out = if addr >= holding_len {
                     Err(ExceptionCode::IllegalDataAddress)
                 } else {
@@ -183,7 +196,7 @@ async fn reg_worker_loop(
                 };
                 let _ = resp.send(out);
             }
-            RegCmd::WriteMultiple { addr, values, resp } => {
+            RegCmd::WriteMultipleHolding { addr, values, resp } => {
                 let out = if addr + values.len() > holding_len {
                     Err(ExceptionCode::IllegalDataAddress)
                 } else {
@@ -197,8 +210,7 @@ async fn reg_worker_loop(
     }
 }
 
-// ---------------- Modbus server (holding registers only) ----------------
-
+//保持型寄存器服务
 #[derive(Clone)]
 struct HoldingService {
     tx: mpsc::UnboundedSender<RegCmd>,
@@ -206,6 +218,7 @@ struct HoldingService {
     unit: u8,
 }
 
+//Modbus 保持型寄存器服务
 impl tokio_modbus::server::Service for HoldingService {
     type Request = SlaveRequest<'static>;
     type Response = Response;
@@ -215,7 +228,7 @@ impl tokio_modbus::server::Service for HoldingService {
     >;
 
     fn call(&self, req: Self::Request) -> Self::Future {
-        // Enforce single unit id
+        //检查 slaveID 是否正确
         if req.slave != self.unit {
             return Box::pin(async { Err(ExceptionCode::IllegalFunction) });
         }
@@ -241,7 +254,6 @@ impl tokio_modbus::server::Service for HoldingService {
                         })
                         .is_err()
                     {
-                        // worker dropped
                         return Err(ExceptionCode::ServerDeviceFailure);
                     }
 
@@ -265,7 +277,7 @@ impl tokio_modbus::server::Service for HoldingService {
 
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                     if tx
-                        .send(RegCmd::WriteSingle {
+                        .send(RegCmd::WriteSingleHolding {
                             addr,
                             value,
                             resp: resp_tx,
@@ -297,7 +309,7 @@ impl tokio_modbus::server::Service for HoldingService {
 
                     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
                     if tx
-                        .send(RegCmd::WriteMultiple {
+                        .send(RegCmd::WriteMultipleHolding {
                             addr: addr_usize,
                             values: values_vec,
                             resp: resp_tx,
@@ -353,7 +365,7 @@ async fn run_modbus_rtu_server(
     Ok(())
 }
 
-// ---------------- Ratatui UI ----------------
+// ---------------- RataTUI ----------------
 
 struct Ui {
     base: DisplayBase,
@@ -402,13 +414,13 @@ async fn run_ui(
     state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
     args: Args,
-    server_status: Arc<RwLock<Option<String>>>, // NEW
+    server_status: Arc<RwLock<Option<String>>>,
 ) -> Result<()> {
-    enable_raw_mode().context("enable raw mode")?;
+    enable_raw_mode().context("enable raw mode 进入终端全自主操作模式")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
+    execute!(stdout, EnterAlternateScreen).context("enter alt screen 转入自主屏幕空间")?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("create terminal")?;
+    let mut terminal = Terminal::new(backend).context("create terminal 创建终端")?;
 
     let mut events = EventStream::new();
     let mut ui = Ui::new(args.base);
@@ -420,7 +432,7 @@ async fn run_ui(
         tokio::select! {
             _ = interval.tick() => {
                 let s = state.read().await;
-                let server_err = server_status.read().await.clone(); // NEW
+                let server_err = server_status.read().await.clone();
                 terminal.draw(|f| {
                     let chunks = Layout::vertical([
                         Constraint::Min(5),
@@ -495,7 +507,7 @@ async fn run_ui(
                     let help = if ui.edit_mode {
                         "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入"
                     } else {
-                        "jk 移动 | e 编辑 | d/h/b 格式 | q 退出"
+                        "jk ↑↓ 移动 | e 编辑 | m 100个寄存器编辑 | d/h/b 格式 | q 退出"
                     };
 
                     f.render_widget(
@@ -514,7 +526,6 @@ async fn run_ui(
 
                 match ev {
                     Event::Key(KeyEvent { code, modifiers, .. }) => {
-                        // NEW: allow clearing server error from UI
                         if !ui.edit_mode && code == KeyCode::Char('c') && !modifiers.contains(KeyModifiers::CONTROL) {
                             *server_status.write().await = None;
                             ui.status_msg = None;
@@ -535,37 +546,37 @@ async fn run_ui(
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
                                         Ok(new_val) => {
                                             let (resp_tx, resp_rx) = oneshot::channel();
-                                            let _ = tx.send(RegCmd::WriteSingle { addr: ui.selected, value: new_val, resp: resp_tx });
+                                            let _ = tx.send(RegCmd::WriteSingleHolding { addr: ui.selected, value: new_val, resp: resp_tx });
                                             match resp_rx.await {
                                                 Ok(Ok(())) => {
                                                     ui.edit_mode = false;
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected"),
+                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
                                             }
                                         }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e}")),
+                                        Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
                                     }
                                 }
-                                KeyCode::Char('a') => {
+                                KeyCode::Char('m') => {
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
                                         Ok(new_val) => {
                                             let (resp_tx, resp_rx) = oneshot::channel();
                                             let values = vec![new_val;100];
-                                            let _ = tx.send(RegCmd::WriteMultiple { addr: (ui.selected), values: (values), resp: (resp_tx) });
+                                            let _ = tx.send(RegCmd::WriteMultipleHolding { addr: (ui.selected), values: (values), resp: (resp_tx) });
                                             match resp_rx.await {
                                                 Ok(Ok(())) => {
                                                     ui.edit_mode = false;
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected"),
+                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
                                             }
                                         }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e}")),
+                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e} 非法输入值")),
                                     }
 
                                 }
@@ -578,7 +589,7 @@ async fn run_ui(
                                         ui.edit_buf.push(ch);
                                         ui.status_msg = None;
                                     } else {
-                                        set_status(&mut ui, "Rejected character for current base");
+                                        set_status(&mut ui, "Rejected character for current base 无法输入该字符");
                                     }
                                 }
                                 _ => {}
