@@ -14,8 +14,14 @@ use ratatui::{
     Terminal,
 };
 use std::{io, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio_modbus::{prelude::*, server};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, oneshot, RwLock},
+};
+use tokio_modbus::{
+    prelude::*,
+    server::{self, tcp::accept_tcp_connection},
+};
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -33,7 +39,6 @@ enum DisplayBase {
 #[derive(Clone)]
 struct Args {
     /// 主模式 1.tcp-服务端: tcp-server/ts 2.tcp-客户端 tcp-client/tc 3.rtu-服务端 rtu-server/rs 4.rtu-客户端 rtu-client/rs
-    //  main mode 1.tcp-server/ts 2.tcp-client/tc 3.rtu-server/rs 4.rtu-client/rc
     #[arg(short = 'm', long, default_value = "tcp-client")]
     main_mode: String,
 
@@ -373,15 +378,18 @@ async fn run_modbus_tcp_server(
     tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
     //创建新连接，不需要挂锁
-    let port = tokio::time::timeout(
-        Duration::from_millis(self.timeout_ms),
-        TcpStream::connect(format!("{}:{}", unit.ip, unit.port)),
-    )
-    .await
-    .context("连接Modbus设备超时")?
-    .context("连接Modbus设备失败")?;
+    // let port = tokio::time::timeout(
+    //     Duration::from_millis(self.timeout_ms),
+    //     TcpStream::connect(format!("{}:{}", unit.ip, unit.port)),
+    // )
+    // .await
+    // .context("连接Modbus设备超时")?
+    // .context("连接Modbus设备失败")?;
 
-    port.set_nodelay(true).context("无法设置 TCP_NODELAY")?;
+    // port.set_nodelay(true).context("无法设置 TCP_NODELAY")?;
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", args.tcp_port))
+        .await
+        .context("打开 Modbus TCP 端口")?;
 
     let service = HoldingService {
         tx,
@@ -389,11 +397,19 @@ async fn run_modbus_tcp_server(
         unit: args.unit,
     };
 
-    let server = server::tcp::Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    let new_service = |_socket_addr| Ok(Some(HoldingService::new()));
+    let on_connected =
+        |stream, socket_addr| async move { accept_tcp_connection(stream, socket_addr, service) };
+    let on_process_error = |err| {
+        // eprintln!("{err}");
+    };
+
+    let server = server::tcp::Server::new(listener);
+    // server
+    // .serve(&on_connected, on_process_error)
+    // .await
+    // .map_err(|e| anyhow!("{e}"))?;
+    server.serve(&on_connected, on_process_error).await?;
     Ok(())
 }
 async fn run_modbus_tcp_client(
@@ -423,11 +439,11 @@ async fn run_modbus_tcp_client(
         unit: args.unit,
     };
 
-    let server = Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    // let server = Server::new(port);
+    // server
+    //     .serve_forever(service)
+    //     .await
+    //     .map_err(|e| anyhow!("{e}"))?;
     Ok(())
 }
 
@@ -482,8 +498,9 @@ async fn run_modbus_rtu_server(
         .data_bits(databits)
         .stop_bits(stopbits);
 
-    // async open (correct for tokio-modbus rtu server)
-    let port = builder.open_native_async().context("open serial")?;
+    let port = builder
+        .open_native_async()
+        .context("打开 Modbus RTU 串口")?;
 
     let service = HoldingService {
         tx,
