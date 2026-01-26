@@ -42,7 +42,8 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 
 
 ## 开发指北
-
+### TODOLIST
+串口错误后触发 ui.status_msg 更新后会卡死
 
 ## 依赖项目
 详见 cargo.toml
