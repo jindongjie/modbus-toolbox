@@ -15,7 +15,7 @@ use ratatui::{
 };
 use std::{io, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio_modbus::{prelude::*, server};
+use tokio_modbus::{prelude::*, server::rtu::Server};
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -32,43 +32,18 @@ enum DisplayBase {
 )]
 #[derive(Clone)]
 struct Args {
-    /// 主模式 1.tcp-服务端: tcp-server/ts 2.tcp-客户端 tcp-client/tc 3.rtu-服务端 rtu-server/rs 4.rtu-客户端 rtu-client/rs
-    //  main mode 1.tcp-server/ts 2.tcp-client/tc 3.rtu-server/rs 4.rtu-client/rc
-    #[arg(short = 'm', long, default_value = "tcp-client")]
-    main_mode: String,
-
-    /// TCP 端口号
-    ///TCP port number(0~65535)
-    #[arg(short = 'p', long, default_value_t = 502)]
-    tcp_port: u16,
-
-    /// 从设备地址/标识符（1~247)
-    /// Slave/unit id (1~247)
-    #[arg(short = 'u', long, default_value_t = 1)]
-    unit: u8,
-
-    /// 保持型寄存器列表长度 客户端为轮询的范围 服务端为暴露的范围（0~value)
-    /// Number of holding registers to expose (starting at 0)
-    #[arg(short = 'c', long, default_value_t = 512)]
-    holding_count: usize,
-
-    /// 客户端模式 轮询间隔(ms)
-    /// client mode query interval period (ms)
-    #[arg(long, default_value_t = 200)]
-    client_tick_ms: u64,
-
-    /// UI 刷新间隔(ms)
-    /// UI refresh period (ms)
-    #[arg(long, default_value_t = 10)]
-    ui_tick_ms: u64,
-
-    /// 串口设备路径, 例： /dev/ttyUSB0
     /// Serial Port device path eg: /dev/ttyUSB0
+    /// 串口设备路径, 例： /dev/ttyUSB0
     #[arg(short, long, default_value = "dev/null")]
     device: String,
 
-    ///串口波特率 合适值，根据串口驱动允许的最大波特率为上限
+    /// Slave/unit id (1~247)
+    /// 从设备地址（1~247)
+    #[arg(short = 'u', long, default_value_t = 1)]
+    unit: u8,
+
     ///Serial Port baudrate, fllow the serial port driver maxium as it up limit.
+    ///串口波特率 合适值，根据串口驱动允许的最大波特率为上限
     #[arg(short, long, default_value_t = 9600)]
     baudrate: u32,
 
@@ -88,8 +63,18 @@ struct Args {
     #[arg(long, default_value = "none")]
     flow: String,
 
-    /// 界面初始化时间
+    /// Number of holding registers to expose (starting at 0)
+    /// 保持型寄存器列表长度（0~value)
+    #[arg(short = 'n', long, default_value_t = 500)]
+    holding_count: usize,
+
+    /// UI refresh period (ms)
+    /// UI 刷新间隔(ms)
+    #[arg(long, default_value_t = 50)]
+    ui_tick_ms: u64,
+
     /// Initial display base
+    /// 界面初始化时间
     #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
     base: DisplayBase,
 }
@@ -97,25 +82,6 @@ struct Args {
 #[derive(Default)]
 struct AppState {
     holding: Vec<u16>,
-}
-
-enum MainMode {
-    TcpServer,
-    TcpClient,
-    RTUServer,
-    RTUClient,
-}
-
-fn parse_mainmode(s: &str) -> Result<MainMode> {
-    match s.to_ascii_lowercase().as_str() {
-        "ts" | "tcp-server" => Ok(MainMode::TcpServer),
-        "tc" | "tcp-client" => Ok(MainMode::TcpClient),
-        "rs" | "rtu-server" => Ok(MainMode::RTUServer),
-        "rc" | "rtu-client" => Ok(MainMode::RTUClient),
-        _ => Err(anyhow!(
-            "invalid main mode 非法的主模式 : {s} (use ts/tc/rs/rc or refrence to help)"
-        )),
-    }
 }
 
 fn parse_parity(s: &str) -> Result<Parity> {
@@ -366,106 +332,6 @@ impl tokio_modbus::server::Service for HoldingService {
     }
 }
 
-//各模式分支函数
-async fn run_modbus_tcp_server(
-    args: Args,
-    _state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
-) -> Result<()> {
-    //创建新连接，不需要挂锁
-    let port = tokio::time::timeout(
-        Duration::from_millis(self.timeout_ms),
-        TcpStream::connect(format!("{}:{}", unit.ip, unit.port)),
-    )
-    .await
-    .context("连接Modbus设备超时")?
-    .context("连接Modbus设备失败")?;
-
-    port.set_nodelay(true).context("无法设置 TCP_NODELAY")?;
-
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
-
-    let server = server::tcp::Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(())
-}
-async fn run_modbus_tcp_client(
-    args: Args,
-    _state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
-) -> Result<()> {
-    let parity = parse_parity(&args.parity)?;
-    let flow = parse_flow(&args.flow)?;
-    let databits = parse_databits(args.databits)?;
-    let stopbits = parse_stopbits(args.stopbits)?;
-
-    let builder = tokio_serial::new(args.device.clone(), args.baudrate)
-        .parity(parity)
-        .flow_control(flow)
-        .data_bits(databits)
-        .stop_bits(stopbits);
-
-    // async open (correct for tokio-modbus rtu server)
-    let port = builder
-        .open_native_async()
-        .context("open serial 正在打开串口")?;
-
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
-
-    let server = Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(())
-}
-
-async fn run_modbus_rtu_client(
-    args: Args,
-    _state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
-) -> Result<()> {
-    let parity = parse_parity(&args.parity)?;
-    let flow = parse_flow(&args.flow)?;
-    let databits = parse_databits(args.databits)?;
-    let stopbits = parse_stopbits(args.stopbits)?;
-
-    let builder = tokio_serial::new(args.device.clone(), args.baudrate)
-        .parity(parity)
-        .flow_control(flow)
-        .data_bits(databits)
-        .stop_bits(stopbits);
-
-    // async open (correct for tokio-modbus rtu server)
-    let port = builder
-        .open_native_async()
-        .context("open serial 正在打开串口")?;
-
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
-
-    let server = server::rtu::Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(())
-}
-
 async fn run_modbus_rtu_server(
     args: Args,
     _state: Arc<RwLock<AppState>>,
@@ -491,7 +357,7 @@ async fn run_modbus_rtu_server(
         unit: args.unit,
     };
 
-    let server = server::rtu::Server::new(port);
+    let server = Server::new(port);
     server
         .serve_forever(service)
         .await
@@ -540,8 +406,8 @@ fn edit_accepts_char(current: &str, ch: char, base: DisplayBase) -> bool {
     }
 }
 
-fn set_status(ui: &mut Ui, msg: impl Into<String>) {
-    ui.status_msg = Some(msg.into());
+fn set_status(ui: &mut Ui, msg: &String) {
+    ui.status_msg = Some(msg.clone());
 }
 
 async fn run_ui(
@@ -617,11 +483,11 @@ async fn run_ui(
                     f.render_stateful_widget(t, chunks[0], &mut table_state);
 
                     let status_line = if let Some(m) = server_err.as_deref() {
-                        format!("Modbus/RTU 错误: {m}")
+                        format!("错误: {m}")
                     } else if let Some(m) = ui.status_msg.as_deref() {
                         m.to_string()
                     } else if ui.edit_mode {
-                        format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                        format!("修改 (格式={:?}) Enter=提交 Esc=取消 | m 100个寄存器编辑 | 输入: {}", ui.base, ui.edit_buf)
                     } else {
                         format!("格式={:?}", ui.base)
                     };
@@ -638,9 +504,9 @@ async fn run_ui(
                     );
 
                     let help = if ui.edit_mode {
-                        "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入 | m 100个寄存器编辑"
+                        "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入"
                     } else {
-                        "jk ↑↓ 移动 | e 编辑 | d/h/b 格式 | q 退出"
+                        "jk ↑↓ 移动 | e 编辑 | PGDOWN/UP 移动100行 | d/h/b 格式 | q 退出"
                     };
 
                     f.render_widget(
@@ -678,8 +544,7 @@ async fn run_ui(
                                     ui.edit_buf.clear();
                                     ui.status_msg = None;
                                 }
-
-                                KeyCode::Enter => {
+                                        KeyCode::Enter => {
                                     match parse_u16_str(&ui.edit_buf, ui.base) {
                                         Ok(new_val) => {
                                             let (resp_tx, resp_rx) = oneshot::channel();
@@ -690,14 +555,16 @@ async fn run_ui(
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
+                                                Ok(Err(ex)) => set_status(&mut ui, &format!("Modbus exception 异常: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, &"Worker disconnected 运行中断".to_string()),
                                             }
                                         }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
+                                        // Err(e) => set_status(&mut ui, &format!("Invalid value 非法输入值: {e}")),
+                                       // Err(e) => println!("dflsjjdf"),
+                                        Err(e) => ui.status_msg = Some("sdlfjas;dfk".to_string()),
                                     }
                                 }
-                                KeyCode::Backspace => {
+                               KeyCode::Backspace => {
                                     ui.edit_buf.pop();
                                     ui.status_msg = None;
                                 }
@@ -713,11 +580,11 @@ async fn run_ui(
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
+                                                Ok(Err(ex)) => set_status(&mut ui, &format!("Modbus exception 异常: {ex:?}")),
+                                                Err(_) => set_status(&mut ui, &"Worker disconnected 运行中断".to_string()),
                                             }
                                         }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e} 非法输入值")),
+                                        Err(e) => set_status(&mut ui, &format!("Invalid value: {e} 非法输入值")),
                                     }
                                 }
 
@@ -726,7 +593,9 @@ async fn run_ui(
                                         ui.edit_buf.push(ch);
                                         ui.status_msg = None;
                                     } else {
-                                        set_status(&mut ui, "Rejected character for current base 无法输入该字符");
+                                        // set_status(&mut ui, &"Invalid character 无法输入该字符".to_string());
+                                        ui.status_msg = Some("sdlfj".to_string());
+                                        // println!("a;dslfkja;sdlfkdfklj");
                                     }
                                 }
 
@@ -737,10 +606,10 @@ async fn run_ui(
                             match code {
                                  KeyCode::PageDown => {
                                     let len = state.read().await.holding.len();
-                                    ui.selected = len;
+                                    ui.selected = (ui.selected + 100).min(len.saturating_sub(1));
                                 }
                                 KeyCode::PageUp => {
-                                    ui.selected = 0;
+                                    ui.selected = ui.selected.saturating_sub(100);
                                 }
 
                                 KeyCode::Char('k') | KeyCode::Up => {
@@ -790,11 +659,12 @@ async fn run_ui(
     res
 }
 
+// ---------------- main ----------------
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let main_mode = parse_mainmode(&args.main_mode)?;
     let holding = vec![0u16; args.holding_count];
     let state = Arc::new(RwLock::new(AppState { holding }));
 
@@ -804,45 +674,22 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel::<RegCmd>();
     tokio::spawn(reg_worker_loop(Arc::clone(&state), args.holding_count, rx));
 
-    let inner_args = args.clone();
-    let inner_state = Arc::clone(&state);
-    let inner_tx = tx.clone();
-    let inner_status_bg = Arc::clone(&server_status);
-    let inner_task = tokio::spawn(async move {
-        match main_mode {
-            MainMode::RTUServer => {
-                if let Err(e) = run_modbus_rtu_server(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
-            MainMode::RTUClient => {
-                if let Err(e) = run_modbus_rtu_client(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
-
-            MainMode::TcpServer => {
-                if let Err(e) = run_modbus_tcp_server(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
-            MainMode::TcpClient => {
-                if let Err(e) = run_modbus_tcp_client(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
+    let server_args = args.clone();
+    let server_state = Arc::clone(&state);
+    let server_tx = tx.clone();
+    let server_status_bg = Arc::clone(&server_status);
+    let server_task = tokio::spawn(async move {
+        if let Err(e) = run_modbus_rtu_server(server_args, server_state, server_tx).await {
+            *server_status_bg.write().await = Some(format!("{e:#}"));
+            return Err(e);
         }
         Ok::<_, anyhow::Error>(())
     });
 
     let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
 
-    inner_task.abort();
-    let _ = inner_task.await;
+    server_task.abort();
+    let _ = server_task.await;
 
     ui_res
 }
