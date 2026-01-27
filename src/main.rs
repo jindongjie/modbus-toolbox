@@ -17,6 +17,7 @@ use std::{io, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, RwLock},
+    time::timeout,
 };
 use tokio_modbus::{
     prelude::*,
@@ -277,7 +278,7 @@ impl tokio_modbus::server::Service for HoldingService {
                 let addr = addr as usize;
                 let cnt = cnt as usize;
                 let holding_len = self.holding_len;
-                let tx = self.tx.clone();
+                let tx: mpsc::UnboundedSender<RegCmd> = self.tx.clone();
 
                 Box::pin(async move {
                     if addr + cnt > holding_len {
@@ -387,29 +388,30 @@ async fn run_modbus_tcp_server(
     // .context("连接Modbus设备失败")?;
 
     // port.set_nodelay(true).context("无法设置 TCP_NODELAY")?;
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", args.tcp_port))
-        .await
-        .context("打开 Modbus TCP 端口")?;
+    // let listener = TcpListener::bind(format!("127.0.0.1:{}", args.tcp_port))
+    //     .await
+    //     .context("打开 Modbus TCP 端口")?;
 
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
+    // let service = HoldingService {
+    //     tx,
+    //     holding_len: args.holding_count,
+    //     unit: args.unit,
+    // };
 
-    let new_service = |_socket_addr| Ok(Some(HoldingService::new()));
-    let on_connected =
-        |stream, socket_addr| async move { accept_tcp_connection(stream, socket_addr, service) };
-    let on_process_error = |err| {
-        // eprintln!("{err}");
-    };
+    // let new_service = |_socket_addr| Ok(Some());
+    // let on_connected = |stream, socket_addr| async move {
+    //     accept_tcp_connection(stream, socket_addr, new_service)
+    // };
+    // let on_process_error = |err| {
+    //     // eprintln!("{err}");
+    // };
 
-    let server = server::tcp::Server::new(listener);
+    // let server = server::tcp::Server::new(listener);
     // server
     // .serve(&on_connected, on_process_error)
     // .await
     // .map_err(|e| anyhow!("{e}"))?;
-    server.serve(&on_connected, on_process_error).await?;
+    // server.serve(&on_connected, on_process_error).await?;
     Ok(())
 }
 async fn run_modbus_tcp_client(
@@ -449,13 +451,14 @@ async fn run_modbus_tcp_client(
 
 async fn run_modbus_rtu_client(
     args: Args,
-    _state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
     let parity = parse_parity(&args.parity)?;
     let flow = parse_flow(&args.flow)?;
     let databits = parse_databits(args.databits)?;
     let stopbits = parse_stopbits(args.stopbits)?;
+    let slave = Slave(args.unit);
 
     let builder = tokio_serial::new(args.device.clone(), args.baudrate)
         .parity(parity)
@@ -467,18 +470,9 @@ async fn run_modbus_rtu_client(
     let port = builder
         .open_native_async()
         .context("open serial 正在打开串口")?;
+    let mut ctx = rtu::attach_slave(port, slave);
 
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
-
-    let server = server::rtu::Server::new(port);
-    server
-        .serve_forever(service)
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    loop {}
     Ok(())
 }
 
@@ -701,7 +695,10 @@ async fn run_ui(
                                         Ok(new_val) => {
                                             let (resp_tx, resp_rx) = oneshot::channel();
                                             let _ = tx.send(RegCmd::WriteSingleHolding { addr: ui.selected, value: new_val, resp: resp_tx });
-                                            match resp_rx.await {
+                                            let timeout_check_res = timeout(Duration::from_millis(2000), resp_rx).await;
+                                            match timeout_check_res {
+                                                ok() {
+                                                    match resp_rx {
                                                 Ok(Ok(())) => {
                                                     ui.edit_mode = false;
                                                     ui.edit_buf.clear();
@@ -709,7 +706,12 @@ async fn run_ui(
                                                 }
                                                 Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
                                                 Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
-                                            }
+ 
+                                                    }
+                                                }
+                                            
+                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
+                                           }}
                                         }
                                         Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
                                     }
@@ -853,7 +855,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Ok::<_, anyhow::Error>(())
+        Ok(())
     });
 
     let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
