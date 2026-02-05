@@ -43,38 +43,31 @@ struct Args {
     #[arg(short = 'm', long, default_value = "tcp-client")]
     main_mode: String,
 
-    /// TCP 端口号
-    ///TCP port number(0~65535)
+    /// TCP 端口号(1~65535)
     #[arg(short = 'p', long, default_value_t = 502)]
     tcp_port: u16,
 
     /// 从设备地址/标识符（1~247)
-    /// Slave/unit id (1~247)
     #[arg(short = 'u', long, default_value_t = 1)]
     unit: u8,
 
     /// 保持型寄存器列表长度 客户端为轮询的范围 服务端为暴露的范围（0~value)
-    /// Number of holding registers to expose (starting at 0)
     #[arg(short = 'c', long, default_value_t = 512)]
     holding_count: usize,
 
     /// 客户端模式 轮询间隔(ms)
-    /// client mode query interval period (ms)
     #[arg(long, default_value_t = 200)]
     client_tick_ms: u64,
 
     /// UI 刷新间隔(ms)
-    /// UI refresh period (ms)
     #[arg(long, default_value_t = 10)]
     ui_tick_ms: u64,
 
     /// 串口设备路径, 例： /dev/ttyUSB0
-    /// Serial Port device path eg: /dev/ttyUSB0
     #[arg(short, long, default_value = "dev/null")]
     device: String,
 
     ///串口波特率 合适值，根据串口驱动允许的最大波特率为上限
-    ///Serial Port baudrate, fllow the serial port driver maxium as it up limit.
     #[arg(short, long, default_value_t = 9600)]
     baudrate: u32,
 
@@ -95,7 +88,6 @@ struct Args {
     flow: String,
 
     /// 界面初始化时间
-    /// Initial display base
     #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
     base: DisplayBase,
 }
@@ -119,7 +111,7 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
         "rs" | "rtu-server" => Ok(MainMode::RTUServer),
         "rc" | "rtu-client" => Ok(MainMode::RTUClient),
         _ => Err(anyhow!(
-            "invalid main mode 非法的主模式 : {s} (use ts/tc/rs/rc or refrence to help)"
+            "非法的主模式 : {s} (use ts/tc/rs/rc or refrence to help)"
         )),
     }
 }
@@ -129,9 +121,7 @@ fn parse_parity(s: &str) -> Result<Parity> {
         "n" | "none" => Ok(Parity::None),
         "e" | "even" => Ok(Parity::Even),
         "o" | "odd" => Ok(Parity::Odd),
-        _ => Err(anyhow!(
-            "invalid parity 非法串口校验位: {s} (use n/e/o or none/even/odd)"
-        )),
+        _ => Err(anyhow!("非法串口校验位: {s} (use n/e/o or none/even/odd)")),
     }
 }
 fn parse_flow(s: &str) -> Result<FlowControl> {
@@ -139,9 +129,7 @@ fn parse_flow(s: &str) -> Result<FlowControl> {
         "none" => Ok(FlowControl::None),
         "hard" | "hw" | "rtscts" => Ok(FlowControl::Hardware),
         "soft" | "sw" | "xonxoff" => Ok(FlowControl::Software),
-        _ => Err(anyhow!(
-            "invalid flow 非法串口流控: {s} (use none/hardware/software)"
-        )),
+        _ => Err(anyhow!("非法串口流控: {s} (use none/hardware/software)")),
     }
 }
 fn parse_databits(v: u8) -> Result<DataBits> {
@@ -150,16 +138,14 @@ fn parse_databits(v: u8) -> Result<DataBits> {
         6 => Ok(DataBits::Six),
         7 => Ok(DataBits::Seven),
         8 => Ok(DataBits::Eight),
-        _ => Err(anyhow!(
-            "invalid databits 非法串口数据位: {v} (use 5/6/7/8)"
-        )),
+        _ => Err(anyhow!("非法串口数据位: {v} (use 5/6/7/8)")),
     }
 }
 fn parse_stopbits(v: u8) -> Result<StopBits> {
     match v {
         1 => Ok(StopBits::One),
         2 => Ok(StopBits::Two),
-        _ => Err(anyhow!("invalid stopbits 非法串口停止位: {v} (use 1/2)")),
+        _ => Err(anyhow!("非法串口停止位: {v} (use 1/2)")),
     }
 }
 
@@ -174,19 +160,19 @@ fn format_u16(v: u16, base: DisplayBase) -> String {
 fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     let t = s.trim();
     if t.is_empty() {
-        return Err(anyhow!("empty value 空值"));
+        return Err(anyhow!("空字符"));
     }
     //允许通过前缀强制定义输入类型
     if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        return u16::from_str_radix(rest, 16).context("parse hex");
+        return u16::from_str_radix(rest, 16).context("解析十六进制字符前缀");
     }
     if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
-        return u16::from_str_radix(rest, 2).context("parse bin");
+        return u16::from_str_radix(rest, 2).context("解析二进制字符前缀");
     }
     match base {
-        DisplayBase::Dec => t.parse::<u16>().context("parse dec"),
-        DisplayBase::Hex => u16::from_str_radix(t, 16).context("parse hex"),
-        DisplayBase::Bin => u16::from_str_radix(t, 2).context("parse bin"),
+        DisplayBase::Dec => t.parse::<u16>().context("解析十进制字符"),
+        DisplayBase::Hex => u16::from_str_radix(t, 16).context("解析十六进制字符"),
+        DisplayBase::Bin => u16::from_str_radix(t, 2).context("解析二进制字符"),
     }
 }
 
@@ -697,24 +683,20 @@ async fn run_ui(
                                             let _ = tx.send(RegCmd::WriteSingleHolding { addr: ui.selected, value: new_val, resp: resp_tx });
                                             let timeout_check_res = timeout(Duration::from_millis(2000), resp_rx).await;
                                             match timeout_check_res {
-                                                ok() {
-                                                    match resp_rx {
-                                                Ok(Ok(())) => {
+                                                Ok(Ok(_)) => {
                                                     ui.edit_mode = false;
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
                                                 Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
- 
+                                                Err(ex) => set_status(&mut ui, format!("写入超时,异常:{ex:?}")),
+
                                                     }
                                                 }
-                                            
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
-                                           }}
+
+                                                Err(ex) => set_status(&mut ui, format!("解析与校验值异常:{ex:?}")),
                                         }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
-                                    }
+
                                 }
                                 KeyCode::Backspace => {
                                     ui.edit_buf.pop();
@@ -811,6 +793,7 @@ async fn run_ui(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    console_subscriber::init();
     let args = Args::parse();
 
     let main_mode = parse_mainmode(&args.main_mode)?;
