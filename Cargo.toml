@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "time","tracing"] }
 tokio-modbus = { version = "0.17",default-features = true,features = ["rtu-server","tcp-server"]}
 tokio-serial = "5.4"
 
@@ -15,4 +15,5 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 
 futures = "0.3"
 anyhow = "1.0"
+console-subscriber = "0.5.0"
 
