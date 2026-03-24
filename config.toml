@@ -1,0 +1,29 @@
+["hahaha 你是谁啊"]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"
+
+[hello]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"

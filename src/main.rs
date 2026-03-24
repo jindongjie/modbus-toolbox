@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table, TableState},
     Terminal,
 };
-use std::{io, sync::Arc, time::Duration};
+use std::{collections::HashMap, io, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, RwLock},
@@ -24,20 +24,34 @@ use tokio_modbus::{
 };
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
 
-#[derive(Copy, Clone, Debug, ValueEnum)]
+use serde;
+
+#[derive(Copy, Clone, Debug, ValueEnum, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 enum DisplayBase {
+    #[default]
     Dec,
     Hex,
     Bin,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[command(
     name = "modbus 工具箱",
     about = "TUI 程序，包含 RTU/TCP 服务器/客户端与静默侦听"
 )]
-#[derive(Clone)]
+#[serde(default)]
 struct Args {
+    /// 配置文件名 (默认: config.toml)
+    #[arg(long, default_value = "config.toml")]
+    #[serde(skip)]
+    config: String,
+
+    /// 选择配置文件中的预设槽位 (若提供则优先使用配置文件的设置)
+    #[arg(long)]
+    #[serde(skip)]
+    profile: Option<String>,
+
     /// 主模式 1.tcp-服务端: tcp-server/ts 2.tcp-客户端 tcp-client/tc 3.rtu-服务端 rtu-server/rs 4.rtu-客户端 rtu-client/rs
     #[arg(short = 'm', long, default_value = "tcp-client")]
     main_mode: String,
@@ -89,6 +103,34 @@ struct Args {
     /// 界面初始化时间
     #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
     base: DisplayBase,
+
+    /// 寄存器备注标签
+    #[arg(skip)]
+    #[serde(default)]
+    labels: HashMap<String, String>,
+}
+
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            config: "config.toml".into(),
+            profile: None,
+            main_mode: "tcp-client".into(),
+            tcp_port: 502,
+            unit: 1,
+            holding_count: 512,
+            client_tick_ms: 200,
+            ui_tick_ms: 10,
+            device: "dev/null".into(),
+            baudrate: 9600,
+            databits: 8,
+            parity: "n".into(),
+            stopbits: 1,
+            flow: "none".into(),
+            base: DisplayBase::Dec,
+            labels: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -172,12 +214,6 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     match base {
         DisplayBase::Dec => t.parse::<u16>().context("解析十进制字符"),
         DisplayBase::Hex => u16::from_str_radix(t, 16).context("解析十六进制字符"),
-        DisplayBase::Bin => u16::from_str_radix(t, 2).context("解析二进制字符"),
-    }
-}
-
-//寄存器指令枚举
-enum RegCmd {
     ReadHolding {
         addr: usize,
         cnt: usize,
@@ -250,13 +286,25 @@ impl tokio_modbus::server::Service for HoldingService {
     type Response = Response;
     type Exception = ExceptionCode;
     type Future = std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Exception>> + Send>,
+        Box<
+            dyn std::future::Future<Output = std::result::Result<Self::Response, Self::Exception>>
+                + Send,
+        >,
     >;
 
     fn call(&self, req: Self::Request) -> Self::Future {
+        fn boxed<F>(fut: F) -> <HoldingService as tokio_modbus::server::Service>::Future
+        where
+            F: std::future::Future<Output = std::result::Result<Response, ExceptionCode>>
+                + Send
+                + 'static,
+        {
+            Box::pin(fut)
+        }
+
         //检查 slaveID 是否正确
         if req.slave != self.unit {
-            return Box::pin(async { Err(ExceptionCode::IllegalFunction) });
+            return boxed(async { Err(ExceptionCode::IllegalFunction) });
         }
 
         match req.request {
@@ -266,7 +314,7 @@ impl tokio_modbus::server::Service for HoldingService {
                 let holding_len = self.holding_len;
                 let tx: mpsc::UnboundedSender<RegCmd> = self.tx.clone();
 
-                Box::pin(async move {
+                boxed(async move {
                     if addr + cnt > holding_len {
                         return Err(ExceptionCode::IllegalDataAddress);
                     }
@@ -296,7 +344,7 @@ impl tokio_modbus::server::Service for HoldingService {
                 let holding_len = self.holding_len;
                 let tx = self.tx.clone();
 
-                Box::pin(async move {
+                boxed(async move {
                     if addr >= holding_len {
                         return Err(ExceptionCode::IllegalDataAddress);
                     }
@@ -328,7 +376,7 @@ impl tokio_modbus::server::Service for HoldingService {
                 let values_vec = values.to_vec();
                 let qty = values_vec.len() as u16;
 
-                Box::pin(async move {
+                boxed(async move {
                     if addr_usize + values_vec.len() > holding_len {
                         return Err(ExceptionCode::IllegalDataAddress);
                     }
@@ -353,7 +401,7 @@ impl tokio_modbus::server::Service for HoldingService {
                 })
             }
 
-            _ => Box::pin(async { Err(ExceptionCode::IllegalFunction) }),
+            _ => boxed(async { Err(ExceptionCode::IllegalFunction) }),
         }
     }
 }
@@ -499,6 +547,7 @@ struct Ui {
     scroll: usize,
     edit_mode: bool,
     edit_is_label: bool,
+    edit_is_profile: bool,
     edit_buf: String,
     status_msg: Option<String>,
 }
@@ -511,6 +560,7 @@ impl Ui {
             scroll: 0,
             edit_mode: false,
             edit_is_label: false,
+            edit_is_profile: false,
             edit_buf: String::new(),
             status_msg: None,
         }
@@ -591,7 +641,7 @@ async fn run_ui(
                                 .map(|(i, v)| {
                                     let mut val = format_u16(*v, ui.base);
                                     let mut label = s.holding_label[i].clone();
-                                    if ui.edit_mode && i == ui.selected {
+                                    if ui.edit_mode && i == ui.selected && !ui.edit_is_profile {
                                         if ui.edit_is_label {
                                             label = ui.edit_buf.clone();
                                         } else {
@@ -621,7 +671,9 @@ async fn run_ui(
                             } else if let Some(m) = ui.status_msg.as_deref() {
                                 m.to_string()
                             } else if ui.edit_mode {
-                                if ui.edit_is_label {
+                                if ui.edit_is_profile {
+                                    format!("保存当前配置 Enter=提交 Esc=取消 | 预设名: {}", ui.edit_buf)
+                                } else if ui.edit_is_label {
                                     format!("修改备注 Enter=提交 Esc=取消 | 输入: {}", ui.edit_buf)
                                 } else {
                                     format!("修改格式 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
@@ -642,9 +694,9 @@ async fn run_ui(
                             );
 
                             let help = if ui.edit_mode {
-                                "输入数据; Backspace 退出 | m 100个寄存器编辑(仅数值)"
+                                format!("输入数据 {:?}; Backspace 退出 | m 100个寄存器编辑(仅数值)",ui.edit_buf)
                             } else {
-                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注标记 | d/h/b 格式 | q 退出"
+                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注 | o 保存配置 | d/h/b 格式 | q 退出".to_string()
                             };
 
                             f.render_widget(
@@ -688,12 +740,42 @@ async fn run_ui(
                                     match code {
                                         KeyCode::Esc => {
                                             ui.edit_mode = false;
+                                            ui.edit_is_profile = false;
                                             ui.edit_buf.clear();
                                             ui.status_msg = None;
                                         }
 
         KeyCode::Enter => {
-            if ui.edit_is_label {
+            if ui.edit_is_profile {
+                let profile_name = ui.edit_buf.clone();
+                let config_str = std::fs::read_to_string(&args.config).unwrap_or_default();
+                let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+
+                // 提取现有的非空备注到用于保存的配置槽位中
+                let mut profile_args = args.clone();
+                profile_args.labels.clear();
+                {
+                    let s = state.read().await;
+                    for (i, label) in s.holding_label.iter().enumerate() {
+                        if !label.is_empty() {
+                            profile_args.labels.insert(i.to_string(), label.clone());
+                        }
+                    }
+                }
+
+                configs.insert(profile_name.clone(), profile_args);
+                match toml::to_string_pretty(&configs) {
+                    Ok(s) => match std::fs::write(&args.config, s) {
+                        Ok(_) => set_status(&mut ui, format!("成功保存预设 [{}] 到 {}", profile_name, args.config)),
+                        Err(e) => set_status(&mut ui, format!("写入文件失败: {}", e)),
+                    },
+                    Err(e) => set_status(&mut ui, format!("配置序列化失败: {}", e)),
+                }
+
+                ui.edit_mode = false;
+                ui.edit_is_profile = false;
+                ui.edit_buf.clear();
+            } else if ui.edit_is_label {
                 let mut s = state.write().await;
                 s.holding_label[ui.selected] = ui.edit_buf.clone();
                 ui.edit_mode = false;
@@ -724,7 +806,7 @@ async fn run_ui(
                                         }
 
                                         KeyCode::Char('m') => {
-                                            if ui.edit_is_label {
+                                            if ui.edit_is_label || ui.edit_is_profile {
                                                 ui.edit_buf.push('m');
                                             } else {
                                                 match parse_u16_str(&ui.edit_buf, ui.base) {
@@ -762,7 +844,7 @@ async fn run_ui(
                                         }
 
                                         KeyCode::Char(ch) => {
-                                            if ui.edit_is_label {
+                                            if ui.edit_is_label || ui.edit_is_profile {
                                                 ui.edit_buf.push(ch);
                                                 ui.status_msg = None;
                                             } else if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
@@ -814,15 +896,24 @@ async fn run_ui(
                                             if ui.selected < s.holding.len() {
                                                 ui.edit_mode = true;
                                                 ui.edit_is_label = true;
+                                                ui.edit_is_profile = false;
                                                 ui.edit_buf = s.holding_label[ui.selected].clone();
                                                 ui.status_msg = None;
                                             }
+                                        }
+                                        KeyCode::Char('o') => {
+                                            ui.edit_mode = true;
+                                            ui.edit_is_profile = true;
+                                            ui.edit_is_label = false;
+                                            ui.edit_buf.clear();
+                                            ui.status_msg = None;
                                         }
                                         KeyCode::Char('e') => {
                                             let s = state.read().await;
                                             if ui.selected < s.holding.len() {
                                                 ui.edit_mode = true;
                                                 ui.edit_is_label = false;
+                                                ui.edit_is_profile = false;
                                                 ui.edit_buf = format_u16(s.holding[ui.selected], ui.base);
                                                 ui.status_msg = None;
                                             }
@@ -850,11 +941,40 @@ async fn run_ui(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    if let Some(profile_name) = &args.profile {
+        let config_str = std::fs::read_to_string(&args.config)
+            .unwrap_or_else(|_| format!("无法读取配置文件: {}", args.config));
+
+        if let Ok(configs) = toml::from_str::<HashMap<String, Args>>(&config_str) {
+            if let Some(profile_args) = configs.get(profile_name) {
+                args = profile_args.clone();
+            } else {
+                eprintln!(
+                    "警告: 配置文件 {} 中找不到预设槽位 '{}'",
+                    args.config, profile_name
+                );
+            }
+        } else {
+            eprintln!("警告: 配置文件 {} 解析失败", args.config);
+        }
+    }
 
     let main_mode = parse_mainmode(&args.main_mode)?;
+
     let holding = vec![0u16; args.holding_count];
-    let holding_label = vec!["".to_string(); args.holding_count];
+    
+    // 初始化时从配置文件映射标签信息回界面状态
+    let mut holding_label = vec!["".to_string(); args.holding_count];
+    for (k, v) in &args.labels {
+        if let Ok(idx) = k.parse::<usize>() {
+            if idx < args.holding_count {
+                holding_label[idx] = v.clone();
+            }
+        }
+    }
+
     let state = Arc::new(RwLock::new(AppState {
         holding,
         holding_label,
