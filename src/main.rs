@@ -65,7 +65,7 @@ struct Args {
     unit: u8,
 
     /// 保持型寄存器列表长度 客户端为轮询的范围 服务端为暴露的范围（0~value)
-    #[arg(short = 'c', long, default_value_t = 512)]
+    #[arg(short = 'c', long, default_value_t = 1024)]
     holding_count: usize,
 
     /// 客户端模式 轮询间隔(ms)
@@ -410,32 +410,6 @@ impl tokio_modbus::server::Service for HoldingService {
     }
 }
 
-//各模式分支函数
-async fn run_modbus_tcp_server(
-    args: Args,
-    _state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
-) -> Result<()> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", args.tcp_port))
-        .await
-        .context("打开 Modbus TCP 端口")?;
-
-    let service = HoldingService {
-        tx,
-        holding_len: args.holding_count,
-        unit: args.unit,
-    };
-
-    loop {
-        let (stream, socket_addr) = listener.accept().await?;
-        let s = service.clone();
-        tokio::spawn(async move {
-            let new_service = |_socket_addr| Ok(Some(s.clone()));
-            let _ = accept_tcp_connection(stream, socket_addr, new_service);
-        });
-    }
-}
-
 async fn run_modbus_tcp_client(
     args: Args,
     state: Arc<RwLock<AppState>>,
@@ -457,25 +431,76 @@ async fn run_modbus_tcp_client(
 
     loop {
         interval.tick().await;
-        match ctx
-            .read_holding_registers(0, args.holding_count as u16)
-            .await
-        {
-            Ok(rsp) => match rsp {
-                Ok(values) => {
-                    let mut s = state.write().await;
-                    let len = values.len().min(s.holding.len());
-                    s.holding[..len].copy_from_slice(&values[..len]);
-                }
+
+        let once_read_cnt: usize = 120;
+        let mut offset: usize = 0;
+
+        while offset < args.holding_count {
+            let cnt = (args.holding_count - offset).min(once_read_cnt);
+            let addr = offset as u16;
+
+            match ctx.read_holding_registers(addr, cnt as u16).await {
+                Ok(rsp) => match rsp {
+                    Ok(values) => {
+                        let mut s = state.write().await;
+                        let end = (offset + values.len()).min(s.holding.len());
+                        let write_len = end.saturating_sub(offset);
+                        if write_len > 0 {
+                            s.holding[offset..offset + write_len]
+                                .copy_from_slice(&values[..write_len]);
+                        }
+                        offset += cnt;
+                    }
+                    Err(e) => {
+                        return Err(anyhow!("Modbus 异常响应: {e:?}"));
+                    }
+                },
                 Err(e) => {
-                    return Err(anyhow!("Modbus 异常响应: {e:?}"));
+                    return Err(anyhow!("TCP 客户端读取失败: {e}"));
                 }
-            },
-            Err(e) => {
-                return Err(anyhow!("TCP 客户端读取失败: {e}"));
             }
         }
     }
+}
+
+//各模式分支函数
+async fn run_modbus_tcp_server(
+    args: Args,
+    _state: Arc<RwLock<AppState>>,
+    tx: mpsc::UnboundedSender<RegCmd>,
+) -> Result<()> {
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", args.tcp_port))
+        .await
+        .context("打开 Modbus TCP 端口")?;
+
+    let service = HoldingService {
+        tx,
+        holding_len: args.holding_count,
+        unit: args.unit,
+    };
+
+    let server = server::tcp::Server::new(listener);
+
+    let abort_signal = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    let on_connected = move |stream, socket_addr| {
+        let s = service.clone();
+        async move { accept_tcp_connection(stream, socket_addr, move |_sa| Ok(Some(s.clone()))) }
+    };
+
+    let on_process_error = |e: std::io::Error| {
+        eprintln!("Modbus TCP connection processing error: {e}");
+    };
+
+    server
+        .serve_until(&on_connected, on_process_error, abort_signal)
+        .await
+        .map_err(|e: std::io::Error| anyhow!(e))
+        .context("Modbus TCP server 运行失败")?;
+
+    Ok(())
 }
 
 async fn run_modbus_rtu_client(
