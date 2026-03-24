@@ -17,7 +17,6 @@ use std::{io, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, oneshot, RwLock},
-    time::timeout,
 };
 use tokio_modbus::{
     prelude::*,
@@ -95,6 +94,7 @@ struct Args {
 #[derive(Default)]
 struct AppState {
     holding: Vec<u16>,
+    holding_label: Vec<String>,
 }
 
 enum MainMode {
@@ -364,62 +364,9 @@ async fn run_modbus_tcp_server(
     _state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
-    //创建新连接，不需要挂锁
-    // let port = tokio::time::timeout(
-    //     Duration::from_millis(self.timeout_ms),
-    //     TcpStream::connect(format!("{}:{}", unit.ip, unit.port)),
-    // )
-    // .await
-    // .context("连接Modbus设备超时")?
-    // .context("连接Modbus设备失败")?;
-
-    // port.set_nodelay(true).context("无法设置 TCP_NODELAY")?;
-    // let listener = TcpListener::bind(format!("127.0.0.1:{}", args.tcp_port))
-    //     .await
-    //     .context("打开 Modbus TCP 端口")?;
-
-    // let service = HoldingService {
-    //     tx,
-    //     holding_len: args.holding_count,
-    //     unit: args.unit,
-    // };
-
-    // let new_service = |_socket_addr| Ok(Some());
-    // let on_connected = |stream, socket_addr| async move {
-    //     accept_tcp_connection(stream, socket_addr, new_service)
-    // };
-    // let on_process_error = |err| {
-    //     // eprintln!("{err}");
-    // };
-
-    // let server = server::tcp::Server::new(listener);
-    // server
-    // .serve(&on_connected, on_process_error)
-    // .await
-    // .map_err(|e| anyhow!("{e}"))?;
-    // server.serve(&on_connected, on_process_error).await?;
-    Ok(())
-}
-async fn run_modbus_tcp_client(
-    args: Args,
-    _state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
-) -> Result<()> {
-    let parity = parse_parity(&args.parity)?;
-    let flow = parse_flow(&args.flow)?;
-    let databits = parse_databits(args.databits)?;
-    let stopbits = parse_stopbits(args.stopbits)?;
-
-    let builder = tokio_serial::new(args.device.clone(), args.baudrate)
-        .parity(parity)
-        .flow_control(flow)
-        .data_bits(databits)
-        .stop_bits(stopbits);
-
-    // async open (correct for tokio-modbus rtu server)
-    let port = builder
-        .open_native_async()
-        .context("open serial 正在打开串口")?;
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", args.tcp_port))
+        .await
+        .context("打开 Modbus TCP 端口")?;
 
     let service = HoldingService {
         tx,
@@ -427,18 +374,53 @@ async fn run_modbus_tcp_client(
         unit: args.unit,
     };
 
-    // let server = Server::new(port);
-    // server
-    //     .serve_forever(service)
-    //     .await
-    //     .map_err(|e| anyhow!("{e}"))?;
-    Ok(())
+    loop {
+        let (stream, socket_addr) = listener.accept().await?;
+        let s = service.clone();
+        tokio::spawn(async move {
+            let new_service = |_socket_addr| Ok(Some(s.clone()));
+            let _ = accept_tcp_connection(stream, socket_addr, new_service);
+        });
+    }
+}
+
+async fn run_modbus_tcp_client(
+    args: Args,
+    state: Arc<RwLock<AppState>>,
+    _tx: mpsc::UnboundedSender<RegCmd>,
+) -> Result<()> {
+    let host = if args.device == "dev/null" {
+        "127.0.0.1".to_string()
+    } else {
+        args.device.clone()
+    };
+    let addr = format!("{}:{}", host, args.tcp_port);
+    let stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .context("连接 TCP 失败")?;
+    let mut ctx = tokio_modbus::client::tcp::attach_slave(stream, Slave(args.unit));
+
+    let tick = Duration::from_millis(args.client_tick_ms);
+    let mut interval = tokio::time::interval(tick);
+
+    loop {
+        interval.tick().await;
+        if let Ok(rsp) = ctx
+            .read_holding_registers(0, args.holding_count as u16)
+            .await
+            .unwrap()
+        {
+            let mut s = state.write().await;
+            let len = rsp.len().min(s.holding.len());
+            s.holding[..len].copy_from_slice(&rsp[..len]);
+        }
+    }
 }
 
 async fn run_modbus_rtu_client(
     args: Args,
     state: Arc<RwLock<AppState>>,
-    tx: mpsc::UnboundedSender<RegCmd>,
+    _tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
     let parity = parse_parity(&args.parity)?;
     let flow = parse_flow(&args.flow)?;
@@ -452,14 +434,27 @@ async fn run_modbus_rtu_client(
         .data_bits(databits)
         .stop_bits(stopbits);
 
-    // async open (correct for tokio-modbus rtu server)
     let port = builder
         .open_native_async()
         .context("open serial 正在打开串口")?;
-    let mut ctx = rtu::attach_slave(port, slave);
 
-    loop {}
-    Ok(())
+    let mut ctx = tokio_modbus::client::rtu::attach_slave(port, slave);
+
+    let tick = Duration::from_millis(args.client_tick_ms);
+    let mut interval = tokio::time::interval(tick);
+
+    loop {
+        interval.tick().await;
+        if let Ok(rsp) = ctx
+            .read_holding_registers(0, args.holding_count as u16)
+            .await
+            .unwrap()
+        {
+            let mut s = state.write().await;
+            let len = rsp.len().min(s.holding.len());
+            s.holding[..len].copy_from_slice(&rsp[..len]);
+        }
+    }
 }
 
 async fn run_modbus_rtu_server(
@@ -503,6 +498,7 @@ struct Ui {
     selected: usize,
     scroll: usize,
     edit_mode: bool,
+    edit_is_label: bool,
     edit_buf: String,
     status_msg: Option<String>,
 }
@@ -514,6 +510,7 @@ impl Ui {
             selected: 0,
             scroll: 0,
             edit_mode: false,
+            edit_is_label: false,
             edit_buf: String::new(),
             status_msg: None,
         }
@@ -582,6 +579,7 @@ async fn run_ui(
 
                             let header = Row::new(vec![
                                 Cell::from("寄存器地址"),
+                                Cell::from("备注标记"),
                                 Cell::from("值"),
                             ]).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
@@ -592,11 +590,17 @@ async fn run_ui(
                                 .take(visible_rows.max(1))
                                 .map(|(i, v)| {
                                     let mut val = format_u16(*v, ui.base);
+                                    let mut label = s.holding_label[i].clone();
                                     if ui.edit_mode && i == ui.selected {
-                                        val = ui.edit_buf.clone();
+                                        if ui.edit_is_label {
+                                            label = ui.edit_buf.clone();
+                                        } else {
+                                            val = ui.edit_buf.clone();
+                                        }
                                     }
                                     Row::new(vec![
                                         Cell::from(format!("{i}")),
+                                        Cell::from(label),
                                         Cell::from(val),
                                     ])
                                 });
@@ -604,7 +608,7 @@ async fn run_ui(
                             let mut table_state = TableState::default();
                             table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
 
-                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Min(10)])
+                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Length(18), Constraint::Min(10)])
                                 .header(header)
                                 .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
                                 .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
@@ -617,7 +621,11 @@ async fn run_ui(
                             } else if let Some(m) = ui.status_msg.as_deref() {
                                 m.to_string()
                             } else if ui.edit_mode {
-                                format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                                if ui.edit_is_label {
+                                    format!("修改备注 Enter=提交 Esc=取消 | 输入: {}", ui.edit_buf)
+                                } else {
+                                    format!("修改格式 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                                }
                             } else {
                                 format!("格式={:?}", ui.base)
                             };
@@ -634,9 +642,9 @@ async fn run_ui(
                             );
 
                             let help = if ui.edit_mode {
-                                "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入 | m 100个寄存器编辑"
+                                "输入数据; Backspace 退出 | m 100个寄存器编辑(仅数值)"
                             } else {
-                                "jk ↑↓ 移动 | e 编辑 | d/h/b 格式 | q 退出"
+                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注标记 | d/h/b 格式 | q 退出"
                             };
 
                             f.render_widget(
@@ -685,21 +693,27 @@ async fn run_ui(
                                         }
 
         KeyCode::Enter => {
-            match parse_u16_str(&ui.edit_buf, ui.base) {
-                Ok(new_val) => {
-                    let (resp_tx,_) = oneshot::channel();
-                    let _ = tx.send(RegCmd::WriteSingleHolding {
-                        addr: ui.selected,
-                        value: new_val,
-                        resp: resp_tx,
-                    });
+            if ui.edit_is_label {
+                let mut s = state.write().await;
+                s.holding_label[ui.selected] = ui.edit_buf.clone();
+                ui.edit_mode = false;
+                ui.edit_buf.clear();
+            } else {
+                match parse_u16_str(&ui.edit_buf, ui.base) {
+                    Ok(new_val) => {
+                        let (resp_tx,_) = oneshot::channel();
+                        let _ = tx.send(RegCmd::WriteSingleHolding {
+                            addr: ui.selected,
+                            value: new_val,
+                            resp: resp_tx,
+                        });
 
-                    ui.edit_mode = false;
-                    ui.edit_buf.clear();
-                    ui.status_msg = Some("写入中".to_string());
-                }
-                Err(e) => {
-                    set_status(&mut ui, format!("Invalid value 非法输入值: {e}"));
+                        ui.edit_mode = false;
+                        ui.edit_buf.clear();
+                    }
+                    Err(e) => {
+                        set_status(&mut ui, format!("Invalid value 非法输入值: {e}"));
+                    }
                 }
             }
         }
@@ -709,40 +723,49 @@ async fn run_ui(
                                             ui.status_msg = None;
                                         }
 
-                                        KeyCode::Char('m') => match parse_u16_str(&ui.edit_buf, ui.base) {
-                                            Ok(new_val) => {
-                                                let (resp_tx, resp_rx) = oneshot::channel();
-                                                let values = vec![new_val; 100];
-                                                let _ = tx.send(RegCmd::WriteMultipleHolding {
-                                                    addr: ui.selected,
-                                                    values,
-                                                    resp: resp_tx,
-                                                });
+                                        KeyCode::Char('m') => {
+                                            if ui.edit_is_label {
+                                                ui.edit_buf.push('m');
+                                            } else {
+                                                match parse_u16_str(&ui.edit_buf, ui.base) {
+                                                    Ok(new_val) => {
+                                                        let (resp_tx, resp_rx) = oneshot::channel();
+                                                        let values = vec![new_val; 100];
+                                                        let _ = tx.send(RegCmd::WriteMultipleHolding {
+                                                            addr: ui.selected,
+                                                            values,
+                                                            resp: resp_tx,
+                                                        });
 
-                                                match resp_rx.await {
-                                                    Ok(Ok(())) => {
-                                                        ui.edit_mode = false;
-                                                        ui.edit_buf.clear();
-                                                        ui.status_msg = None;
+                                                        match resp_rx.await {
+                                                            Ok(Ok(())) => {
+                                                                ui.edit_mode = false;
+                                                                ui.edit_buf.clear();
+                                                                ui.status_msg = None;
+                                                            }
+                                                            Ok(Err(ex)) => set_status(
+                                                                &mut ui,
+                                                                format!("Modbus exception 异常: {ex:?}"),
+                                                            ),
+                                                            Err(_) => set_status(
+                                                                &mut ui,
+                                                                "Worker disconnected 运行中断",
+                                                            ),
+                                                        }
                                                     }
-                                                    Ok(Err(ex)) => set_status(
+                                                    Err(e) => set_status(
                                                         &mut ui,
-                                                        format!("Modbus exception 异常: {ex:?}"),
-                                                    ),
-                                                    Err(_) => set_status(
-                                                        &mut ui,
-                                                        "Worker disconnected 运行中断",
+                                                        format!("Invalid value: {e} 非法输入值"),
                                                     ),
                                                 }
                                             }
-                                            Err(e) => set_status(
-                                                &mut ui,
-                                                format!("Invalid value: {e} 非法输入值"),
-                                            ),
-                                        },
+                                        }
 
                                         KeyCode::Char(ch) => {
-                                            if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
+                                            if ui.edit_is_label {
+                                                ui.edit_buf.push(ch);
+                                                ui.status_msg = None;
+                                            } else if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
                                                 ui.edit_buf.push(ch);
                                                 ui.status_msg = None;
                                             } else {
@@ -780,14 +803,26 @@ async fn run_ui(
                                             ui.base = DisplayBase::Hex;
                                             ui.status_msg = None;
                                         }
+
                                         KeyCode::Char('b') => {
                                             ui.base = DisplayBase::Bin;
                                             ui.status_msg = None;
+                                        }
+
+                                        KeyCode::Char('t') => {
+                                            let s = state.read().await;
+                                            if ui.selected < s.holding.len() {
+                                                ui.edit_mode = true;
+                                                ui.edit_is_label = true;
+                                                ui.edit_buf = s.holding_label[ui.selected].clone();
+                                                ui.status_msg = None;
+                                            }
                                         }
                                         KeyCode::Char('e') => {
                                             let s = state.read().await;
                                             if ui.selected < s.holding.len() {
                                                 ui.edit_mode = true;
+                                                ui.edit_is_label = false;
                                                 ui.edit_buf = format_u16(s.holding[ui.selected], ui.base);
                                                 ui.status_msg = None;
                                             }
@@ -819,7 +854,11 @@ async fn main() -> Result<()> {
 
     let main_mode = parse_mainmode(&args.main_mode)?;
     let holding = vec![0u16; args.holding_count];
-    let state = Arc::new(RwLock::new(AppState { holding }));
+    let holding_label = vec!["".to_string(); args.holding_count];
+    let state = Arc::new(RwLock::new(AppState {
+        holding,
+        holding_label,
+    }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
