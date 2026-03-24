@@ -1,3 +1,21 @@
+[1]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"
+
+[1.labels]
+0 = "???"
+
 ["hahaha 你是谁啊"]
 main_mode = "tcp-client"
 tcp_port = 502
@@ -13,6 +31,25 @@ stopbits = 1
 flow = "none"
 base = "dec"
 
+["hahaha 你是谁啊".labels]
+
+[tcp-master]
+main_mode = "ts"
+tcp_port = 10688
+unit = 1
+holding_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"
+
+[tcp-master.labels]
+
 [hello]
 main_mode = "tcp-client"
 tcp_port = 502
@@ -27,3 +64,5 @@ parity = "n"
 stopbits = 1
 flow = "none"
 base = "dec"
+
+[hello.labels]

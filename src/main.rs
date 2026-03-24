@@ -214,6 +214,10 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     match base {
         DisplayBase::Dec => t.parse::<u16>().context("解析十进制字符"),
         DisplayBase::Hex => u16::from_str_radix(t, 16).context("解析十六进制字符"),
+        DisplayBase::Bin => u16::from_str_radix(t, 2).context("解析二进制字符"),
+    }
+}
+enum RegCmd {
     ReadHolding {
         addr: usize,
         cnt: usize,
@@ -453,14 +457,23 @@ async fn run_modbus_tcp_client(
 
     loop {
         interval.tick().await;
-        if let Ok(rsp) = ctx
+        match ctx
             .read_holding_registers(0, args.holding_count as u16)
             .await
-            .unwrap()
         {
-            let mut s = state.write().await;
-            let len = rsp.len().min(s.holding.len());
-            s.holding[..len].copy_from_slice(&rsp[..len]);
+            Ok(rsp) => match rsp {
+                Ok(values) => {
+                    let mut s = state.write().await;
+                    let len = values.len().min(s.holding.len());
+                    s.holding[..len].copy_from_slice(&values[..len]);
+                }
+                Err(e) => {
+                    return Err(anyhow!("Modbus 异常响应: {e:?}"));
+                }
+            },
+            Err(e) => {
+                return Err(anyhow!("TCP 客户端读取失败: {e}"));
+            }
         }
     }
 }
@@ -493,14 +506,23 @@ async fn run_modbus_rtu_client(
 
     loop {
         interval.tick().await;
-        if let Ok(rsp) = ctx
+        match ctx
             .read_holding_registers(0, args.holding_count as u16)
             .await
-            .unwrap()
         {
-            let mut s = state.write().await;
-            let len = rsp.len().min(s.holding.len());
-            s.holding[..len].copy_from_slice(&rsp[..len]);
+            Ok(rsp) => match rsp {
+                Ok(values) => {
+                    let mut s = state.write().await;
+                    let len = values.len().min(s.holding.len());
+                    s.holding[..len].copy_from_slice(&values[..len]);
+                }
+                Err(e) => {
+                    return Err(anyhow!("Modbus 异常响应: {e:?}"));
+                }
+            },
+            Err(e) => {
+                return Err(anyhow!("RTU 客户端读取失败: {e}"));
+            }
         }
     }
 }
@@ -667,7 +689,7 @@ async fn run_ui(
                             f.render_stateful_widget(t, chunks[0], &mut table_state);
 
                             let status_line = if let Some(m) = server_err.as_deref() {
-                                format!("Modbus/RTU 错误: {m}")
+                                format!("Modbus 错误: {m}")
                             } else if let Some(m) = ui.status_msg.as_deref() {
                                 m.to_string()
                             } else if ui.edit_mode {
@@ -945,35 +967,34 @@ async fn main() -> Result<()> {
 
     if let Some(profile_name) = &args.profile {
         let config_str = std::fs::read_to_string(&args.config)
-            .unwrap_or_else(|_| format!("无法读取配置文件: {}", args.config));
+            .with_context(|| format!("无法读取配置文件: {}", args.config))?;
 
-        if let Ok(configs) = toml::from_str::<HashMap<String, Args>>(&config_str) {
-            if let Some(profile_args) = configs.get(profile_name) {
-                args = profile_args.clone();
-            } else {
-                eprintln!(
-                    "警告: 配置文件 {} 中找不到预设槽位 '{}'",
-                    args.config, profile_name
-                );
-            }
+        let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
+            .with_context(|| format!("配置文件 {} 解析失败", args.config))?;
+
+        if let Some(profile_args) = configs.get(profile_name) {
+            args = profile_args.clone();
         } else {
-            eprintln!("警告: 配置文件 {} 解析失败", args.config);
+            anyhow::bail!(
+                "警告: 配置文件 {} 中找不到预设槽位 '{}'",
+                args.config,
+                profile_name
+            );
         }
     }
 
     let main_mode = parse_mainmode(&args.main_mode)?;
 
     let holding = vec![0u16; args.holding_count];
-    
-    // 初始化时从配置文件映射标签信息回界面状态
+
     let mut holding_label = vec!["".to_string(); args.holding_count];
-    for (k, v) in &args.labels {
+    args.labels.iter().for_each(|(k, v)| {
         if let Ok(idx) = k.parse::<usize>() {
-            if idx < args.holding_count {
+            if idx < holding_label.len() {
                 holding_label[idx] = v.clone();
             }
         }
-    }
+    });
 
     let state = Arc::new(RwLock::new(AppState {
         holding,
@@ -982,7 +1003,7 @@ async fn main() -> Result<()> {
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
-    // worker channel
+    //生产者-消费者模式的寄存器访问通道，Modbus 服务端/客户端任务通过发送命令来访问寄存器数据，UI 任务通过共享状态展示数据
     let (tx, rx) = mpsc::unbounded_channel::<RegCmd>();
     tokio::spawn(reg_worker_loop(Arc::clone(&state), args.holding_count, rx));
 
@@ -991,34 +1012,18 @@ async fn main() -> Result<()> {
     let inner_tx = tx.clone();
     let inner_status_bg = Arc::clone(&server_status);
     let inner_task = tokio::spawn(async move {
-        match main_mode {
-            MainMode::RTUServer => {
-                if let Err(e) = run_modbus_rtu_server(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
-            MainMode::RTUClient => {
-                if let Err(e) = run_modbus_rtu_client(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
+        let r: Result<()> = match main_mode {
+            MainMode::RTUServer => run_modbus_rtu_server(inner_args, inner_state, inner_tx).await,
+            MainMode::RTUClient => run_modbus_rtu_client(inner_args, inner_state, inner_tx).await,
+            MainMode::TcpServer => run_modbus_tcp_server(inner_args, inner_state, inner_tx).await,
+            MainMode::TcpClient => run_modbus_tcp_client(inner_args, inner_state, inner_tx).await,
+        };
 
-            MainMode::TcpServer => {
-                if let Err(e) = run_modbus_tcp_server(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
-            MainMode::TcpClient => {
-                if let Err(e) = run_modbus_tcp_client(inner_args, inner_state, inner_tx).await {
-                    *inner_status_bg.write().await = Some(format!("{e:#}"));
-                    return Err(e);
-                }
-            }
+        if let Err(e) = &r {
+            *inner_status_bg.write().await = Some(format!("{e:#}"));
         }
-        Ok(())
+
+        r
     });
 
     let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
