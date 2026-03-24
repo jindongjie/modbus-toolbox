@@ -561,229 +561,249 @@ async fn run_ui(
 
     let res: Result<()> = loop {
         tokio::select! {
-            _ = interval.tick() => {
-                let s = state.read().await;
-                let server_err = server_status.read().await.clone();
-                terminal.draw(|f| {
-                    let chunks = Layout::vertical([
-                        Constraint::Min(5),
-                        Constraint::Length(3),
-                        Constraint::Length(3),
-                    ]).split(f.area());
+                    _ = interval.tick() => {
+                        let s = state.read().await;
+                        let server_err = server_status.read().await.clone();
+                        terminal.draw(|f| {
+                            let chunks = Layout::vertical([
+                                Constraint::Min(5),
+                                Constraint::Length(3),
+                                Constraint::Length(3),
+                            ]).split(f.area());
 
-                    let visible_rows = chunks[0].height.saturating_sub(3) as usize;
-                    if ui.selected >= s.holding.len() {
-                        ui.selected = s.holding.len().saturating_sub(1);
-                    }
-                    if ui.selected < ui.scroll { ui.scroll = ui.selected; }
-                    if visible_rows > 0 && ui.selected >= ui.scroll + visible_rows {
-                        ui.scroll = ui.selected + 1 - visible_rows;
-                    }
-
-                    let header = Row::new(vec![
-                        Cell::from("寄存器地址"),
-                        Cell::from("值"),
-                    ]).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-
-                    let rows = s.holding
-                        .iter()
-                        .enumerate()
-                        .skip(ui.scroll)
-                        .take(visible_rows.max(1))
-                        .map(|(i, v)| {
-                            let mut val = format_u16(*v, ui.base);
-                            if ui.edit_mode && i == ui.selected {
-                                val = ui.edit_buf.clone();
+                            let visible_rows = chunks[0].height.saturating_sub(3) as usize;
+                            if ui.selected >= s.holding.len() {
+                                ui.selected = s.holding.len().saturating_sub(1);
                             }
-                            Row::new(vec![
-                                Cell::from(format!("{i}")),
-                                Cell::from(val),
-                            ])
-                        });
+                            if ui.selected < ui.scroll { ui.scroll = ui.selected; }
+                            if visible_rows > 0 && ui.selected >= ui.scroll + visible_rows {
+                                ui.scroll = ui.selected + 1 - visible_rows;
+                            }
 
-                    let mut table_state = TableState::default();
-                    table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
+                            let header = Row::new(vec![
+                                Cell::from("寄存器地址"),
+                                Cell::from("值"),
+                            ]).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
-                    let t = Table::new(rows, [Constraint::Length(18), Constraint::Min(10)])
-                        .header(header)
-                        .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
-                        .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-                        .highlight_symbol(">> ");
+                            let rows = s.holding
+                                .iter()
+                                .enumerate()
+                                .skip(ui.scroll)
+                                .take(visible_rows.max(1))
+                                .map(|(i, v)| {
+                                    let mut val = format_u16(*v, ui.base);
+                                    if ui.edit_mode && i == ui.selected {
+                                        val = ui.edit_buf.clone();
+                                    }
+                                    Row::new(vec![
+                                        Cell::from(format!("{i}")),
+                                        Cell::from(val),
+                                    ])
+                                });
 
+                            let mut table_state = TableState::default();
+                            table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
 
-                    f.render_stateful_widget(t, chunks[0], &mut table_state);
+                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Min(10)])
+                                .header(header)
+                                .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
+                                .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+                                .highlight_symbol(">> ");
 
-                    let status_line = if let Some(m) = server_err.as_deref() {
-                        format!("Modbus/RTU 错误: {m}")
-                    } else if let Some(m) = ui.status_msg.as_deref() {
-                        m.to_string()
-                    } else if ui.edit_mode {
-                        format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
-                    } else {
-                        format!("格式={:?}", ui.base)
-                    };
+                            f.render_stateful_widget(t, chunks[0], &mut table_state);
 
-                    f.render_widget(
-                        ratatui::widgets::Paragraph::new(status_line)
-                            .block(Block::default().borders(Borders::ALL).title("状态"))
-                            .style(if server_err.is_some() {
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                            let status_line = if let Some(m) = server_err.as_deref() {
+                                format!("Modbus/RTU 错误: {m}")
+                            } else if let Some(m) = ui.status_msg.as_deref() {
+                                m.to_string()
+                            } else if ui.edit_mode {
+                                format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
                             } else {
-                                Style::default()
-                            }),
-                        chunks[1],
-                    );
+                                format!("格式={:?}", ui.base)
+                            };
 
-                    let help = if ui.edit_mode {
-                        "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入 | m 100个寄存器编辑"
-                    } else {
-                        "jk ↑↓ 移动 | e 编辑 | d/h/b 格式 | q 退出"
-                    };
-
-                    f.render_widget(
-                        ratatui::widgets::Paragraph::new(help)
-                            .block(Block::default().borders(Borders::ALL).title("帮助")),
-                        chunks[2],
-                    );
-                })?;
-            }
-            maybe_ev = events.next() => {
-                let ev = match maybe_ev {
-                    Some(Ok(ev)) => ev,
-                    Some(Err(e)) => break Err(anyhow!(e).context("read event")),
-                    None => continue,
-                };
-
-                match ev {
-                    Event::Key(KeyEvent { code, modifiers,kind, .. }) => {
-                        if kind != crossterm::event::KeyEventKind::Press {
-                            continue;
-                        }
-                        if !ui.edit_mode && code == KeyCode::Char('c') && !modifiers.contains(KeyModifiers::CONTROL) {
-                            *server_status.write().await = None;
-                            ui.status_msg = None;
-                        }
-
-                        if !ui.edit_mode && (code == KeyCode::Char('q') || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))) {
-                            break Ok(());
-                        }
-
-                        if ui.edit_mode {
-                            match code {
-                                KeyCode::Esc => {
-                                    ui.edit_mode = false;
-                                    ui.edit_buf.clear();
-                                    ui.status_msg = None;
-                                }
-
-                                KeyCode::Enter => {
-                                    match parse_u16_str(&ui.edit_buf, ui.base) {
-                                        Ok(new_val) => {
-                                            let (resp_tx, resp_rx) = oneshot::channel();
-                                            let _ = tx.send(RegCmd::WriteSingleHolding { addr: ui.selected, value: new_val, resp: resp_tx });
-                                            let timeout_check_res = timeout(Duration::from_millis(2000), resp_rx).await;
-                                            match timeout_check_res {
-                                                Ok(Ok(_)) => {
-                                                    ui.edit_mode = false;
-                                                    ui.edit_buf.clear();
-                                                    ui.status_msg = None;
-                                                }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
- 
-                                                    }
-                                                }
-                                            
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
-                                           }}
-                                        }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
-                                    }
-                                }
-                                KeyCode::Backspace => {
-                                    ui.edit_buf.pop();
-                                    ui.status_msg = None;
-                                }
-                                KeyCode::Char('m') => {
-                                    match parse_u16_str(&ui.edit_buf, ui.base) {
-                                        Ok(new_val) => {
-                                            let (resp_tx, resp_rx) = oneshot::channel();
-                                            let values = vec![new_val;100];
-                                            let _ = tx.send(RegCmd::WriteMultipleHolding { addr: (ui.selected), values: (values), resp: (resp_tx) });
-                                            match resp_rx.await {
-                                                Ok(Ok(())) => {
-                                                    ui.edit_mode = false;
-                                                    ui.edit_buf.clear();
-                                                    ui.status_msg = None;
-                                                }
-                                                Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
-                                            }
-                                        }
-                                        Err(e) => set_status(&mut ui, format!("Invalid value: {e} 非法输入值")),
-                                    }
-                                }
-
-                                KeyCode::Char(ch) => {
-                                    if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
-                                        ui.edit_buf.push(ch);
-                                        ui.status_msg = None;
+                            f.render_widget(
+                                ratatui::widgets::Paragraph::new(status_line)
+                                    .block(Block::default().borders(Borders::ALL).title("状态"))
+                                    .style(if server_err.is_some() {
+                                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                                     } else {
-                                        set_status(&mut ui, "Rejected character for current base 无法输入该字符");
-                                    }
-                                }
+                                        Style::default()
+                                    }),
+                                chunks[1],
+                            );
 
+                            let help = if ui.edit_mode {
+                                "输入数据只接受数字; 可通过 0x/0b前缀指定格式; Backspace 退出输入 | m 100个寄存器编辑"
+                            } else {
+                                "jk ↑↓ 移动 | e 编辑 | d/h/b 格式 | q 退出"
+                            };
 
-                                _ => {}
-                            }
-                        } else {
-                            match code {
-                                 KeyCode::PageDown => {
-                                    let len = state.read().await.holding.len();
-                                    ui.selected = len;
-                                }
-                                KeyCode::PageUp => {
-                                    ui.selected = 0;
-                                }
-
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    ui.selected = ui.selected.saturating_sub(1);
-                                }
-                                KeyCode::Char('j') | KeyCode::Down  => {
-                                    let len = state.read().await.holding.len();
-                                    ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
-                                }
-                                KeyCode::Char('d') => {
-                                    ui.base = DisplayBase::Dec;
-                                    ui.status_msg = None;
-                                }
-                                KeyCode::Char('h') => {
-                                    ui.base = DisplayBase::Hex;
-                                    ui.status_msg = None;
-                                }
-                                KeyCode::Char('b') => {
-                                    ui.base = DisplayBase::Bin;
-                                    ui.status_msg = None;
-                                }
-                                KeyCode::Char('e') => {
-                                    let s = state.read().await;
-                                    if ui.selected < s.holding.len() {
-                                        ui.edit_mode = true;
-                                        ui.edit_buf = format_u16(s.holding[ui.selected], ui.base);
-                                        ui.status_msg = None;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                            f.render_widget(
+                                ratatui::widgets::Paragraph::new(help)
+                                    .block(Block::default().borders(Borders::ALL).title("帮助")),
+                                chunks[2],
+                            );
+                        })?;
                     }
-                    _ => {}
+
+                    maybe_ev = events.next() => {
+                        let ev = match maybe_ev {
+                            Some(Ok(ev)) => ev,
+                            Some(Err(e)) => break Err(anyhow!(e).context("read event")),
+                            None => continue,
+                        };
+
+                        match ev {
+                            Event::Key(KeyEvent { code, modifiers, kind, .. }) => {
+                                if kind != crossterm::event::KeyEventKind::Press {
+                                    continue;
+                                }
+
+                                if !ui.edit_mode
+                                    && code == KeyCode::Char('c')
+                                    && !modifiers.contains(KeyModifiers::CONTROL)
+                                {
+                                    *server_status.write().await = None;
+                                    ui.status_msg = None;
+                                }
+
+                                if !ui.edit_mode
+                                    && (code == KeyCode::Char('q')
+                                        || (code == KeyCode::Char('c')
+                                            && modifiers.contains(KeyModifiers::CONTROL)))
+                                {
+                                    break Ok(());
+                                }
+
+                                if ui.edit_mode {
+                                    match code {
+                                        KeyCode::Esc => {
+                                            ui.edit_mode = false;
+                                            ui.edit_buf.clear();
+                                            ui.status_msg = None;
+                                        }
+
+        KeyCode::Enter => {
+            match parse_u16_str(&ui.edit_buf, ui.base) {
+                Ok(new_val) => {
+                    let (resp_tx,_) = oneshot::channel();
+                    let _ = tx.send(RegCmd::WriteSingleHolding {
+                        addr: ui.selected,
+                        value: new_val,
+                        resp: resp_tx,
+                    });
+
+                    ui.edit_mode = false;
+                    ui.edit_buf.clear();
+                    ui.status_msg = Some("写入中".to_string());
+                }
+                Err(e) => {
+                    set_status(&mut ui, format!("Invalid value 非法输入值: {e}"));
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
-                break Ok(());
-            }
-        };
+        }
+
+                                        KeyCode::Backspace => {
+                                            ui.edit_buf.pop();
+                                            ui.status_msg = None;
+                                        }
+
+                                        KeyCode::Char('m') => match parse_u16_str(&ui.edit_buf, ui.base) {
+                                            Ok(new_val) => {
+                                                let (resp_tx, resp_rx) = oneshot::channel();
+                                                let values = vec![new_val; 100];
+                                                let _ = tx.send(RegCmd::WriteMultipleHolding {
+                                                    addr: ui.selected,
+                                                    values,
+                                                    resp: resp_tx,
+                                                });
+
+                                                match resp_rx.await {
+                                                    Ok(Ok(())) => {
+                                                        ui.edit_mode = false;
+                                                        ui.edit_buf.clear();
+                                                        ui.status_msg = None;
+                                                    }
+                                                    Ok(Err(ex)) => set_status(
+                                                        &mut ui,
+                                                        format!("Modbus exception 异常: {ex:?}"),
+                                                    ),
+                                                    Err(_) => set_status(
+                                                        &mut ui,
+                                                        "Worker disconnected 运行中断",
+                                                    ),
+                                                }
+                                            }
+                                            Err(e) => set_status(
+                                                &mut ui,
+                                                format!("Invalid value: {e} 非法输入值"),
+                                            ),
+                                        },
+
+                                        KeyCode::Char(ch) => {
+                                            if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
+                                                ui.edit_buf.push(ch);
+                                                ui.status_msg = None;
+                                            } else {
+                                                set_status(
+                                                    &mut ui,
+                                                    "Rejected character for current base 无法输入该字符",
+                                                );
+                                            }
+                                        }
+
+                                        _ => {}
+                                    }
+                                } else {
+                                    match code {
+                                        KeyCode::PageDown => {
+                                            let len = state.read().await.holding.len();
+                                            ui.selected = len.saturating_sub(1);
+                                        }
+                                        KeyCode::PageUp => {
+                                            ui.selected = 0;
+                                        }
+
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            ui.selected = ui.selected.saturating_sub(1);
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            let len = state.read().await.holding.len();
+                                            ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
+                                        }
+                                        KeyCode::Char('d') => {
+                                            ui.base = DisplayBase::Dec;
+                                            ui.status_msg = None;
+                                        }
+                                        KeyCode::Char('h') => {
+                                            ui.base = DisplayBase::Hex;
+                                            ui.status_msg = None;
+                                        }
+                                        KeyCode::Char('b') => {
+                                            ui.base = DisplayBase::Bin;
+                                            ui.status_msg = None;
+                                        }
+                                        KeyCode::Char('e') => {
+                                            let s = state.read().await;
+                                            if ui.selected < s.holding.len() {
+                                                ui.edit_mode = true;
+                                                ui.edit_buf = format_u16(s.holding[ui.selected], ui.base);
+                                                ui.status_msg = None;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    _ = tokio::signal::ctrl_c() => {
+                        break Ok(());
+                    }
+                }
     };
 
     disable_raw_mode().ok();
@@ -795,7 +815,6 @@ async fn run_ui(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    console_subscriber::init();
     let args = Args::parse();
 
     let main_mode = parse_mainmode(&args.main_mode)?;
