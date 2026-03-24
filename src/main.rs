@@ -697,25 +697,19 @@ async fn run_ui(
                                             let _ = tx.send(RegCmd::WriteSingleHolding { addr: ui.selected, value: new_val, resp: resp_tx });
                                             let timeout_check_res = timeout(Duration::from_millis(2000), resp_rx).await;
                                             match timeout_check_res {
-                                                ok() {
-                                                    match resp_rx {
-                                                Ok(Ok(())) => {
+                                                Ok(Ok(_)) => {
                                                     ui.edit_mode = false;
                                                     ui.edit_buf.clear();
                                                     ui.status_msg = None;
                                                 }
                                                 Ok(Err(ex)) => set_status(&mut ui, format!("Modbus exception 异常: {ex:?}")),
                                                 Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
- 
-                                                    }
-                                                }
-                                            
-                                                Err(_) => set_status(&mut ui, "Worker disconnected 运行中断"),
-                                           }}
+                                            }
+
                                         }
                                         Err(e) => set_status(&mut ui, format!("Invalid value 非法输入值: {e}")),
                                     }
-                                }
+                                    }
                                 KeyCode::Backspace => {
                                     ui.edit_buf.pop();
                                     ui.status_msg = None;
