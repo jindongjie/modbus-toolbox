@@ -52,7 +52,7 @@ base = "dec"
 
 [tcp-client]
 main_mode = "tc"
-tcp_port = 16088
+tcp_port = 10688
 unit = 1
 holding_count = 512
 client_tick_ms = 200

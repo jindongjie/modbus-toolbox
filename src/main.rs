@@ -139,6 +139,7 @@ struct AppState {
     holding_label: Vec<String>,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum MainMode {
     TcpServer,
     TcpClient,
@@ -410,33 +411,65 @@ impl tokio_modbus::server::Service for HoldingService {
     }
 }
 
-async fn run_modbus_tcp_client(
+async fn client_read_write_loop(
+    mut ctx: tokio_modbus::client::Context,
     args: Args,
     state: Arc<RwLock<AppState>>,
-    _tx: mpsc::UnboundedSender<RegCmd>,
+    mut rx: mpsc::UnboundedReceiver<RegCmd>,
 ) -> Result<()> {
-    let host = if args.device == "dev/null" {
-        "127.0.0.1".to_string()
-    } else {
-        args.device.clone()
-    };
-    let addr = format!("{}:{}", host, args.tcp_port);
-    let stream = tokio::net::TcpStream::connect(&addr)
-        .await
-        .context("连接 TCP 失败")?;
-    let mut ctx = tokio_modbus::client::tcp::attach_slave(stream, Slave(args.unit));
-
     let tick = Duration::from_millis(args.client_tick_ms);
     let mut interval = tokio::time::interval(tick);
 
+    let once_max_reg_cnt: usize = 120;
     loop {
         interval.tick().await;
 
-        let once_read_cnt: usize = 120;
+        //写入 (处理来自 UI 的待发往服务端的写命令)
+        while let Ok(cmd) = rx.try_recv() {
+            match cmd {
+                RegCmd::WriteSingleHolding { addr, value, resp } => {
+                    let out = match ctx.write_single_register(addr as u16, value).await {
+                        Ok(Ok(_)) => Ok(()),
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err(ExceptionCode::ServerDeviceFailure),
+                    };
+                    let _ = resp.send(out);
+                }
+                RegCmd::WriteMultipleHolding { addr, values, resp } => {
+                    let mut start = addr;
+                    let mut idx = 0usize;
+                    let mut final_out: std::result::Result<(), ExceptionCode> = Ok(());
+
+                    while idx < values.len() {
+                        let chunk_len = (values.len() - idx).min(once_max_reg_cnt);
+                        let chunk = &values[idx..idx + chunk_len];
+
+                        let out = match ctx.write_multiple_registers(start as u16, chunk).await {
+                            Ok(Ok(_)) => Ok(()),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(ExceptionCode::ServerDeviceFailure),
+                        };
+
+                        if out.is_err() {
+                            final_out = out;
+                            break;
+                        }
+
+                        start += chunk_len;
+                        idx += chunk_len;
+                    }
+
+                    let _ = resp.send(final_out);
+                }
+                _ => {}
+            }
+        }
+
+        //读取
         let mut offset: usize = 0;
 
         while offset < args.holding_count {
-            let cnt = (args.holding_count - offset).min(once_read_cnt);
+            let cnt = (args.holding_count - offset).min(once_max_reg_cnt);
             let addr = offset as u16;
 
             match ctx.read_holding_registers(addr, cnt as u16).await {
@@ -456,11 +489,30 @@ async fn run_modbus_tcp_client(
                     }
                 },
                 Err(e) => {
-                    return Err(anyhow!("TCP 客户端读取失败: {e}"));
+                    return Err(anyhow!("客户端读取失败: {e}"));
                 }
             }
         }
     }
+}
+
+async fn run_modbus_tcp_client(
+    args: Args,
+    state: Arc<RwLock<AppState>>,
+    rx: mpsc::UnboundedReceiver<RegCmd>,
+) -> Result<()> {
+    let host = if args.device == "dev/null" {
+        "127.0.0.1".to_string()
+    } else {
+        args.device.clone()
+    };
+    let addr = format!("{}:{}", host, args.tcp_port);
+    let stream = tokio::net::TcpStream::connect(&addr)
+        .await
+        .context("连接 TCP 失败")?;
+    let ctx = tokio_modbus::client::tcp::attach_slave(stream, Slave(args.unit));
+
+    client_read_write_loop(ctx, args, state, rx).await
 }
 
 //各模式分支函数
@@ -506,7 +558,7 @@ async fn run_modbus_tcp_server(
 async fn run_modbus_rtu_client(
     args: Args,
     state: Arc<RwLock<AppState>>,
-    _tx: mpsc::UnboundedSender<RegCmd>,
+    rx: mpsc::UnboundedReceiver<RegCmd>,
 ) -> Result<()> {
     let parity = parse_parity(&args.parity)?;
     let flow = parse_flow(&args.flow)?;
@@ -524,32 +576,9 @@ async fn run_modbus_rtu_client(
         .open_native_async()
         .context("open serial 正在打开串口")?;
 
-    let mut ctx = tokio_modbus::client::rtu::attach_slave(port, slave);
+    let ctx = tokio_modbus::client::rtu::attach_slave(port, slave);
 
-    let tick = Duration::from_millis(args.client_tick_ms);
-    let mut interval = tokio::time::interval(tick);
-
-    loop {
-        interval.tick().await;
-        match ctx
-            .read_holding_registers(0, args.holding_count as u16)
-            .await
-        {
-            Ok(rsp) => match rsp {
-                Ok(values) => {
-                    let mut s = state.write().await;
-                    let len = values.len().min(s.holding.len());
-                    s.holding[..len].copy_from_slice(&values[..len]);
-                }
-                Err(e) => {
-                    return Err(anyhow!("Modbus 异常响应: {e:?}"));
-                }
-            },
-            Err(e) => {
-                return Err(anyhow!("RTU 客户端读取失败: {e}"));
-            }
-        }
-    }
+    client_read_write_loop(ctx, args, state, rx).await
 }
 
 async fn run_modbus_rtu_server(
@@ -1029,19 +1058,25 @@ async fn main() -> Result<()> {
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
     //生产者-消费者模式的寄存器访问通道，Modbus 服务端/客户端任务通过发送命令来访问寄存器数据，UI 任务通过共享状态展示数据
-    let (tx, rx) = mpsc::unbounded_channel::<RegCmd>();
-    tokio::spawn(reg_worker_loop(Arc::clone(&state), args.holding_count, rx));
+    let (server_tx, server_rx) = mpsc::unbounded_channel::<RegCmd>();
+    tokio::spawn(reg_worker_loop(
+        Arc::clone(&state),
+        args.holding_count,
+        server_rx,
+    ));
+
+    let (client_tx, inner_rx) = mpsc::unbounded_channel::<RegCmd>();
 
     let inner_args = args.clone();
     let inner_state = Arc::clone(&state);
-    let inner_tx = tx.clone();
+    let inner_tx = server_tx.clone();
     let inner_status_bg = Arc::clone(&server_status);
     let inner_task = tokio::spawn(async move {
         let r: Result<()> = match main_mode {
             MainMode::RTUServer => run_modbus_rtu_server(inner_args, inner_state, inner_tx).await,
-            MainMode::RTUClient => run_modbus_rtu_client(inner_args, inner_state, inner_tx).await,
+            MainMode::RTUClient => run_modbus_rtu_client(inner_args, inner_state, inner_rx).await,
             MainMode::TcpServer => run_modbus_tcp_server(inner_args, inner_state, inner_tx).await,
-            MainMode::TcpClient => run_modbus_tcp_client(inner_args, inner_state, inner_tx).await,
+            MainMode::TcpClient => run_modbus_tcp_client(inner_args, inner_state, inner_rx).await,
         };
 
         if let Err(e) = &r {
@@ -1050,8 +1085,12 @@ async fn main() -> Result<()> {
 
         r
     });
-
-    let ui_res = run_ui(Arc::clone(&state), tx, args, server_status).await;
+    let ui_res;
+    if main_mode == MainMode::TcpClient || main_mode == MainMode::RTUClient {
+        ui_res = run_ui(Arc::clone(&state), client_tx, args, server_status).await;
+    } else {
+        ui_res = run_ui(Arc::clone(&state), server_tx, args, server_status).await;
+    }
 
     inner_task.abort();
     let _ = inner_task.await;
