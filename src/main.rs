@@ -1,32 +1,13 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
-use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use futures::StreamExt;
-use modbus;
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
-    Terminal,
-};
-use std::{collections::HashMap, io, sync::Arc, time::Duration};
-use tokio::{
-    net::TcpListener,
-    sync::{mpsc, oneshot, RwLock},
-};
-use tokio_modbus::{
-    prelude::*,
-    server::{self, tcp::accept_tcp_connection},
-};
-use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
-use ui;
-
+mod modbus;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{mpsc, RwLock};
+use tokio_serial::{DataBits, FlowControl, Parity, StopBits};
+mod ui;
+use modbus::*;
 use serde;
+use ui::*;
 
 #[derive(Copy, Clone, Debug, ValueEnum, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
