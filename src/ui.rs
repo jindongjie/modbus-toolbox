@@ -142,7 +142,7 @@ pub async fn run_ui(
                             let mut table_state = TableState::default();
                             table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
 
-                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Length(18), Constraint::Min(10)])
+                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Length(42), Constraint::Min(10)])
                                 .header(header)
                                 .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
                                 .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
