@@ -1,11 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::time::{timeout, Duration};
 
 // std
-use std::{collections::HashMap, io, sync::Arc, time::Duration};
-
-// tokio
+use std::{collections::HashMap, io, sync::Arc};
 
 // crossterm
 use crossterm::{
@@ -19,12 +18,34 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Cell, Row, Table, TableState},
-    Terminal,
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    Terminal, Frame,
 };
 
 // crate
-use crate::{format_u16, modbus::RegCmd, parse_u16_str, AppState, Args, DisplayBase};
+use crate::{
+    format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str,
+    AppState, Args, DisplayBase, FrameInfo, MainMode,
+};
+const UI_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 菜单屏幕状态
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuScreen {
+    Main,        // 主菜单
+    ProfilePick, // 选择配置（Server/Client 子菜单）
+    ProfileSet,  // 配置管理设置
+}
+
+/// 菜单选择结果，返回给 main.rs
+#[derive(Clone, Debug)]
+pub struct MenuSelection {
+    pub main_mode: MainMode,
+    pub profile_name: Option<String>,
+    pub set_default_as: Option<String>,
+}
+
 pub struct Ui {
     base: DisplayBase,
     selected: usize,
@@ -34,10 +55,35 @@ pub struct Ui {
     edit_is_profile: bool,
     edit_buf: String,
     status_msg: Option<String>,
+    show_byte_panel: bool,
+
+    // --- 菜单相关字段 ---
+    /// 当前菜单屏幕：Main / ProfilePick / ProfileSet
+    menu_screen: MenuScreen,
+    /// ProfilePick/ProfileSet 以及主菜单中的选中项索引
+    menu_list_idx: usize,
+    /// 加载到的所有配置名
+    profiles: Vec<String>,
+    /// 当前选中的配置
+    selected_profile: Option<String>,
+    /// 待选模式（从主菜单进入子菜单时暂存）
+    pending_mode: Option<MainMode>,
+    /// 当前默认配置名
+    default_profile: Option<String>,
+    /// 主菜单渲染用的 Logo ASCII ART 行
+    logo_lines: Vec<String>,
 }
 
 impl Ui {
-    fn new(base: DisplayBase) -> Self {
+    fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
+        let logo_lines = vec![
+            "   __  ___          _           _     ".into(),
+            "  /  |/  /__  _  __(_)___  ____(_)  __".into(),
+            " / /|_/ / _ \\| | | | / __|/ __ \\ / /".into(),
+            "/_/  /_/\\___/ \\__,_|_\\___//_/ /_//_/ ".into(),
+            "     Modbus Toolbox v0.1.0            ".into(),
+        ];
+        let default = profiles.first().cloned();
         Self {
             base,
             selected: 0,
@@ -47,6 +93,15 @@ impl Ui {
             edit_is_profile: false,
             edit_buf: String::new(),
             status_msg: None,
+            show_byte_panel: true,
+
+            menu_screen: MenuScreen::Main,
+            menu_list_idx: 0,
+            profiles,
+            selected_profile: default.clone(),
+            pending_mode: None,
+            default_profile: default,
+            logo_lines,
         }
     }
 }
@@ -72,6 +127,571 @@ fn set_status(ui: &mut Ui, msg: impl Into<String>) {
     ui.status_msg = Some(msg.into());
 }
 
+/// 加载配置列表，返回所有配置名
+pub fn load_profile_list(config_path: &str) -> Vec<String> {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    let mut names: Vec<String> = configs.into_keys().collect();
+    names.sort();
+    names
+}
+
+/// 根据配置名加载配置，返回 (配置名, Args)
+pub fn load_profile_args(config_path: &str, name: &str) -> Option<(String, Args)> {
+    let config_str = std::fs::read_to_string(config_path).ok()?;
+    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).ok()?;
+    configs.remove(name).map(|a| (name.to_string(), a))
+}
+
+/// 保存默认配置标记（写入到配置文件的 default 字段）
+fn save_default_profile(config_path: &str, name: &str) -> Result<()> {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    // 把默认配置名存为 key "default" 的特殊配置，只存一个 name 字段
+    let mut default_args = Args::default();
+    default_args.main_mode = name.to_string(); // 借用 main_mode 字段存储默认配置名
+    configs.insert("__default__".to_string(), default_args);
+    let s = toml::to_string_pretty(&configs)?;
+    std::fs::write(config_path, s)?;
+    Ok(())
+}
+
+/// 读取默认配置名
+fn load_default_profile(config_path: &str) -> Option<String> {
+    let config_str = std::fs::read_to_string(config_path).ok()?;
+    let configs: HashMap<String, Args> = toml::from_str(&config_str).ok()?;
+    configs.get("__default__").map(|a| a.main_mode.clone())
+}
+
+// ─────────────────────────────────────────
+// 菜单渲染与事件处理
+// ─────────────────────────────────────────
+
+/// 主菜单渲染：水平分割为 4 列
+fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
+    let area = f.area();
+    // 垂直分割：上部留白 + Logo + 菜单行 + 帮助
+    let vert = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(5),
+        Constraint::Min(10),
+        Constraint::Length(4),
+    ])
+    .split(area);
+
+    // --- Logo 区 ---
+    let logo_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let logo_text: Vec<Line> = ui
+        .logo_lines
+        .iter()
+        .map(|l| Line::from(Span::styled(l.clone(), logo_style)))
+        .collect();
+    f.render_widget(Paragraph::new(logo_text).alignment(ratatui::layout::Alignment::Center), vert[1]);
+
+    // --- 主菜单区：水平分割为 4 列 ---
+    let cols = Layout::horizontal([
+        Constraint::Length(42),
+        Constraint::Min(20),
+        Constraint::Min(20),
+        Constraint::Min(20),
+    ])
+    .split(vert[2]);
+
+    let col_labels = ["LOGO", "TCP", "RTU", "PROFILE"];
+
+    for (i, (col, &label)) in cols.iter().zip(&col_labels).enumerate() {
+        let is_focused = ui.menu_col == i;
+
+        let content: Vec<Line> = match i {
+            0 => {
+                // Logo 列：显示模块说明
+                vec![
+                    Line::from(Span::styled("  Modbus Toolbox", Style::default().fg(Color::Green))),
+                    Line::from(Span::styled("  RTU/TCP 调试终端", Style::default().fg(Color::DarkGray))),
+                ]
+            }
+            1 | 2 => {
+                // TCP 或 RTU 列
+                let (left, right) = if i == 1 { ("Server", "Client") } else { ("Server", "Client") };
+                let l_focus = ui.menu_col == i && ui.menu_row == 0;
+                let r_focus = ui.menu_col == i && ui.menu_row == 1;
+                let l_style = if l_focus {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let r_style = if r_focus {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                vec![
+                    Line::from(vec![
+                        Span::styled(" [ ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(left, l_style),
+                        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
+                        Span::styled(right, r_style),
+                        Span::styled(" ] ", Style::default().fg(Color::DarkGray)),
+                    ]),
+                ]
+            }
+            3 => {
+                // Profile 列
+                let p_style = if is_focused {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                vec![
+                    Line::from(Span::styled(" [ Profile Settings ] ", p_style)),
+                ]
+            }
+            _ => unreachable!(),
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(label)
+            .border_style(if is_focused {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            });
+
+        f.render_widget(Paragraph::new(content).block(block).wrap(Wrap { trim: false }), *col);
+    }
+
+    // --- 底部信息栏 ---
+    let default_name = ui.default_profile.as_deref().unwrap_or("(无)");
+    let selected = ui.selected_profile.as_deref().unwrap_or("(无)");
+    let status = format!(
+        "默认配置: {} | 当前选中: {} | ← → 切换列  ↑ ↓ 切换选项  Enter 确认  q 退出",
+        default_name, selected
+    );
+    f.render_widget(
+        Paragraph::new(status)
+            .block(Block::default().borders(Borders::ALL).title("信息"))
+            .style(Style::default().fg(Color::DarkGray)),
+        vert[3],
+    );
+}
+
+/// 配置选择子菜单（ProfilePick）：预览并选择配置
+fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(10),
+        Constraint::Length(3),
+    ])
+    .split(area);
+
+    // 标题
+    let mode_name = match ui.pending_mode {
+        Some(MainMode::TcpServer) => "TCP Server",
+        Some(MainMode::TcpClient) => "TCP Client",
+        Some(MainMode::RTUServer) => "RTU Server",
+        Some(MainMode::RTUClient) => "RTU Client",
+        None => "?",
+    };
+    let title = format!(" 选择配置 — {mode_name} ");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(&title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+            .alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
+
+    // 主区域：左列表 + 右预览
+    let main = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
+
+    // 左：配置列表
+    let mut items: Vec<Line> = Vec::new();
+    for (i, name) in ui.profiles.iter().enumerate() {
+        let is_sel = i == ui.menu_list_idx;
+        let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
+        let prefix = if is_default { "★ " } else { "  " };
+        let line = if is_sel {
+            Line::from(Span::styled(
+                format!("{prefix}{name}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(
+                format!("{prefix}{name}"),
+                Style::default().fg(Color::White),
+            ))
+        };
+        items.push(line);
+    }
+    if ui.profiles.is_empty() {
+        items.push(Line::from(Span::styled(
+            " (暂无配置) ",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title("配置列表")
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(items).block(list_block), main[0]);
+
+    // 右：预览所选配置
+    let preview_text = if ui.menu_list_idx < ui.profiles.len() {
+        let name = &ui.profiles[ui.menu_list_idx];
+        if let Some((_, args)) = load_profile_args(config_path, name) {
+            format!(
+                "配置名: {}\n\
+                 ─────────────────\n\
+                 模式:     {}\n\
+                 TCP端口: {}\n\
+                 从站地址: {}\n\
+                 寄存器数: {}\n\
+                 串口设备: {}\n\
+                 波特率:   {}",
+                name,
+                args.main_mode,
+                args.tcp_port,
+                args.unit,
+                args.holding_count,
+                args.device,
+                args.baudrate,
+            )
+        } else {
+            format!("配置名: {}\n无法加载配置详情", name)
+        }
+    } else {
+        "请选择一个配置".to_string()
+    };
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .title("配置预览")
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(Paragraph::new(preview_text).block(preview_block), main[1]);
+
+    // 底部帮助
+    let help = " ↑ ↓ 切换配置  Enter 确认选择  Esc 返回主菜单 ";
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
+            .alignment(ratatui::layout::Alignment::Center),
+        vert[2],
+    );
+}
+
+/// 配置管理设置（ProfileSet）：查看 / 设置默认配置
+fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(10),
+        Constraint::Length(3),
+    ])
+    .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " 配置管理设置 ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
+
+    // 主体部分
+    let main = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(vert[1]);
+
+    // 左：配置列表，可设置为默认
+    let mut items: Vec<Line> = Vec::new();
+    for (i, name) in ui.profiles.iter().enumerate() {
+        let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
+        let icon = if is_default { "●" } else { "○" };
+        let line = if i == ui.menu_list_idx {
+            Line::from(Span::styled(
+                format!(" {icon} {name}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if is_default {
+            Line::from(Span::styled(
+                format!(" {icon} {name}"),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(
+                format!(" {icon} {name}"),
+                Style::default().fg(Color::White),
+            ))
+        };
+        items.push(line);
+    }
+    if ui.profiles.is_empty() {
+        items.push(Line::from(Span::styled(" (暂无配置) ", Style::default().fg(Color::DarkGray))));
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title("配置列表（○ 普通  ● 默认）")
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(items).block(list_block), main[0]);
+
+    // 右：当前默认配置信息 + 操作说明
+    let default_name = ui.default_profile.as_deref().unwrap_or("(未设置)");
+    let info = format!(
+        "当前默认: {}\n\
+         ─────────────────\n\
+         按 Enter 将选中配置设为默认\n\
+         按 Esc 返回主菜单\n\
+         \n\
+         提示：\n\
+         启动时未指定 --profile 时\n\
+         自动加载默认配置",
+        default_name
+    );
+    let info_block = Block::default()
+        .borders(Borders::ALL)
+        .title("说明")
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(Paragraph::new(info).block(info_block), main[1]);
+
+    // 底部
+    let help = " ↑ ↓ 切换  Enter 设为默认  Esc 返回主菜单 ";
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
+            .alignment(ratatui::layout::Alignment::Center),
+        vert[2],
+    );
+}
+
+/// 处理主菜单的按键事件
+fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
+    match code {
+        KeyCode::Left => {
+            ui.menu_col = ui.menu_col.saturating_sub(1);
+            ui.menu_row = 0;
+        }
+        KeyCode::Right => {
+            ui.menu_col = (ui.menu_col + 1).min(3);
+            ui.menu_row = 0;
+        }
+        KeyCode::Up => {
+            if ui.menu_col == 1 || ui.menu_col == 2 {
+                ui.menu_row = 0;
+            }
+        }
+        KeyCode::Down => {
+            if ui.menu_col == 1 || ui.menu_col == 2 {
+                ui.menu_row = 1;
+            }
+        }
+        KeyCode::Enter => match ui.menu_col {
+            0 => { /* Logo, 不可选 */ }
+            1 => {
+                // TCP Server/Client
+                let mode = if ui.menu_row == 0 {
+                    MainMode::TcpServer
+                } else {
+                    MainMode::TcpClient
+                };
+                ui.pending_mode = Some(mode);
+                ui.menu_screen = MenuScreen::ProfilePick;
+                ui.menu_list_idx = 0;
+            }
+            2 => {
+                // RTU Server/Client
+                let mode = if ui.menu_row == 0 {
+                    MainMode::RTUServer
+                } else {
+                    MainMode::RTUClient
+                };
+                ui.pending_mode = Some(mode);
+                ui.menu_screen = MenuScreen::ProfilePick;
+                ui.menu_list_idx = 0;
+            }
+            3 => {
+                // Profile Settings
+                ui.menu_screen = MenuScreen::ProfileSet;
+                ui.menu_list_idx = 0;
+            }
+            _ => {}
+        },
+        KeyCode::Char('q') => {
+            // 退出
+            return Some(MenuSelection {
+                main_mode: MainMode::TcpClient,
+                profile_name: None,
+                set_default_as: None,
+            });
+        }
+        _ => {}
+    }
+    None
+}
+
+/// 处理配置选择子菜单的按键事件
+fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Option<MenuSelection> {
+    match code {
+        KeyCode::Up => {
+            if !ui.profiles.is_empty() {
+                ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
+            }
+        }
+        KeyCode::Down => {
+            if ui.menu_list_idx + 1 < ui.profiles.len() {
+                ui.menu_list_idx += 1;
+            }
+        }
+        KeyCode::Enter => {
+            let mode = ui.pending_mode.unwrap_or(MainMode::TcpClient);
+            let profile = if ui.menu_list_idx < ui.profiles.len() {
+                Some(ui.profiles[ui.menu_list_idx].clone())
+            } else {
+                None
+            };
+            ui.selected_profile = profile.clone();
+            return Some(MenuSelection {
+                main_mode: mode,
+                profile_name: profile,
+                set_default_as: None,
+            });
+        }
+        KeyCode::Esc => {
+            ui.menu_screen = MenuScreen::Main;
+        }
+        KeyCode::Char('q') => {
+            return Some(MenuSelection {
+                main_mode: MainMode::TcpClient,
+                profile_name: None,
+                set_default_as: None,
+            });
+        }
+        _ => {}
+    }
+    None
+}
+
+/// 处理配置管理设置的按键事件
+fn handle_profile_set_key(
+    ui: &mut Ui,
+    code: KeyCode,
+    config_path: &str,
+) -> Option<MenuSelection> {
+    match code {
+        KeyCode::Up => {
+            if !ui.profiles.is_empty() {
+                ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
+            }
+        }
+        KeyCode::Down => {
+            if ui.menu_list_idx + 1 < ui.profiles.len() {
+                ui.menu_list_idx += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if ui.menu_list_idx < ui.profiles.len() {
+                let name = ui.profiles[ui.menu_list_idx].clone();
+                if save_default_profile(config_path, &name).is_ok() {
+                    ui.default_profile = Some(name.clone());
+                    ui.selected_profile = Some(name);
+                    set_status(ui, format!("已设置默认配置为: {}", ui.default_profile.as_deref().unwrap_or("")));
+                } else {
+                    set_status(ui, "设置默认配置失败，请检查配置文件权限");
+                }
+            }
+        }
+        KeyCode::Esc => {
+            ui.menu_screen = MenuScreen::Main;
+        }
+        KeyCode::Char('q') => {
+            return Some(MenuSelection {
+                main_mode: MainMode::TcpClient,
+                profile_name: None,
+                set_default_as: None,
+            });
+        }
+        _ => {}
+    }
+    None
+}
+
+/// 运行主菜单界面，返回用户选择的结果
+pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSelection> {
+    enable_raw_mode().context("enable raw mode")?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen).context("enter alt screen")?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).context("create terminal")?;
+
+    let mut events = EventStream::new();
+    let mut ui = Ui::new(DisplayBase::Dec, profiles);
+    // 尝试读取默认配置
+    if let Some(def) = load_default_profile(config_path) {
+        if ui.profiles.contains(&def) {
+            ui.default_profile = Some(def.clone());
+            ui.selected_profile = Some(def);
+        }
+    }
+
+    let res: Result<MenuSelection> = loop {
+        let ev = tokio::time::timeout(Duration::from_millis(100), events.next()).await;
+        let ev = match ev {
+            Ok(Some(Ok(ev))) => ev,
+            Ok(Some(Err(e))) => break Err(anyhow!(e).context("read event")),
+            _ => {
+                // 刷新界面
+                let _ = terminal.draw(|f| match ui.menu_screen {
+                    MenuScreen::Main => render_main_menu(f, &ui),
+                    MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
+                    MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+                });
+                continue;
+            }
+        };
+
+        match ev {
+            Event::Key(KeyEvent { code, kind, .. }) => {
+                if kind != crossterm::event::KeyEventKind::Press {
+                    continue;
+                }
+                let sel = match ui.menu_screen {
+                    MenuScreen::Main => handle_main_menu_key(&mut ui, code),
+                    MenuScreen::ProfilePick => handle_profile_pick_key(&mut ui, code, config_path),
+                    MenuScreen::ProfileSet => handle_profile_set_key(&mut ui, code, config_path),
+                };
+                if let Some(sel) = sel {
+                    break Ok(sel);
+                }
+            }
+            Event::Resize(_, _) => {
+                let _ = terminal.draw(|f| match ui.menu_screen {
+                    MenuScreen::Main => render_main_menu(f, &ui),
+                    MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
+                    MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+                });
+            }
+            _ => {}
+        }
+
+        // 重绘
+        let _ = terminal.draw(|f| match ui.menu_screen {
+            MenuScreen::Main => render_main_menu(f, &ui),
+            MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
+            MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+        });
+    };
+
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
+    res
+}
+
 pub async fn run_ui(
     state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
@@ -85,7 +705,7 @@ pub async fn run_ui(
     let mut terminal = Terminal::new(backend).context("create terminal 创建终端")?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(args.base);
+    let mut ui = Ui::new(args.base, Vec::new());
 
     let tick = Duration::from_millis(args.ui_tick_ms);
     let mut interval = tokio::time::interval(tick);
@@ -96,60 +716,43 @@ pub async fn run_ui(
                         let s = state.read().await;
                         let server_err = server_status.read().await.clone();
                         terminal.draw(|f| {
-                            let chunks = Layout::vertical([
+                            let vert = Layout::vertical([
                                 Constraint::Min(5),
                                 Constraint::Length(3),
                                 Constraint::Length(3),
                             ]).split(f.area());
 
-                            let visible_rows = chunks[0].height.saturating_sub(3) as usize;
-                            if ui.selected >= s.holding.len() {
-                                ui.selected = s.holding.len().saturating_sub(1);
+                            // 顶部区域：字节流面板(左) + 寄存器列表(右)
+                            if ui.show_byte_panel {
+                                let top = Layout::horizontal([
+                                    Constraint::Length(42),
+                                    Constraint::Min(20),
+                                ]).split(vert[0]);
+
+                                // --- 字节流面板 ---
+                                if let Some(ref fi) = s.last_frame {
+                                    let panel_text = format_byte_panel(fi);
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(panel_text)
+                                            .block(Block::default().borders(Borders::ALL).title("字节流 (Modbus)"))
+                                            .style(Style::default().fg(Color::Cyan)),
+                                        top[0],
+                                    );
+                                } else {
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new("无数据\n\n等待 Modbus 通讯中...")
+                                            .block(Block::default().borders(Borders::ALL).title("字节流 (Modbus)"))
+                                            .style(Style::default().fg(Color::DarkGray)),
+                                        top[0],
+                                    );
+                                }
+
+                                render_register_table(f, &s, &mut ui, top[1]);
+                            } else {
+                                render_register_table(f, &s, &mut ui, vert[0]);
                             }
-                            if ui.selected < ui.scroll { ui.scroll = ui.selected; }
-                            if visible_rows > 0 && ui.selected >= ui.scroll + visible_rows {
-                                ui.scroll = ui.selected + 1 - visible_rows;
-                            }
 
-                            let header = Row::new(vec![
-                                Cell::from("寄存器地址"),
-                                Cell::from("备注标记"),
-                                Cell::from("值"),
-                            ]).style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-
-                            let rows = s.holding
-                                .iter()
-                                .enumerate()
-                                .skip(ui.scroll)
-                                .take(visible_rows.max(1))
-                                .map(|(i, v)| {
-                                    let mut val = format_u16(*v, ui.base);
-                                    let mut label = s.holding_label[i].clone();
-                                    if ui.edit_mode && i == ui.selected && !ui.edit_is_profile {
-                                        if ui.edit_is_label {
-                                            label = ui.edit_buf.clone();
-                                        } else {
-                                            val = ui.edit_buf.clone();
-                                        }
-                                    }
-                                    Row::new(vec![
-                                        Cell::from(format!("{i}")),
-                                        Cell::from(label),
-                                        Cell::from(val),
-                                    ])
-                                });
-
-                            let mut table_state = TableState::default();
-                            table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
-
-                            let t = Table::new(rows, [Constraint::Length(18), Constraint::Length(42), Constraint::Min(10)])
-                                .header(header)
-                                .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
-                                .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
-                                .highlight_symbol(">> ");
-
-                            f.render_stateful_widget(t, chunks[0], &mut table_state);
-
+                            // --- 状态栏 (全宽) ---
                             let status_line = if let Some(m) = server_err.as_deref() {
                                 format!("Modbus 错误: {m}")
                             } else if let Some(m) = ui.status_msg.as_deref() {
@@ -160,10 +763,16 @@ pub async fn run_ui(
                                 } else if ui.edit_is_label {
                                     format!("修改备注 Enter=提交 Esc=取消 | 输入: {}", ui.edit_buf)
                                 } else {
-                                    format!("修改格式 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                                    format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                                }
+                            } else if let Some(ref fi) = s.last_frame {
+                                if fi.is_tcp {
+                                    format!("TCP {} | 格式={:?}", fi.func_name, ui.base)
+                                } else {
+                                    format!("RTU {} | 格式={:?}", fi.func_name, ui.base)
                                 }
                             } else {
-                                format!("格式={:?}", ui.base)
+                                format!("等待通讯 | 格式={:?}", ui.base)
                             };
 
                             f.render_widget(
@@ -174,19 +783,20 @@ pub async fn run_ui(
                                     } else {
                                         Style::default()
                                     }),
-                                chunks[1],
+                                vert[1],
                             );
 
+                            // --- 帮助栏 (全宽) ---
                             let help = if ui.edit_mode {
                                 format!("输入数据 {:?}; Backspace 退出 | m 100个寄存器编辑(仅数值)",ui.edit_buf)
                             } else {
-                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注 | o 保存配置 | d/h/b 格式 | q 退出".to_string()
+                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注 | o 保存配置 | d/h/b 格式 | B 字节面板 | q 退出".to_string()
                             };
 
                             f.render_widget(
                                 ratatui::widgets::Paragraph::new(help)
                                     .block(Block::default().borders(Borders::ALL).title("帮助")),
-                                chunks[2],
+                                vert[2],
                             );
                         })?;
                     }
@@ -303,20 +913,29 @@ pub async fn run_ui(
                                                             resp: resp_tx,
                                                         });
 
-                                                        match resp_rx.await {
-                                                            Ok(Ok(())) => {
+                                                        match timeout(UI_TIMEOUT, resp_rx).await {
+                                                            Ok(Ok(Ok(()))) => {
                                                                 ui.edit_mode = false;
                                                                 ui.edit_buf.clear();
                                                                 ui.status_msg = None;
                                                             }
-                                                            Ok(Err(ex)) => set_status(
+                                                            Ok(Ok(Err(ex))) => set_status(
                                                                 &mut ui,
                                                                 format!("Modbus exception 异常: {ex:?}"),
                                                             ),
-                                                            Err(_) => set_status(
+                                                            Ok(Err(_)) => set_status(
                                                                 &mut ui,
                                                                 "Worker disconnected 运行中断",
                                                             ),
+                                                            Err(_) => {
+                                                                set_status(
+                                                                    &mut ui,
+                                                                    "写入超时，设备无响应",
+                                                                );
+                                                                ui.edit_mode = false;
+                                                                ui.edit_buf.clear();
+                                                                ui.status_msg = None;
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => set_status(
@@ -402,6 +1021,15 @@ pub async fn run_ui(
                                                 ui.status_msg = None;
                                             }
                                         }
+
+                                        KeyCode::Char('B') => {
+                                            ui.show_byte_panel = !ui.show_byte_panel;
+                                            if ui.show_byte_panel {
+                                                set_status(&mut ui, "字节面板已显示");
+                                            } else {
+                                                set_status(&mut ui, "字节面板已隐藏");
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -421,4 +1049,261 @@ pub async fn run_ui(
     terminal.show_cursor().ok();
 
     res
+}
+
+/// 渲染寄存器表格（重构为可复用的辅助函数）
+fn render_register_table(
+    f: &mut ratatui::Frame<'_>,
+    s: &AppState,
+    ui: &mut Ui,
+    area: ratatui::layout::Rect,
+) {
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    if ui.selected >= s.holding.len() {
+        ui.selected = s.holding.len().saturating_sub(1);
+    }
+    if ui.selected < ui.scroll {
+        ui.scroll = ui.selected;
+    }
+    if visible_rows > 0 && ui.selected >= ui.scroll + visible_rows {
+        ui.scroll = ui.selected + 1 - visible_rows;
+    }
+
+    let header = Row::new(vec![
+        Cell::from("寄存器地址"),
+        Cell::from("备注标记"),
+        Cell::from("值"),
+    ])
+    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+
+    let rows = s
+        .holding
+        .iter()
+        .enumerate()
+        .skip(ui.scroll)
+        .take(visible_rows.max(1))
+        .map(|(i, v)| {
+            let mut val = format_u16(*v, ui.base);
+            let mut label = s.holding_label[i].clone();
+            if ui.edit_mode && i == ui.selected && !ui.edit_is_profile {
+                if ui.edit_is_label {
+                    label = ui.edit_buf.clone();
+                } else {
+                    val = ui.edit_buf.clone();
+                }
+            }
+            Row::new(vec![
+                Cell::from(format!("{i}")),
+                Cell::from(label),
+                Cell::from(val),
+            ])
+        });
+
+    let mut table_state = TableState::default();
+    table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
+
+    let t = Table::new(
+        rows,
+        [
+            Constraint::Length(18),
+            Constraint::Length(42),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
+    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .highlight_symbol(">> ");
+
+    f.render_stateful_widget(t, area, &mut table_state);
+}
+
+/// 构建字节流面板的显示文本
+fn format_byte_panel(fi: &FrameInfo) -> String {
+    let mut text = String::new();
+    let mut bytes = frame_bytes_from_info(fi);
+    if bytes.is_empty() {
+        return "无法构造字节流".to_string();
+    }
+
+    let proto = if fi.is_tcp { "TCP" } else { "RTU" };
+    text.push_str(&format!("{proto} 响应 · {}\n", fi.func_name));
+    text.push_str("━━━━━━━━━━━━━━━━━\n");
+    text.push_str("偏移  数据    说明\n");
+
+    if fi.is_tcp {
+        // TCP 帧头
+        let trans_id = u16::from_be_bytes([bytes[0], bytes[1]]);
+        let proto_id = u16::from_be_bytes([bytes[2], bytes[3]]);
+        let len = u16::from_be_bytes([bytes[4], bytes[5]]);
+        let unit = bytes[6];
+        text.push_str(&format!(
+            "0-1   {:04X}  事务标识符={}\n",
+            trans_id, trans_id
+        ));
+        text.push_str(&format!(
+            "2-3   {:04X}  协议标识符={}\n",
+            proto_id,
+            if proto_id == 0 { "Modbus" } else { "其他" }
+        ));
+        text.push_str(&format!("4-5   {:04X}  后续长度={}\n", len, len));
+        text.push_str(&format!("6     {:02X}    从站地址={}\n", unit, unit));
+
+        // 从字节7开始是功能码
+        let func = bytes[7];
+        text.push_str(&format!(
+            "7     {:02X}    功能码 ({}={})\n",
+            func, fi.func_name, func
+        ));
+
+        // 截取剩余部分作为原始帧
+        bytes = bytes[8..].to_vec();
+    } else {
+        // RTU 帧: [unit] [func] [data...] [crc]
+        let unit = bytes[0];
+        let func = bytes[1];
+        text.push_str(&format!("0     {:02X}    从站地址={}\n", unit, unit));
+        text.push_str(&format!(
+            "1     {:02X}    功能码 ({}={})\n",
+            func, fi.func_name, func
+        ));
+
+        // 跳过地址和功能码，保留数据+CRC
+        bytes = bytes[2..].to_vec();
+    }
+
+    // 解析剩余数据
+    let func_body = &bytes;
+
+    if func_body.len() >= 2 {
+        match fi.func_code {
+            0x03 => {
+                // 响应: [byte_count] [data...] [crc...]
+                let bc = func_body[0] as usize;
+                let offset_base = if fi.is_tcp { 8usize } else { 2usize };
+                text.push_str(&format!(
+                    "{:<5} {:02X}    后续字节数={}\n",
+                    if fi.is_tcp { 8 } else { 2 },
+                    bc,
+                    bc
+                ));
+                let mut data_offset = 1;
+                let mut reg_idx = 0;
+                while data_offset + 1 < func_body.len().saturating_sub(2) && reg_idx < fi.values.len()
+                {
+                    if data_offset + 1 >= func_body.len() {
+                        break;
+                    }
+                    let h = func_body[data_offset];
+                    let l = func_body[data_offset + 1];
+                    let val = u16::from_be_bytes([h, l]);
+                    let abs_offset = offset_base + data_offset;
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  寄存器[{}]=0x{:04X}\n",
+                        abs_offset,
+                        abs_offset + 1,
+                        val,
+                        reg_idx,
+                        val
+                    ));
+                    data_offset += 2;
+                    reg_idx += 1;
+                }
+                // CRC (最后2字节)
+                if func_body.len() >= 2 {
+                    let crc_start = func_body.len() - 2;
+                    let crc_val = u16::from_le_bytes([
+                        func_body[crc_start],
+                        func_body[crc_start + 1],
+                    ]);
+                    let abs_crc = offset_base + crc_start;
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  CRC16={:04X}\n",
+                        abs_crc, abs_crc + 1, crc_val, crc_val
+                    ));
+                }
+            }
+            0x06 => {
+                // 写单寄存器响应: [addr hi] [addr lo] [val hi] [val lo] [crc...]
+                let offset_base = if fi.is_tcp { 8usize } else { 2usize };
+                if func_body.len() >= 4 {
+                    let addr_val = u16::from_be_bytes([func_body[0], func_body[1]]);
+                    let data_val = u16::from_be_bytes([func_body[2], func_body[3]]);
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  寄存器地址=0x{:04X}\n",
+                        offset_base,
+                        offset_base + 1,
+                        addr_val,
+                        addr_val
+                    ));
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  写入值=0x{:04X}\n",
+                        offset_base + 2,
+                        offset_base + 3,
+                        data_val,
+                        data_val
+                    ));
+                    if !fi.is_tcp && func_body.len() >= 6 {
+                        let crc_start = func_body.len() - 2;
+                        let crc_val = u16::from_le_bytes([
+                            func_body[crc_start],
+                            func_body[crc_start + 1],
+                        ]);
+                        let abs_crc = offset_base + crc_start;
+                        text.push_str(&format!(
+                            "{}-{} {:04X}  CRC16={:04X}\n",
+                            abs_crc, abs_crc + 1, crc_val, crc_val
+                        ));
+                    }
+                }
+            }
+            0x10 => {
+                // 写多寄存器响应: [addr hi] [addr lo] [qty hi] [qty lo] [crc...]
+                let offset_base = if fi.is_tcp { 8usize } else { 2usize };
+                if func_body.len() >= 4 {
+                    let addr_val = u16::from_be_bytes([func_body[0], func_body[1]]);
+                    let qty = u16::from_be_bytes([func_body[2], func_body[3]]);
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  起始地址={}\n",
+                        offset_base,
+                        offset_base + 1,
+                        addr_val,
+                        addr_val
+                    ));
+                    text.push_str(&format!(
+                        "{}-{} {:04X}  寄存器数量={}\n",
+                        offset_base + 2,
+                        offset_base + 3,
+                        qty,
+                        qty
+                    ));
+                    if !fi.is_tcp && func_body.len() >= 6 {
+                        let crc_start = func_body.len() - 2;
+                        let crc_val = u16::from_le_bytes([
+                            func_body[crc_start],
+                            func_body[crc_start + 1],
+                        ]);
+                        let abs_crc = offset_base + crc_start;
+                        text.push_str(&format!(
+                            "{}-{} {:04X}  CRC16={:04X}\n",
+                            abs_crc, abs_crc + 1, crc_val, crc_val
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 原始帧
+    text.push_str("━━━━━━━━━━━━━━━━━\n");
+    let full_bytes = frame_bytes_from_info(fi);
+    let hex_str: Vec<String> = full_bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    let lines = hex_str.chunks(8);
+    text.push_str("原始帧:\n");
+    for line in lines {
+        text.push_str(&format!("  {}\n", line.join(" ")));
+    }
+
+    text
 }

@@ -2,6 +2,7 @@ use crate::Args;
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::time::timeout;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_modbus::server;
@@ -13,7 +14,91 @@ use crate::parse_flow;
 use crate::parse_parity;
 use crate::parse_stopbits;
 use crate::AppState;
+use crate::FrameInfo;
 use tokio_modbus::prelude::*;
+
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+// ---------- CRC16 Modbus 计算 ----------
+pub(crate) fn calc_crc16(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
+    for &byte in data {
+        crc ^= byte as u16;
+        for _ in 0..8 {
+            if crc & 0x0001 != 0 {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+// ---------- 帧字节构造（用于显示） ----------
+fn func_name(code: u8) -> &'static str {
+    match code {
+        0x01 => "读线圈",
+        0x02 => "读离散输入",
+        0x03 => "读保持寄存器",
+        0x04 => "读输入寄存器",
+        0x05 => "写单线圈",
+        0x06 => "写单寄存器",
+        0x0F => "写多线圈",
+        0x10 => "写多寄存器",
+        _ => "未知功能",
+    }
+}
+
+fn build_rtu_request_frame(unit: u8, func: u8, data: &[u8]) -> Vec<u8> {
+    let mut frame = vec![unit, func];
+    frame.extend_from_slice(data);
+    let crc = calc_crc16(&frame);
+    frame.push((crc & 0xFF) as u8);
+    frame.push((crc >> 8) as u8);
+    frame
+}
+
+fn build_tcp_request_frame(unit: u8, func: u8, data: &[u8]) -> Vec<u8> {
+    let mut frame = vec![
+        0x00, 0x01, // 事务标识符
+        0x00, 0x00, // 协议标识符
+        0x00, (data.len() as u8 + 2), // 长度
+        unit,
+        func,
+    ];
+    frame.extend_from_slice(data);
+    frame
+}
+
+fn build_read_holding_req_bytes(is_tcp: bool, unit: u8, addr: u16, cnt: u16) -> Vec<u8> {
+    let data = [
+        (addr >> 8) as u8,
+        (addr & 0xFF) as u8,
+        (cnt >> 8) as u8,
+        (cnt & 0xFF) as u8,
+    ];
+    if is_tcp {
+        build_tcp_request_frame(unit, 0x03, &data)
+    } else {
+        build_rtu_request_frame(unit, 0x03, &data)
+    }
+}
+
+fn build_write_single_req_bytes(is_tcp: bool, unit: u8, addr: u16, value: u16) -> Vec<u8> {
+    let data = [
+        (addr >> 8) as u8,
+        (addr & 0xFF) as u8,
+        (value >> 8) as u8,
+        (value & 0xFF) as u8,
+    ];
+    if is_tcp {
+        build_tcp_request_frame(unit, 0x06, &data)
+    } else {
+        build_rtu_request_frame(unit, 0x06, &data)
+    }
+}
+
 pub enum RegCmd {
     ReadHolding {
         addr: usize,
@@ -79,6 +164,7 @@ struct HoldingService {
     tx: mpsc::UnboundedSender<RegCmd>,
     holding_len: usize,
     unit: u8,
+    state: Arc<RwLock<AppState>>,
 }
 
 //Modbus 保持型寄存器服务
@@ -108,12 +194,16 @@ impl tokio_modbus::server::Service for HoldingService {
             return boxed(async { Err(ExceptionCode::IllegalFunction) });
         }
 
+        let is_tcp = self.state.blocking_read().is_tcp;
+
         match req.request {
             Request::ReadHoldingRegisters(addr, cnt) => {
                 let addr = addr as usize;
                 let cnt = cnt as usize;
                 let holding_len = self.holding_len;
                 let tx: mpsc::UnboundedSender<RegCmd> = self.tx.clone();
+                let state = Arc::clone(&self.state);
+                let unit = self.unit;
 
                 boxed(async move {
                     if addr + cnt > holding_len {
@@ -133,7 +223,18 @@ impl tokio_modbus::server::Service for HoldingService {
                     }
 
                     match resp_rx.await {
-                        Ok(Ok(values)) => Ok(Response::ReadHoldingRegisters(values)),
+                        Ok(Ok(values)) => {
+                            state.write().await.last_frame = Some(FrameInfo {
+                                is_tcp,
+                                unit,
+                                func_code: 0x03,
+                                func_name: format!("读保持寄存器"),
+                                addr: addr as u16,
+                                values: values.clone(),
+                                is_request: false,
+                            });
+                            Ok(Response::ReadHoldingRegisters(values))
+                        }
                         Ok(Err(ex)) => Err(ex),
                         Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
                     }
@@ -144,6 +245,8 @@ impl tokio_modbus::server::Service for HoldingService {
                 let addr = addr as usize;
                 let holding_len = self.holding_len;
                 let tx = self.tx.clone();
+                let state = Arc::clone(&self.state);
+                let unit = self.unit;
 
                 boxed(async move {
                     if addr >= holding_len {
@@ -163,7 +266,18 @@ impl tokio_modbus::server::Service for HoldingService {
                     }
 
                     match resp_rx.await {
-                        Ok(Ok(())) => Ok(Response::WriteSingleRegister(addr as u16, value)),
+                        Ok(Ok(())) => {
+                            state.write().await.last_frame = Some(FrameInfo {
+                                is_tcp,
+                                unit,
+                                func_code: 0x06,
+                                func_name: format!("写单寄存器"),
+                                addr: addr as u16,
+                                values: vec![value],
+                                is_request: false,
+                            });
+                            Ok(Response::WriteSingleRegister(addr as u16, value))
+                        }
                         Ok(Err(ex)) => Err(ex),
                         Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
                     }
@@ -176,6 +290,8 @@ impl tokio_modbus::server::Service for HoldingService {
                 let tx = self.tx.clone();
                 let values_vec = values.to_vec();
                 let qty = values_vec.len() as u16;
+                let state = Arc::clone(&self.state);
+                let unit = self.unit;
 
                 boxed(async move {
                     if addr_usize + values_vec.len() > holding_len {
@@ -195,7 +311,18 @@ impl tokio_modbus::server::Service for HoldingService {
                     }
 
                     match resp_rx.await {
-                        Ok(Ok(())) => Ok(Response::WriteMultipleRegisters(addr, qty)),
+                        Ok(Ok(())) => {
+                            state.write().await.last_frame = Some(FrameInfo {
+                                is_tcp,
+                                unit,
+                                func_code: 0x10,
+                                func_name: format!("写多寄存器"),
+                                addr: addr as u16,
+                                values: values.to_vec(),
+                                is_request: false,
+                            });
+                            Ok(Response::WriteMultipleRegisters(addr, qty))
+                        }
                         Ok(Err(ex)) => Err(ex),
                         Err(_closed) => Err(ExceptionCode::ServerDeviceFailure),
                     }
@@ -224,10 +351,14 @@ pub async fn client_read_write_loop(
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 RegCmd::WriteSingleHolding { addr, value, resp } => {
-                    let out = match ctx.write_single_register(addr as u16, value).await {
-                        Ok(Ok(_)) => Ok(()),
-                        Ok(Err(e)) => Err(e),
-                        Err(_) => Err(ExceptionCode::ServerDeviceFailure),
+                    let out = match timeout(IO_TIMEOUT, ctx.write_single_register(addr as u16, value)).await {
+                        Ok(Ok(Ok(_))) => Ok(()),
+                        Ok(Ok(Err(e))) => Err(e),
+                        Ok(Err(_)) => Err(ExceptionCode::ServerDeviceFailure),
+                        Err(_) => {
+                            let _ = resp.send(Err(ExceptionCode::ServerDeviceFailure));
+                            continue;
+                        }
                     };
                     let _ = resp.send(out);
                 }
@@ -240,10 +371,14 @@ pub async fn client_read_write_loop(
                         let chunk_len = (values.len() - idx).min(once_max_reg_cnt);
                         let chunk = &values[idx..idx + chunk_len];
 
-                        let out = match ctx.write_multiple_registers(start as u16, chunk).await {
-                            Ok(Ok(_)) => Ok(()),
-                            Ok(Err(e)) => Err(e),
-                            Err(_) => Err(ExceptionCode::ServerDeviceFailure),
+                        let out = match timeout(IO_TIMEOUT, ctx.write_multiple_registers(start as u16, chunk)).await {
+                            Ok(Ok(Ok(_))) => Ok(()),
+                            Ok(Ok(Err(e))) => Err(e),
+                            Ok(Err(_)) => Err(ExceptionCode::ServerDeviceFailure),
+                            Err(_) => {
+                                final_out = Err(ExceptionCode::ServerDeviceFailure);
+                                break;
+                            }
                         };
 
                         if out.is_err() {
@@ -268,8 +403,8 @@ pub async fn client_read_write_loop(
             let cnt = (args.holding_count - offset).min(once_max_reg_cnt);
             let addr = offset as u16;
 
-            match ctx.read_holding_registers(addr, cnt as u16).await {
-                Ok(rsp) => match rsp {
+            match timeout(IO_TIMEOUT, ctx.read_holding_registers(addr, cnt as u16)).await {
+                Ok(Ok(rsp)) => match rsp {
                     Ok(values) => {
                         let mut s = state.write().await;
                         let end = (offset + values.len()).min(s.holding.len());
@@ -278,14 +413,29 @@ pub async fn client_read_write_loop(
                             s.holding[offset..offset + write_len]
                                 .copy_from_slice(&values[..write_len]);
                         }
+                        // 更新字节流显示信息
+                        if write_len > 0 {
+                            s.last_frame = Some(FrameInfo {
+                                is_tcp: s.is_tcp,
+                                unit: args.unit,
+                                func_code: 0x03,
+                                func_name: format!("读保持寄存器"),
+                                addr,
+                                values: values[..write_len].to_vec(),
+                                is_request: false,
+                            });
+                        }
                         offset += cnt;
                     }
                     Err(e) => {
                         return Err(anyhow!("Modbus 异常响应: {e:?}"));
                     }
                 },
-                Err(e) => {
+                Ok(Err(e)) => {
                     return Err(anyhow!("客户端读取失败: {e}"));
+                }
+                Err(_) => {
+                    return Err(anyhow!("客户端读取超时"));
                 }
             }
         }
@@ -303,8 +453,9 @@ pub async fn run_modbus_tcp_client(
         args.device.clone()
     };
     let addr = format!("{}:{}", host, args.tcp_port);
-    let stream = tokio::net::TcpStream::connect(&addr)
+    let stream = timeout(IO_TIMEOUT, tokio::net::TcpStream::connect(&addr))
         .await
+        .context("连接 TCP 超时")?
         .context("连接 TCP 失败")?;
     let ctx = tokio_modbus::client::tcp::attach_slave(stream, Slave(args.unit));
 
@@ -314,7 +465,7 @@ pub async fn run_modbus_tcp_client(
 //各模式分支函数
 pub async fn run_modbus_tcp_server(
     args: Args,
-    _state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", args.tcp_port))
@@ -325,6 +476,7 @@ pub async fn run_modbus_tcp_server(
         tx,
         holding_len: args.holding_count,
         unit: args.unit,
+        state,
     };
 
     let server = server::tcp::Server::new(listener);
@@ -379,7 +531,7 @@ pub async fn run_modbus_rtu_client(
 
 pub async fn run_modbus_rtu_server(
     args: Args,
-    _state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<AppState>>,
     tx: mpsc::UnboundedSender<RegCmd>,
 ) -> Result<()> {
     let parity = parse_parity(&args.parity)?;
@@ -401,6 +553,7 @@ pub async fn run_modbus_rtu_server(
         tx,
         holding_len: args.holding_count,
         unit: args.unit,
+        state,
     };
 
     let server = server::rtu::Server::new(port);
@@ -409,4 +562,92 @@ pub async fn run_modbus_rtu_server(
         .await
         .map_err(|e| anyhow!("{e}"))?;
     Ok(())
+}
+
+/// 根据 FrameInfo 构造原始的 Modbus 帧字节（用于 UI 展示）
+pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
+    let is_tcp = fi.is_tcp;
+    let unit = fi.unit;
+    match fi.func_code {
+        0x03 => {
+            // 读保持寄存器响应
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut raw = Vec::new();
+            raw.push(fi.func_code);
+            let payload_len = fi.values.len() * 2;
+            raw.push(payload_len as u8);
+            for v in &fi.values {
+                raw.push((v >> 8) as u8);
+                raw.push((v & 0xFF) as u8);
+            }
+            if is_tcp {
+                bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+                bytes.push(0x00);
+                bytes.push(raw.len() as u8 + 1);
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+            } else {
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+                let crc = calc_crc16(&bytes);
+                bytes.push((crc & 0xFF) as u8);
+                bytes.push((crc >> 8) as u8);
+            }
+            bytes
+        }
+        0x06 => {
+            // 写单寄存器响应
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut raw = Vec::new();
+            let addr = fi.addr;
+            raw.push(fi.func_code);
+            raw.push((addr >> 8) as u8);
+            raw.push((addr & 0xFF) as u8);
+            if let Some(v) = fi.values.first() {
+                raw.push((v >> 8) as u8);
+                raw.push((v & 0xFF) as u8);
+            }
+            if is_tcp {
+                bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+                bytes.push(0x00);
+                bytes.push(raw.len() as u8 + 1);
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+            } else {
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+                let crc = calc_crc16(&bytes);
+                bytes.push((crc & 0xFF) as u8);
+                bytes.push((crc >> 8) as u8);
+            }
+            bytes
+        }
+        0x10 => {
+            // 写多寄存器响应
+            let mut bytes: Vec<u8> = Vec::new();
+            let addr = fi.addr;
+            let qty = fi.values.len() as u16;
+            let mut raw = Vec::new();
+            raw.push(fi.func_code);
+            raw.push((addr >> 8) as u8);
+            raw.push((addr & 0xFF) as u8);
+            raw.push((qty >> 8) as u8);
+            raw.push((qty & 0xFF) as u8);
+            if is_tcp {
+                bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
+                bytes.push(0x00);
+                bytes.push(raw.len() as u8 + 1);
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+            } else {
+                bytes.push(unit);
+                bytes.extend_from_slice(&raw);
+                let crc = calc_crc16(&bytes);
+                bytes.push((crc & 0xFF) as u8);
+                bytes.push((crc >> 8) as u8);
+            }
+            bytes
+        }
+        _ => vec![],
+    }
 }

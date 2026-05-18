@@ -5,6 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tokio_serial::{DataBits, FlowControl, Parity, StopBits};
 mod ui;
+use crate::ui::MenuSelection;
 use modbus::*;
 use serde;
 use ui::*;
@@ -116,10 +117,23 @@ impl Default for Args {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct FrameInfo {
+    pub is_tcp: bool,
+    pub unit: u8,
+    pub func_code: u8,
+    pub func_name: String,
+    pub addr: u16,
+    pub values: Vec<u16>,
+    pub is_request: bool,
+}
+
 #[derive(Default)]
 struct AppState {
     holding: Vec<u16>,
     holding_label: Vec<String>,
+    pub last_frame: Option<FrameInfo>,
+    pub is_tcp: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -202,29 +216,65 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     }
 }
 
+/// 根据 MenuSelection 加载对应配置并解包为 (MainMode, Args)
+fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode, Args)> {
+    let main_mode = sel.main_mode;
+
+    let mut args = if let Some(ref profile_name) = sel.profile_name {
+        // 加载指定配置
+        let config_str = std::fs::read_to_string(config_path)
+            .with_context(|| format!("无法读取配置文件: {}", config_path))?;
+        let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
+            .with_context(|| format!("配置文件 {} 解析失败", config_path))?;
+        configs
+            .get(profile_name)
+            .cloned()
+            .ok_or_else(|| anyhow!("配置文件中找不到 '{}'", profile_name))?
+    } else {
+        Args::default()
+    };
+
+    // 覆盖 main_mode 为菜单选择的模式
+    args.main_mode = match main_mode {
+        MainMode::TcpServer => "tcp-server".into(),
+        MainMode::TcpClient => "tcp-client".into(),
+        MainMode::RTUServer => "rtu-server".into(),
+        MainMode::RTUClient => "rtu-client".into(),
+    };
+
+    Ok((main_mode, args))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut args = Args::parse();
+    let cli_args = Args::parse();
 
-    if let Some(profile_name) = &args.profile {
-        let config_str = std::fs::read_to_string(&args.config)
-            .with_context(|| format!("无法读取配置文件: {}", args.config))?;
-
+    // 如果 CLI 指定了 --profile，直接使用（跳过菜单）
+    let (main_mode, args) = if let Some(profile_name) = &cli_args.profile {
+        let config_str = std::fs::read_to_string(&cli_args.config)
+            .with_context(|| format!("无法读取配置文件: {}", cli_args.config))?;
         let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
-            .with_context(|| format!("配置文件 {} 解析失败", args.config))?;
-
+            .with_context(|| format!("配置文件 {} 解析失败", cli_args.config))?;
         if let Some(profile_args) = configs.get(profile_name) {
-            args = profile_args.clone();
+            let mut args = profile_args.clone();
+            let main_mode = parse_mainmode(&args.main_mode)?;
+            args.config = cli_args.config;
+            (main_mode, args)
         } else {
             anyhow::bail!(
-                "警告: 配置文件 {} 中找不到预设槽位 '{}'",
-                args.config,
+                "配置文件中找不到预设槽位 '{}'",
                 profile_name
             );
         }
-    }
+    } else {
+        // 加载配置列表
+        let profiles = load_profile_list(&cli_args.config);
 
-    let main_mode = parse_mainmode(&args.main_mode)?;
+        // 显示菜单
+        let sel = run_menu(&cli_args.config, profiles).await?;
+        // 用户按 q 退出时的处理
+        resolve_selection(&cli_args.config, &sel)?
+    };
 
     let holding = vec![0u16; args.holding_count];
 
@@ -240,6 +290,8 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(AppState {
         holding,
         holding_label,
+        last_frame: None,
+        is_tcp: matches!(main_mode, MainMode::TcpServer | MainMode::TcpClient),
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
