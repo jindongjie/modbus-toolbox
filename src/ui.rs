@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::time::{timeout, Duration};
 
 // std
-use std::{collections::HashMap, io, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, io, sync::Arc};
 
 // crossterm
 use crossterm::{
@@ -36,6 +36,8 @@ enum MenuScreen {
     Main,        // 主菜单
     ProfilePick, // 选择配置（Server/Client 子菜单）
     ProfileSet,  // 配置管理设置
+    ProfileEdit, // 编辑配置字段
+    NamePrompt,  // 输入新增/克隆的配置名
 }
 
 /// 菜单选择结果，返回给 main.rs
@@ -72,16 +74,31 @@ pub struct Ui {
     default_profile: Option<String>,
     /// 主菜单渲染用的 Logo ASCII ART 行
     logo_lines: Vec<String>,
+
+    // --- 配置编辑相关字段 ---
+    /// 正在编辑的配置名
+    edit_profile_name: Option<String>,
+    /// 正在编辑的配置参数副本
+    edit_args: Option<Args>,
+    /// 编辑字段缓冲
+    field_edit_buf: String,
+    /// 是否正在编辑字段值（true=编辑模式，false=导航模式）
+    field_edit_mode: bool,
+
+    // --- 新增/克隆配置相关字段 ---
+    /// 新增/克隆时的名称输入缓冲
+    name_prompt_buf: String,
+    /// true=克隆选中配置, false=新建空配置
+    name_prompt_is_clone: bool,
+    /// 克隆时暂存的原配置 Args
+    name_prompt_clone_args: Option<Args>,
 }
 
 impl Ui {
     fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
         let logo_raw = include_str!("logo.txt");
         let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
-        logo_lines.push(format!(
-            "                        Modbus Toolbox v{}",
-            env!("CARGO_PKG_VERSION")
-        ));
+        logo_lines.push(format!("                   v{}", env!("CARGO_PKG_VERSION")));
         let default = profiles.first().cloned();
         Self {
             base,
@@ -101,6 +118,17 @@ impl Ui {
             pending_mode: None,
             default_profile: default,
             logo_lines,
+
+            // 配置编辑
+            edit_profile_name: None,
+            edit_args: None,
+            field_edit_buf: String::new(),
+            field_edit_mode: false,
+
+            // 新增/克隆
+            name_prompt_buf: String::new(),
+            name_prompt_is_clone: false,
+            name_prompt_clone_args: None,
         }
     }
 }
@@ -191,11 +219,11 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     );
 
     // --- 主菜单区：垂直排列 ---
-    let menu_items = [
-        ("TCP Server", MainMode::TcpServer),
-        ("TCP Client", MainMode::TcpClient),
-        ("RTU Server", MainMode::RTUServer),
-        ("RTU Client", MainMode::RTUClient),
+    let menu_items: [(&str, MainMode); 4] = [
+        ("main_menu.tcp_server", MainMode::TcpServer),
+        ("main_menu.tcp_client", MainMode::TcpClient),
+        ("main_menu.rtu_server", MainMode::RTUServer),
+        ("main_menu.rtu_client", MainMode::RTUClient),
     ];
 
     let block = Block::default()
@@ -209,7 +237,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     let mut lines: Vec<Line> = Vec::new();
 
     // 渲染 4 个模式菜单项
-    for (i, &(label, _mode)) in menu_items.iter().enumerate() {
+    for (i, &(key, _mode)) in menu_items.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
         let item_style = if is_selected {
             Style::default()
@@ -220,6 +248,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
             Style::default()
         };
         let prefix = if is_selected { " ▸ " } else { "   " };
+        let label = t!(key);
         lines.push(Line::from(Span::styled(
             format!("{}[ {} ]", prefix, label),
             item_style,
@@ -240,7 +269,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     };
     let prefix = if is_selected { " ▸ " } else { "   " };
     lines.push(Line::from(Span::styled(
-        format!("{}[ Profile Settings ]", prefix),
+        format!("{}[ {} ]", prefix, t!("main_menu.profile_settings")),
         p_style,
     )));
 
@@ -324,10 +353,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
-            Line::from(Span::styled(
-                format!("{prefix}{name}"),
-                Style::default().fg(Color::White),
-            ))
+            Line::from(Span::styled(format!("{prefix}{name}"), Style::default()))
         };
         items.push(line);
     }
@@ -393,7 +419,6 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     );
 }
 
-/// 配置管理设置（ProfileSet）：查看 / 设置默认配置
 fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let area = f.area();
     let vert = Layout::vertical([
@@ -439,10 +464,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
-            Line::from(Span::styled(
-                format!(" {icon} {name}"),
-                Style::default().fg(Color::White),
-            ))
+            Line::from(Span::styled(format!(" {icon} {name}"), Style::default()))
         };
         items.push(line);
     }
@@ -615,6 +637,43 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                 }
             }
         }
+        KeyCode::Char('e') => {
+            // 编辑选中配置
+            if ui.menu_list_idx < ui.profiles.len() {
+                let name = ui.profiles[ui.menu_list_idx].clone();
+                if let Some((_, args)) = load_profile_args(config_path, &name) {
+                    ui.edit_profile_name = Some(name.clone());
+                    ui.edit_args = Some(args);
+                    ui.menu_list_idx = 0;
+                    ui.field_edit_mode = false;
+                    ui.field_edit_buf.clear();
+                    ui.menu_screen = MenuScreen::ProfileEdit;
+                } else {
+                    set_status(ui, t!("profile_settings.load_fail"));
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            // 新增配置
+            ui.name_prompt_buf.clear();
+            ui.name_prompt_is_clone = false;
+            ui.name_prompt_clone_args = None;
+            ui.menu_screen = MenuScreen::NamePrompt;
+        }
+        KeyCode::Char('c') => {
+            // 克隆选中配置
+            if ui.menu_list_idx < ui.profiles.len() {
+                let name = ui.profiles[ui.menu_list_idx].clone();
+                if let Some((_, args)) = load_profile_args(config_path, &name) {
+                    ui.name_prompt_buf.clear();
+                    ui.name_prompt_is_clone = true;
+                    ui.name_prompt_clone_args = Some(args);
+                    ui.menu_screen = MenuScreen::NamePrompt;
+                } else {
+                    set_status(ui, t!("profile_settings.load_fail"));
+                }
+            }
+        }
         KeyCode::Esc => {
             ui.menu_screen = MenuScreen::Main;
         }
@@ -624,6 +683,559 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                 profile_name: None,
                 quit: true,
             });
+        }
+        _ => {}
+    }
+    None
+}
+
+// ─────────────────────────────────────────
+// 配置字段编辑：字段定义、渲染、按键处理
+// ─────────────────────────────────────────
+
+/// 可编辑的配置字段描述
+struct ProfileField {
+    /// 字段名（i18n key 后缀）
+    name_key: &'static str,
+    /// 从 Args 中提取当前值的显示字符串
+    display: Box<dyn Fn(&Args) -> String>,
+    /// 将字符串解析为新值并设置到 Args 中
+    apply: Box<dyn Fn(&mut Args, &str) -> Result<(), String>>,
+}
+
+/// 返回所有可编辑字段的列表
+fn profile_fields() -> Vec<ProfileField> {
+    fn main_mode_display(a: &Args) -> String {
+        a.main_mode.clone()
+    }
+    fn main_mode_apply(a: &mut Args, v: &str) -> Result<(), String> {
+        let v = v.trim().to_lowercase();
+        match v.as_str() {
+            "tcp-server" | "ts" => a.main_mode = "tcp-server".into(),
+            "tcp-client" | "tc" => a.main_mode = "tcp-client".into(),
+            "rtu-server" | "rs" => a.main_mode = "rtu-server".into(),
+            "rtu-client" | "rc" => a.main_mode = "rtu-client".into(),
+            _ => return Err(format!("无效模式: {v} (ts/tc/rs/rc)")),
+        }
+        Ok(())
+    }
+    fn num_display<T: ToString + 'static>(f: fn(&Args) -> T) -> Box<dyn Fn(&Args) -> String> {
+        Box::new(move |a| f(a).to_string())
+    }
+    fn num_apply<T: std::str::FromStr + 'static>(
+        set: fn(&mut Args, T),
+        name: &'static str,
+    ) -> Box<dyn Fn(&mut Args, &str) -> Result<(), String>> {
+        let name = name;
+        Box::new(move |a, v| {
+            let v = v.trim();
+            v.parse::<T>()
+                .map(|val| set(a, val))
+                .map_err(|_| format!("{name} 必须是有效数字"))
+        })
+    }
+    fn str_apply(set: fn(&mut Args, String)) -> Box<dyn Fn(&mut Args, &str) -> Result<(), String>> {
+        Box::new(move |a, v| {
+            set(a, v.to_string());
+            Ok(())
+        })
+    }
+
+    vec![
+        ProfileField {
+            name_key: "main_mode",
+            display: Box::new(main_mode_display),
+            apply: Box::new(main_mode_apply),
+        },
+        ProfileField {
+            name_key: "tcp_port",
+            display: num_display(|a: &Args| a.tcp_port),
+            apply: num_apply(|a: &mut Args, v| a.tcp_port = v, "TCP端口"),
+        },
+        ProfileField {
+            name_key: "unit",
+            display: num_display(|a: &Args| a.unit),
+            apply: num_apply(|a: &mut Args, v| a.unit = v, "从站地址"),
+        },
+        ProfileField {
+            name_key: "holding_count",
+            display: num_display(|a: &Args| a.holding_count),
+            apply: num_apply(|a: &mut Args, v| a.holding_count = v, "寄存器数"),
+        },
+        ProfileField {
+            name_key: "client_tick_ms",
+            display: num_display(|a: &Args| a.client_tick_ms),
+            apply: num_apply(|a: &mut Args, v| a.client_tick_ms = v, "轮询间隔"),
+        },
+        ProfileField {
+            name_key: "device",
+            display: Box::new(|a: &Args| a.device.clone()),
+            apply: str_apply(|a: &mut Args, v| a.device = v),
+        },
+        ProfileField {
+            name_key: "baudrate",
+            display: num_display(|a: &Args| a.baudrate),
+            apply: num_apply(|a: &mut Args, v| a.baudrate = v, "波特率"),
+        },
+        ProfileField {
+            name_key: "parity",
+            display: Box::new(|a: &Args| a.parity.clone()),
+            apply: Box::new(|a: &mut Args, v: &str| {
+                let v = v.trim().to_lowercase();
+                match v.as_str() {
+                    "n" | "none" => a.parity = "n".into(),
+                    "e" | "even" => a.parity = "e".into(),
+                    "o" | "odd" => a.parity = "o".into(),
+                    _ => return Err(format!("无效校验位: {v} (n/e/o)")),
+                }
+                Ok(())
+            }),
+        },
+        ProfileField {
+            name_key: "flow",
+            display: Box::new(|a: &Args| a.flow.clone()),
+            apply: Box::new(|a: &mut Args, v: &str| {
+                let v = v.trim().to_lowercase();
+                match v.as_str() {
+                    "none" => a.flow = "none".into(),
+                    "hardware" | "hard" => a.flow = "hardware".into(),
+                    "software" | "soft" => a.flow = "software".into(),
+                    _ => return Err(format!("无效流控: {v} (none/hard/soft)")),
+                }
+                Ok(())
+            }),
+        },
+        ProfileField {
+            name_key: "databits",
+            display: num_display(|a: &Args| a.databits),
+            apply: Box::new(|a: &mut Args, v: &str| {
+                let val: u8 = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| "数据位必须是数字".to_string())?;
+                if ![5, 6, 7, 8].contains(&val) {
+                    return Err("数据位必须是 5/6/7/8".to_string());
+                }
+                a.databits = val;
+                Ok(())
+            }),
+        },
+        ProfileField {
+            name_key: "stopbits",
+            display: num_display(|a: &Args| a.stopbits),
+            apply: Box::new(|a: &mut Args, v: &str| {
+                let val: u8 = v
+                    .trim()
+                    .parse()
+                    .map_err(|_| "停止位必须是数字".to_string())?;
+                if val != 1 && val != 2 {
+                    return Err("停止位必须是 1 或 2".to_string());
+                }
+                a.stopbits = val;
+                Ok(())
+            }),
+        },
+    ]
+}
+
+/// 保存编辑后的配置到配置文件
+fn save_edited_profile(config_path: &str, profile_name: &str, args: &Args) -> Result<()> {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    configs.insert(profile_name.to_string(), args.clone());
+    let s = toml::to_string_pretty(&configs)?;
+    std::fs::write(config_path, s)?;
+    Ok(())
+}
+
+/// 渲染配置编辑界面
+fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(10),
+        Constraint::Length(3),
+    ])
+    .split(area);
+
+    let profile_name = ui.edit_profile_name.as_deref().unwrap_or("?");
+    let title = t!("profile_edit.title", name = profile_name);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            title.as_ref(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
+
+    let fields = profile_fields();
+    let main =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(vert[1]);
+
+    // 左：字段列表
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, field) in fields.iter().enumerate() {
+        let is_selected = i == ui.menu_list_idx;
+        let args = ui.edit_args.as_ref().unwrap();
+        let val = (field.display)(args);
+        let label_key = format!("profile_edit.{}", field.name_key);
+        let label = t!(&label_key);
+
+        let line = if is_selected {
+            Line::from(vec![
+                Span::styled(" ▸ ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{}: ", label),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(val, Style::default().fg(Color::Black).bg(Color::Cyan)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(format!("{}: ", label), Style::default()),
+                Span::styled(val, Style::default().fg(Color::Green)),
+            ])
+        };
+        lines.push(line);
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_edit.fields_title"))
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(lines).block(list_block), main[0]);
+
+    // 右：编辑面板或提示
+    let right_content = if ui.field_edit_mode {
+        // 编辑模式下显示输入框
+        let field = &fields[ui.menu_list_idx];
+        let label_key = format!("profile_edit.{}", field.name_key);
+        let label = t!(&label_key);
+        let mut edit_lines = vec![
+            Line::from(Span::styled(
+                t!("profile_edit.editing", label = label.as_ref()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                format!("> {}", ui.field_edit_buf),
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::raw("")),
+        ];
+        // 如有校验提示，添加提示信息
+        let hint = match field.name_key {
+            "main_mode" => "ts/tc/rs/rc 或 tcp-client/tcp-server/rtu-client/rtu-server",
+            "parity" => "n(even) / e(ven) / o(dd)",
+            "flow" => "none / hard(ware) / soft(ware)",
+            "databits" => "5 / 6 / 7 / 8",
+            "stopbits" => "1 / 2",
+            _ => "",
+        };
+        if !hint.is_empty() {
+            edit_lines.push(Line::from(Span::styled(
+                hint,
+                Style::default().fg(Color::DarkGray),
+            )));
+            edit_lines.push(Line::from(Span::raw("")));
+        }
+        edit_lines.push(Line::from(Span::styled(
+            t!("profile_edit.edit_help"),
+            Style::default().fg(Color::DarkGray),
+        )));
+        Paragraph::new(edit_lines)
+    } else {
+        // 导航模式显示提示
+        let help_text = if ui.edit_args.is_some() {
+            t!("profile_edit.nav_help")
+        } else {
+            Cow::from("")
+        };
+        let mut right_lines = vec![
+            Line::from(Span::styled(
+                t!("profile_edit.preview_title"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::raw("")),
+        ];
+        if let Some(ref args) = ui.edit_args {
+            let summary = fields
+                .iter()
+                .map(|f| {
+                    let key = format!("profile_edit.{}", f.name_key);
+                    format!("  {}: {}", t!(&key), (f.display)(args))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            right_lines.push(Line::from(Span::styled(
+                summary,
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        right_lines.push(Line::from(Span::raw("")));
+        right_lines.push(Line::from(Span::styled(
+            help_text,
+            Style::default().fg(Color::DarkGray),
+        )));
+        Paragraph::new(right_lines)
+    };
+
+    let edit_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_edit.edit_title"))
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(right_content.block(edit_block), main[1]);
+
+    // 底部帮助
+    let help = t!("profile_edit.help");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[2],
+    );
+}
+
+/// 处理配置编辑界面的按键事件
+fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
+    let fields = profile_fields();
+    let field_count = fields.len();
+
+    if ui.field_edit_mode {
+        // 字段值编辑模式
+        match code {
+            KeyCode::Esc => {
+                ui.field_edit_mode = false;
+                ui.field_edit_buf.clear();
+                set_status(ui, t!("profile_edit.edit_cancelled"));
+            }
+            KeyCode::Enter => {
+                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
+                let val = ui.field_edit_buf.clone();
+                if let Some(ref mut args) = ui.edit_args {
+                    match (fields[idx].apply)(args, &val) {
+                        Ok(()) => {
+                            ui.field_edit_mode = false;
+                            ui.field_edit_buf.clear();
+                            set_status(ui, t!("profile_edit.field_updated"));
+                        }
+                        Err(msg) => {
+                            set_status(ui, msg);
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                ui.field_edit_buf.pop();
+            }
+            KeyCode::Char(ch) => {
+                ui.field_edit_buf.push(ch);
+            }
+            _ => {}
+        }
+    } else {
+        // 导航模式
+        match code {
+            KeyCode::Up => {
+                ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if ui.menu_list_idx + 1 < field_count {
+                    ui.menu_list_idx += 1;
+                }
+            }
+            KeyCode::Enter => {
+                // 进入编辑模式
+                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
+                let val = (fields[idx].display)(ui.edit_args.as_ref().unwrap());
+                ui.field_edit_buf = val;
+                ui.field_edit_mode = true;
+            }
+            KeyCode::Char('s') => {
+                // 保存配置
+                let name = ui.edit_profile_name.clone();
+                if let Some(ref args) = ui.edit_args {
+                    if let Some(ref name) = name {
+                        match save_edited_profile(config_path, name, args) {
+                            Ok(()) => {
+                                set_status(ui, t!("profile_edit.save_success", name = name));
+                                // 回退到配置管理
+                                ui.menu_screen = MenuScreen::ProfileSet;
+                                ui.menu_list_idx =
+                                    ui.profiles.iter().position(|p| p == name).unwrap_or(0);
+                                ui.edit_profile_name = None;
+                                ui.edit_args = None;
+                            }
+                            Err(e) => {
+                                set_status(ui, format!("{}", e));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Esc => {
+                // 返回配置管理，不保存
+                ui.menu_screen = MenuScreen::ProfileSet;
+                ui.menu_list_idx = ui
+                    .profiles
+                    .iter()
+                    .position(|p| Some(p.as_str()) == ui.edit_profile_name.as_deref())
+                    .unwrap_or(0);
+                ui.edit_profile_name = None;
+                ui.edit_args = None;
+                set_status(ui, t!("profile_edit.edit_cancelled"));
+            }
+            KeyCode::Char('q') => {
+                return Some(MenuSelection {
+                    main_mode: MainMode::TcpClient,
+                    profile_name: None,
+                    quit: true,
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+// ─────────────────────────────────────────
+// 名称输入提示：新增/克隆配置
+// ─────────────────────────────────────────
+
+/// 保存一个新配置到配置文件
+fn save_new_profile(config_path: &str, name: &str, args: &Args) -> Result<()> {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    configs.insert(name.to_string(), args.clone());
+    let s = toml::to_string_pretty(&configs)?;
+    std::fs::write(config_path, s)?;
+    Ok(())
+}
+
+/// 渲染名称输入界面
+fn render_name_prompt(f: &mut Frame<'_>, ui: &Ui) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(7),
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            if ui.name_prompt_is_clone {
+                t!("profile_settings.clone_title")
+            } else {
+                t!("profile_settings.add_title")
+            },
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
+
+    let prompt_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_settings.name_prompt"))
+        .border_style(Style::default().fg(Color::Cyan));
+    let input_text: Line = if ui.name_prompt_buf.is_empty() {
+        Line::from(Span::styled(
+            t!("profile_settings.name_placeholder"),
+            Style::default(),
+        ))
+    } else {
+        Line::from(Span::styled(ui.name_prompt_buf.as_str(), Style::default()))
+    };
+    f.render_widget(
+        Paragraph::new(input_text)
+            .block(prompt_block)
+            .alignment(ratatui::layout::Alignment::Center),
+        vert[1],
+    );
+
+    let help = t!("profile_settings.name_help");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[2],
+    );
+}
+
+/// 处理名称输入界面的按键事件
+fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
+    match code {
+        KeyCode::Enter => {
+            let name = ui.name_prompt_buf.trim().to_string();
+            if name.is_empty() {
+                set_status(ui, t!("profile_settings.name_empty"));
+                return None;
+            }
+            if ui.profiles.contains(&name) {
+                set_status(ui, t!("profile_settings.name_exists"));
+                return None;
+            }
+            if name == "__default__" {
+                set_status(ui, t!("profile_settings.name_reserved"));
+                return None;
+            }
+            let args = if ui.name_prompt_is_clone {
+                ui.name_prompt_clone_args.clone().unwrap_or_default()
+            } else {
+                Args::default()
+            };
+            match save_new_profile(config_path, &name, &args) {
+                Ok(()) => {
+                    set_status(ui, t!("profile_settings.add_success", name = &name));
+                    // 重新加载配置列表
+                    let mut reloaded = load_profile_list(config_path);
+                    reloaded.sort();
+                    ui.profiles = reloaded;
+                    // 选中新配置并进入编辑模式
+                    ui.edit_profile_name = Some(name.clone());
+                    ui.edit_args = Some(args);
+                    ui.menu_list_idx = 0;
+                    ui.field_edit_mode = false;
+                    ui.field_edit_buf.clear();
+                    ui.menu_screen = MenuScreen::ProfileEdit;
+                }
+                Err(e) => {
+                    set_status(ui, format!("{}", e));
+                }
+            }
+        }
+        KeyCode::Esc => {
+            ui.menu_screen = MenuScreen::ProfileSet;
+        }
+        KeyCode::Backspace => {
+            ui.name_prompt_buf.pop();
+        }
+        KeyCode::Char('q') => {
+            return Some(MenuSelection {
+                main_mode: MainMode::TcpClient,
+                profile_name: None,
+                quit: true,
+            });
+        }
+        KeyCode::Char(ch) => {
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' {
+                ui.name_prompt_buf.push(ch);
+            }
         }
         _ => {}
     }
@@ -659,6 +1271,8 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::Main => render_main_menu(f, &ui),
                     MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+                    MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
+                    MenuScreen::NamePrompt => render_name_prompt(f, &ui),
                 });
                 continue;
             }
@@ -673,6 +1287,8 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::Main => handle_main_menu_key(&mut ui, code),
                     MenuScreen::ProfilePick => handle_profile_pick_key(&mut ui, code, config_path),
                     MenuScreen::ProfileSet => handle_profile_set_key(&mut ui, code, config_path),
+                    MenuScreen::ProfileEdit => handle_profile_edit_key(&mut ui, code, config_path),
+                    MenuScreen::NamePrompt => handle_name_prompt_key(&mut ui, code, config_path),
                 };
                 if let Some(sel) = sel {
                     break Ok(sel);
@@ -683,6 +1299,8 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::Main => render_main_menu(f, &ui),
                     MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+                    MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
+                    MenuScreen::NamePrompt => render_name_prompt(f, &ui),
                 });
             }
             _ => {}
@@ -693,6 +1311,8 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
             MenuScreen::Main => render_main_menu(f, &ui),
             MenuScreen::ProfilePick => render_profile_pick(f, &ui, config_path),
             MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
+            MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
+            MenuScreen::NamePrompt => render_name_prompt(f, &ui),
         });
     };
 
@@ -1130,7 +1750,7 @@ fn render_register_table(
             .borders(Borders::ALL)
             .title(t!("register_table.title")),
     )
-    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .row_highlight_style(Style::default().bg(Color::Blue))
     .highlight_symbol(">> ");
 
     f.render_stateful_widget(t, area, &mut table_state);
