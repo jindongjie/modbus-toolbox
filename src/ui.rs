@@ -196,7 +196,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("选择模式")
+        .title(t!("main_menu.title"))
         .border_style(Style::default().fg(Color::Cyan));
 
     let inner = block.inner(vert[1]);
@@ -244,15 +244,16 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     f.render_widget(paragraph, inner);
 
     // --- 底部信息栏 ---
-    let default_name = ui.default_profile.as_deref().unwrap_or("(无)");
-    let selected = ui.selected_profile.as_deref().unwrap_or("(无)");
-    let status = format!(
-        "默认配置: {} | 当前选中: {} | ↑ ↓ 选择  Enter 确认  q 退出",
-        default_name, selected
-    );
+    let default_name = ui.default_profile.as_deref()
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| t!("main_menu.none"));
+    let selected = ui.selected_profile.as_deref()
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| t!("main_menu.none"));
+    let status = t!("main_menu.info_bar", default = default_name, selected = selected);
     f.render_widget(
         Paragraph::new(status)
-            .block(Block::default().borders(Borders::ALL).title("信息"))
+            .block(Block::default().borders(Borders::ALL).title(t!("main_menu.info")))
             .style(Style::default().fg(Color::DarkGray)),
         vert[2],
     );
@@ -276,9 +277,9 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
         Some(MainMode::RTUClient) => "RTU Client",
         None => "?",
     };
-    let title = format!(" 选择配置 — {mode_name} ");
+    let title = t!("profile_pick.title", mode = mode_name);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(&title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+        Paragraph::new(Line::from(Span::styled(title.as_ref(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
             .alignment(ratatui::layout::Alignment::Center),
         vert[0],
     );
@@ -310,14 +311,14 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     }
     if ui.profiles.is_empty() {
         items.push(Line::from(Span::styled(
-            " (暂无配置) ",
+            t!("profile_pick.empty_list"),
             Style::default().fg(Color::DarkGray),
         )));
     }
 
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title("配置列表")
+        .title(t!("profile_pick.list_title"))
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(items).block(list_block), main[0]);
 
@@ -326,36 +327,36 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
         let name = &ui.profiles[ui.menu_list_idx];
         if let Some((_, args)) = load_profile_args(config_path, name) {
             format!(
-                "配置名: {}\n\
+                "{}\n\
                  ─────────────────\n\
-                 模式:     {}\n\
-                 TCP端口: {}\n\
-                 从站地址: {}\n\
-                 寄存器数: {}\n\
-                 串口设备: {}\n\
-                 波特率:   {}",
-                name,
-                args.main_mode,
-                args.tcp_port,
-                args.unit,
-                args.holding_count,
-                args.device,
-                args.baudrate,
+                 {}\n\
+                 {}\n\
+                 {}\n\
+                 {}\n\
+                 {}\n\
+                 {}",
+                t!("profile_pick.preview_name", name = name),
+                t!("profile_pick.preview_mode", mode = &args.main_mode),
+                t!("profile_pick.preview_port", port = args.tcp_port),
+                t!("profile_pick.preview_unit", unit = args.unit),
+                t!("profile_pick.preview_count", count = args.holding_count),
+                t!("profile_pick.preview_device", device = &args.device),
+                t!("profile_pick.preview_baud", baud = args.baudrate),
             )
         } else {
-            format!("配置名: {}\n无法加载配置详情", name)
+            format!("{}\n{}", t!("profile_pick.preview_name", name = name), t!("profile_pick.load_fail"))
         }
     } else {
-        "请选择一个配置".to_string()
+        t!("profile_pick.select_hint").to_string()
     };
     let preview_block = Block::default()
         .borders(Borders::ALL)
-        .title("配置预览")
+        .title(t!("profile_pick.preview_title"))
         .border_style(Style::default().fg(Color::Green));
     f.render_widget(Paragraph::new(preview_text).block(preview_block), main[1]);
 
     // 底部帮助
-    let help = " ↑ ↓ 切换配置  Enter 确认选择  Esc 返回主菜单 ";
+    let help = t!("profile_pick.help");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
             .alignment(ratatui::layout::Alignment::Center),
@@ -375,7 +376,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " 配置管理设置 ",
+            t!("profile_settings.title"),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -414,36 +415,28 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         items.push(line);
     }
     if ui.profiles.is_empty() {
-        items.push(Line::from(Span::styled(" (暂无配置) ", Style::default().fg(Color::DarkGray))));
+        items.push(Line::from(Span::styled(t!("profile_settings.empty_list"), Style::default().fg(Color::DarkGray))));
     }
 
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title("配置列表（○ 普通  ● 默认）")
+        .title(t!("profile_settings.list_title"))
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(items).block(list_block), main[0]);
 
     // 右：当前默认配置信息 + 操作说明
-    let default_name = ui.default_profile.as_deref().unwrap_or("(未设置)");
-    let info = format!(
-        "当前默认: {}\n\
-         ─────────────────\n\
-         按 Enter 将选中配置设为默认\n\
-         按 Esc 返回主菜单\n\
-         \n\
-         提示：\n\
-         启动时未指定 --profile 时\n\
-         自动加载默认配置",
-        default_name
-    );
+    let default_name = ui.default_profile.as_deref()
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| t!("profile_settings.info_default"));
+    let info = t!("profile_settings.info_text", name = default_name);
     let info_block = Block::default()
         .borders(Borders::ALL)
-        .title("说明")
+        .title(t!("profile_settings.info_title"))
         .border_style(Style::default().fg(Color::Green));
     f.render_widget(Paragraph::new(info).block(info_block), main[1]);
 
     // 底部
-    let help = " ↑ ↓ 切换  Enter 设为默认  Esc 返回主菜单 ";
+    let help = t!("profile_settings.help");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
             .alignment(ratatui::layout::Alignment::Center),
@@ -570,9 +563,9 @@ fn handle_profile_set_key(
                 if save_default_profile(config_path, &name).is_ok() {
                     ui.default_profile = Some(name.clone());
                     ui.selected_profile = Some(name);
-                    set_status(ui, format!("已设置默认配置为: {}", ui.default_profile.as_deref().unwrap_or("")));
+                    set_status(ui, t!("profile_settings.set_success", name = ui.default_profile.as_deref().unwrap_or("")));
                 } else {
-                    set_status(ui, "设置默认配置失败，请检查配置文件权限");
+                    set_status(ui, t!("profile_settings.set_fail"));
                 }
             }
         }
@@ -669,11 +662,11 @@ pub async fn run_ui(
     args: Args,
     server_status: Arc<RwLock<Option<String>>>,
 ) -> Result<()> {
-    enable_raw_mode().context("enable raw mode 进入终端全自主操作模式")?;
+    enable_raw_mode().context(t!("run_ui.enable_raw_mode"))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("enter alt screen 转入自主屏幕空间")?;
+    execute!(stdout, EnterAlternateScreen).context(t!("run_ui.enter_alt_screen"))?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).context("create terminal 创建终端")?;
+    let mut terminal = Terminal::new(backend).context(t!("run_ui.create_terminal"))?;
 
     let mut events = EventStream::new();
     let mut ui = Ui::new(args.base, Vec::new());
@@ -705,14 +698,14 @@ pub async fn run_ui(
                                     let panel_text = format_byte_panel(fi);
                                     f.render_widget(
                                         ratatui::widgets::Paragraph::new(panel_text)
-                                            .block(Block::default().borders(Borders::ALL).title("字节流 (Modbus)"))
+                                            .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
                                             .style(Style::default().fg(Color::Cyan)),
                                         top[0],
                                     );
                                 } else {
                                     f.render_widget(
-                                        ratatui::widgets::Paragraph::new("无数据\n\n等待 Modbus 通讯中...")
-                                            .block(Block::default().borders(Borders::ALL).title("字节流 (Modbus)"))
+                                        ratatui::widgets::Paragraph::new(t!("run_ui.no_data"))
+                                            .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
                                             .style(Style::default().fg(Color::DarkGray)),
                                         top[0],
                                     );
@@ -725,30 +718,30 @@ pub async fn run_ui(
 
                             // --- 状态栏 (全宽) ---
                             let status_line = if let Some(m) = server_err.as_deref() {
-                                format!("Modbus 错误: {m}")
+                                t!("run_ui.error_prefix", msg = m)
                             } else if let Some(m) = ui.status_msg.as_deref() {
-                                m.to_string()
+                                std::borrow::Cow::Owned(m.to_string())
                             } else if ui.edit_mode {
                                 if ui.edit_is_profile {
-                                    format!("保存当前配置 Enter=提交 Esc=取消 | 预设名: {}", ui.edit_buf)
+                                    t!("run_ui.edit_save_profile", buf = &ui.edit_buf)
                                 } else if ui.edit_is_label {
-                                    format!("修改备注 Enter=提交 Esc=取消 | 输入: {}", ui.edit_buf)
+                                    t!("run_ui.edit_label", buf = &ui.edit_buf)
                                 } else {
-                                    format!("修改 (格式={:?}) Enter=提交 Esc=取消 | 输入: {}", ui.base, ui.edit_buf)
+                                    t!("run_ui.edit_value", base = format!("{:?}", ui.base), buf = &ui.edit_buf)
                                 }
                             } else if let Some(ref fi) = s.last_frame {
                                 if fi.is_tcp {
-                                    format!("TCP {} | 格式={:?}", fi.func_name, ui.base)
+                                    t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base))
                                 } else {
-                                    format!("RTU {} | 格式={:?}", fi.func_name, ui.base)
+                                    t!("run_ui.status_rtu", func = &fi.func_name, base = format!("{:?}", ui.base))
                                 }
                             } else {
-                                format!("等待通讯 | 格式={:?}", ui.base)
+                                t!("run_ui.status_waiting", base = format!("{:?}", ui.base))
                             };
 
                             f.render_widget(
                                 ratatui::widgets::Paragraph::new(status_line)
-                                    .block(Block::default().borders(Borders::ALL).title("状态"))
+                                    .block(Block::default().borders(Borders::ALL).title(t!("run_ui.status_title")))
                                     .style(if server_err.is_some() {
                                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                                     } else {
@@ -759,14 +752,14 @@ pub async fn run_ui(
 
                             // --- 帮助栏 (全宽) ---
                             let help = if ui.edit_mode {
-                                format!("输入数据 {:?}; Backspace 退出 | m 100个寄存器编辑(仅数值)",ui.edit_buf)
+                                t!("run_ui.help_edit", buf = &ui.edit_buf)
                             } else {
-                                "jk ↑↓ 移动 | e 编辑数值 | t 编辑备注 | o 保存配置 | d/h/b 格式 | B 字节面板 | q 退出".to_string()
+                                t!("run_ui.help_normal")
                             };
 
                             f.render_widget(
                                 ratatui::widgets::Paragraph::new(help)
-                                    .block(Block::default().borders(Borders::ALL).title("帮助")),
+                                    .block(Block::default().borders(Borders::ALL).title(t!("run_ui.help_title"))),
                                 vert[2],
                             );
                         })?;
@@ -831,10 +824,10 @@ pub async fn run_ui(
                 configs.insert(profile_name.clone(), profile_args);
                 match toml::to_string_pretty(&configs) {
                     Ok(s) => match std::fs::write(&args.config, s) {
-                        Ok(_) => set_status(&mut ui, format!("成功保存预设 [{}] 到 {}", profile_name, args.config)),
-                        Err(e) => set_status(&mut ui, format!("写入文件失败: {}", e)),
+                        Ok(_) => set_status(&mut ui, t!("run_ui.save_success", name = profile_name, path = &args.config)),
+                        Err(e) => set_status(&mut ui, t!("run_ui.save_fail_write", err = e.to_string())),
                     },
-                    Err(e) => set_status(&mut ui, format!("配置序列化失败: {}", e)),
+                    Err(e) => set_status(&mut ui, t!("run_ui.save_fail_serialize", err = e.to_string())),
                 }
 
                 ui.edit_mode = false;
@@ -859,7 +852,7 @@ pub async fn run_ui(
                         ui.edit_buf.clear();
                     }
                     Err(e) => {
-                        set_status(&mut ui, format!("Invalid value 非法输入值: {e}"));
+                        set_status(&mut ui, t!("main.invalid_input_value", err = e.to_string()));
                     }
                 }
             }
@@ -892,16 +885,16 @@ pub async fn run_ui(
                                                             }
                                                             Ok(Ok(Err(ex))) => set_status(
                                                                 &mut ui,
-                                                                format!("Modbus exception 异常: {ex:?}"),
+                                                                t!("run_ui.modbus_exception", ex = format!("{:?}", ex)),
                                                             ),
                                                             Ok(Err(_)) => set_status(
                                                                 &mut ui,
-                                                                "Worker disconnected 运行中断",
+                                                                t!("run_ui.worker_disconnected"),
                                                             ),
                                                             Err(_) => {
                                                                 set_status(
                                                                     &mut ui,
-                                                                    "写入超时，设备无响应",
+                                                                    t!("run_ui.write_timeout"),
                                                                 );
                                                                 ui.edit_mode = false;
                                                                 ui.edit_buf.clear();
@@ -911,7 +904,7 @@ pub async fn run_ui(
                                                     }
                                                     Err(e) => set_status(
                                                         &mut ui,
-                                                        format!("Invalid value: {e} 非法输入值"),
+                                                        t!("run_ui.invalid_value", err = e),
                                                     ),
                                                 }
                                             }
@@ -927,7 +920,7 @@ pub async fn run_ui(
                                             } else {
                                                 set_status(
                                                     &mut ui,
-                                                    "Rejected character for current base 无法输入该字符",
+                                                    t!("run_ui.char_rejected"),
                                                 );
                                             }
                                         }
@@ -996,9 +989,9 @@ pub async fn run_ui(
                                         KeyCode::Char('B') => {
                                             ui.show_byte_panel = !ui.show_byte_panel;
                                             if ui.show_byte_panel {
-                                                set_status(&mut ui, "字节面板已显示");
+                                                set_status(&mut ui, t!("run_ui.byte_panel_shown"));
                                             } else {
-                                                set_status(&mut ui, "字节面板已隐藏");
+                                                set_status(&mut ui, t!("run_ui.byte_panel_hidden"));
                                             }
                                         }
                                         _ => {}
@@ -1041,9 +1034,9 @@ fn render_register_table(
     }
 
     let header = Row::new(vec![
-        Cell::from("寄存器地址"),
-        Cell::from("备注标记"),
-        Cell::from("值"),
+        Cell::from(t!("register_table.col_addr")),
+        Cell::from(t!("register_table.col_label")),
+        Cell::from(t!("register_table.col_value")),
     ])
     .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
@@ -1082,7 +1075,7 @@ fn render_register_table(
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title("保持型寄存器"))
+    .block(Block::default().borders(Borders::ALL).title(t!("register_table.title")))
     .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
     .highlight_symbol(">> ");
 
@@ -1094,13 +1087,17 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
     let mut text = String::new();
     let mut bytes = frame_bytes_from_info(fi);
     if bytes.is_empty() {
-        return "无法构造字节流".to_string();
+        return t!("byte_panel.build_fail").to_string();
     }
 
-    let proto = if fi.is_tcp { "TCP" } else { "RTU" };
-    text.push_str(&format!("{proto} 响应 · {}\n", fi.func_name));
+    let header_line = if fi.is_tcp {
+        t!("byte_panel.tcp_response", func = &fi.func_name)
+    } else {
+        t!("byte_panel.rtu_response", func = &fi.func_name)
+    };
+    text.push_str(&format!("{}\n", header_line));
     text.push_str("━━━━━━━━━━━━━━━━━\n");
-    text.push_str("偏移  数据    说明\n");
+    text.push_str(&format!("{}\n", t!("byte_panel.header")));
 
     if fi.is_tcp {
         // TCP 帧头
@@ -1109,22 +1106,25 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
         let len = u16::from_be_bytes([bytes[4], bytes[5]]);
         let unit = bytes[6];
         text.push_str(&format!(
-            "0-1   {:04X}  事务标识符={}\n",
-            trans_id, trans_id
+            "0-1   {:04X}  {}\n",
+            trans_id,
+            t!("byte_panel.transaction_id", id = trans_id)
         ));
-        text.push_str(&format!(
-            "2-3   {:04X}  协议标识符={}\n",
-            proto_id,
-            if proto_id == 0 { "Modbus" } else { "其他" }
-        ));
-        text.push_str(&format!("4-5   {:04X}  后续长度={}\n", len, len));
-        text.push_str(&format!("6     {:02X}    从站地址={}\n", unit, unit));
+        let proto_desc = if proto_id == 0 {
+            t!("byte_panel.protocol_id_modbus")
+        } else {
+            t!("byte_panel.protocol_id_other")
+        };
+        text.push_str(&format!("2-3   {:04X}  {}\n", proto_id, proto_desc));
+        text.push_str(&format!("4-5   {:04X}  {}\n", len, t!("byte_panel.length", len = len)));
+        text.push_str(&format!("6     {:02X}    {}\n", unit, t!("byte_panel.unit", unit = unit)));
 
         // 从字节7开始是功能码
         let func = bytes[7];
         text.push_str(&format!(
-            "7     {:02X}    功能码 ({}={})\n",
-            func, fi.func_name, func
+            "7     {:02X}    {}\n",
+            func,
+            t!("byte_panel.func_code", name = &fi.func_name, code = func)
         ));
 
         // 截取剩余部分作为原始帧
@@ -1133,10 +1133,11 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
         // RTU 帧: [unit] [func] [data...] [crc]
         let unit = bytes[0];
         let func = bytes[1];
-        text.push_str(&format!("0     {:02X}    从站地址={}\n", unit, unit));
+        text.push_str(&format!("0     {:02X}    {}\n", unit, t!("byte_panel.unit", unit = unit)));
         text.push_str(&format!(
-            "1     {:02X}    功能码 ({}={})\n",
-            func, fi.func_name, func
+            "1     {:02X}    {}\n",
+            func,
+            t!("byte_panel.func_code", name = &fi.func_name, code = func)
         ));
 
         // 跳过地址和功能码，保留数据+CRC
@@ -1153,10 +1154,10 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                 let bc = func_body[0] as usize;
                 let offset_base = if fi.is_tcp { 8usize } else { 2usize };
                 text.push_str(&format!(
-                    "{:<5} {:02X}    后续字节数={}\n",
+                    "{:<5} {:02X}    {}\n",
                     if fi.is_tcp { 8 } else { 2 },
                     bc,
-                    bc
+                    t!("byte_panel.byte_count", count = bc)
                 ));
                 let mut data_offset = 1;
                 let mut reg_idx = 0;
@@ -1170,12 +1171,11 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     let val = u16::from_be_bytes([h, l]);
                     let abs_offset = offset_base + data_offset;
                     text.push_str(&format!(
-                        "{}-{} {:04X}  寄存器[{}]=0x{:04X}\n",
+                        "{}-{} {:04X}  {}\n",
                         abs_offset,
                         abs_offset + 1,
                         val,
-                        reg_idx,
-                        val
+                        t!("byte_panel.register", idx = reg_idx, val = val)
                     ));
                     data_offset += 2;
                     reg_idx += 1;
@@ -1189,8 +1189,8 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     ]);
                     let abs_crc = offset_base + crc_start;
                     text.push_str(&format!(
-                        "{}-{} {:04X}  CRC16={:04X}\n",
-                        abs_crc, abs_crc + 1, crc_val, crc_val
+                        "{}-{} {:04X}  {}\n",
+                        abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
                     ));
                 }
             }
@@ -1201,18 +1201,18 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     let addr_val = u16::from_be_bytes([func_body[0], func_body[1]]);
                     let data_val = u16::from_be_bytes([func_body[2], func_body[3]]);
                     text.push_str(&format!(
-                        "{}-{} {:04X}  寄存器地址=0x{:04X}\n",
+                        "{}-{} {:04X}  {}\n",
                         offset_base,
                         offset_base + 1,
                         addr_val,
-                        addr_val
+                        t!("byte_panel.register_addr", addr = addr_val)
                     ));
                     text.push_str(&format!(
-                        "{}-{} {:04X}  写入值=0x{:04X}\n",
+                        "{}-{} {:04X}  {}\n",
                         offset_base + 2,
                         offset_base + 3,
                         data_val,
-                        data_val
+                        t!("byte_panel.register_val", val = data_val)
                     ));
                     if !fi.is_tcp && func_body.len() >= 6 {
                         let crc_start = func_body.len() - 2;
@@ -1222,8 +1222,8 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                         ]);
                         let abs_crc = offset_base + crc_start;
                         text.push_str(&format!(
-                            "{}-{} {:04X}  CRC16={:04X}\n",
-                            abs_crc, abs_crc + 1, crc_val, crc_val
+                            "{}-{} {:04X}  {}\n",
+                            abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
                         ));
                     }
                 }
@@ -1235,18 +1235,18 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     let addr_val = u16::from_be_bytes([func_body[0], func_body[1]]);
                     let qty = u16::from_be_bytes([func_body[2], func_body[3]]);
                     text.push_str(&format!(
-                        "{}-{} {:04X}  起始地址={}\n",
+                        "{}-{} {:04X}  {}\n",
                         offset_base,
                         offset_base + 1,
                         addr_val,
-                        addr_val
+                        t!("byte_panel.start_addr", addr = addr_val)
                     ));
                     text.push_str(&format!(
-                        "{}-{} {:04X}  寄存器数量={}\n",
+                        "{}-{} {:04X}  {}\n",
                         offset_base + 2,
                         offset_base + 3,
                         qty,
-                        qty
+                        t!("byte_panel.register_qty", qty = qty)
                     ));
                     if !fi.is_tcp && func_body.len() >= 6 {
                         let crc_start = func_body.len() - 2;
@@ -1256,8 +1256,8 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                         ]);
                         let abs_crc = offset_base + crc_start;
                         text.push_str(&format!(
-                            "{}-{} {:04X}  CRC16={:04X}\n",
-                            abs_crc, abs_crc + 1, crc_val, crc_val
+                            "{}-{} {:04X}  {}\n",
+                            abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
                         ));
                     }
                 }
@@ -1271,7 +1271,7 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
     let full_bytes = frame_bytes_from_info(fi);
     let hex_str: Vec<String> = full_bytes.iter().map(|b| format!("{:02X}", b)).collect();
     let lines = hex_str.chunks(8);
-    text.push_str("原始帧:\n");
+    text.push_str(&format!("{}\n", t!("byte_panel.raw_frame")));
     for line in lines {
         text.push_str(&format!("  {}\n", line.join(" ")));
     }

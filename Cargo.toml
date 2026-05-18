@@ -18,3 +18,4 @@ anyhow = "1.0"
 toml = "*"
 serde = { version = "1.0.228", features = ["derive"] }
 dial9-tokio-telemetry = "0.2.0"
+rust-i18n = "4.0.0"

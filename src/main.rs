@@ -10,6 +10,11 @@ use modbus::*;
 use serde;
 use ui::*;
 
+#[macro_use]
+extern crate rust_i18n;
+
+i18n!("locales");
+
 #[derive(Copy, Clone, Debug, ValueEnum, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 enum DisplayBase {
@@ -92,6 +97,11 @@ struct Args {
     #[arg(skip)]
     #[serde(default)]
     labels: HashMap<String, String>,
+
+    /// 界面语言 (zh-CN 或 en)
+    #[arg(long, default_value = "zh-CN")]
+    #[serde(skip)]
+    lang: String,
 }
 
 impl Default for Args {
@@ -113,6 +123,7 @@ impl Default for Args {
             flow: "none".into(),
             base: DisplayBase::Dec,
             labels: HashMap::new(),
+            lang: "zh-CN".into(),
         }
     }
 }
@@ -150,9 +161,7 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
         "tc" | "tcp-client" => Ok(MainMode::TcpClient),
         "rs" | "rtu-server" => Ok(MainMode::RTUServer),
         "rc" | "rtu-client" => Ok(MainMode::RTUClient),
-        _ => Err(anyhow!(
-            "非法的主模式 : {s} (use ts/tc/rs/rc or refrence to help)"
-        )),
+        _ => Err(anyhow!(t!("main.invalid_main_mode", mode = s))),
     }
 }
 
@@ -161,7 +170,7 @@ fn parse_parity(s: &str) -> Result<Parity> {
         "n" | "none" => Ok(Parity::None),
         "e" | "even" => Ok(Parity::Even),
         "o" | "odd" => Ok(Parity::Odd),
-        _ => Err(anyhow!("非法串口校验位: {s} (use n/e/o or none/even/odd)")),
+        _ => Err(anyhow!(t!("main.invalid_parity", value = s))),
     }
 }
 fn parse_flow(s: &str) -> Result<FlowControl> {
@@ -169,7 +178,7 @@ fn parse_flow(s: &str) -> Result<FlowControl> {
         "none" => Ok(FlowControl::None),
         "hard" | "hw" | "rtscts" => Ok(FlowControl::Hardware),
         "soft" | "sw" | "xonxoff" => Ok(FlowControl::Software),
-        _ => Err(anyhow!("非法串口流控: {s} (use none/hardware/software)")),
+        _ => Err(anyhow!(t!("main.invalid_flow", value = s))),
     }
 }
 fn parse_databits(v: u8) -> Result<DataBits> {
@@ -178,14 +187,14 @@ fn parse_databits(v: u8) -> Result<DataBits> {
         6 => Ok(DataBits::Six),
         7 => Ok(DataBits::Seven),
         8 => Ok(DataBits::Eight),
-        _ => Err(anyhow!("非法串口数据位: {v} (use 5/6/7/8)")),
+        _ => Err(anyhow!(t!("main.invalid_databits", value = v))),
     }
 }
 fn parse_stopbits(v: u8) -> Result<StopBits> {
     match v {
         1 => Ok(StopBits::One),
         2 => Ok(StopBits::Two),
-        _ => Err(anyhow!("非法串口停止位: {v} (use 1/2)")),
+        _ => Err(anyhow!(t!("main.invalid_stopbits", value = v))),
     }
 }
 
@@ -200,19 +209,19 @@ fn format_u16(v: u16, base: DisplayBase) -> String {
 fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     let t = s.trim();
     if t.is_empty() {
-        return Err(anyhow!("空字符"));
+        return Err(anyhow!(t!("main.parse_empty")));
     }
     //允许通过前缀强制定义输入类型
     if let Some(rest) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        return u16::from_str_radix(rest, 16).context("解析十六进制字符前缀");
+        return u16::from_str_radix(rest, 16).context(t!("main.parse_hex_prefix"));
     }
     if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
-        return u16::from_str_radix(rest, 2).context("解析二进制字符前缀");
+        return u16::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"));
     }
     match base {
-        DisplayBase::Dec => t.parse::<u16>().context("解析十进制字符"),
-        DisplayBase::Hex => u16::from_str_radix(t, 16).context("解析十六进制字符"),
-        DisplayBase::Bin => u16::from_str_radix(t, 2).context("解析二进制字符"),
+        DisplayBase::Dec => t.parse::<u16>().context(t!("main.parse_dec")),
+        DisplayBase::Hex => u16::from_str_radix(t, 16).context(t!("main.parse_hex")),
+        DisplayBase::Bin => u16::from_str_radix(t, 2).context(t!("main.parse_bin")),
     }
 }
 
@@ -223,13 +232,13 @@ fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode
     let mut args = if let Some(ref profile_name) = sel.profile_name {
         // 加载指定配置
         let config_str = std::fs::read_to_string(config_path)
-            .with_context(|| format!("无法读取配置文件: {}", config_path))?;
+            .with_context(|| t!("main.read_config_fail", path = config_path))?;
         let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
-            .with_context(|| format!("配置文件 {} 解析失败", config_path))?;
+            .with_context(|| t!("main.parse_config_fail", path = config_path))?;
         configs
             .get(profile_name)
             .cloned()
-            .ok_or_else(|| anyhow!("配置文件中找不到 '{}'", profile_name))?
+            .ok_or_else(|| anyhow!(t!("main.profile_missing", name = profile_name)))?
     } else {
         Args::default()
     };
@@ -249,22 +258,22 @@ fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode
 async fn main() -> Result<()> {
     let cli_args = Args::parse();
 
+    // 设置界面语言
+    rust_i18n::set_locale(&cli_args.lang);
+
     // 如果 CLI 指定了 --profile，直接使用（跳过菜单）
     let (main_mode, args) = if let Some(profile_name) = &cli_args.profile {
         let config_str = std::fs::read_to_string(&cli_args.config)
-            .with_context(|| format!("无法读取配置文件: {}", cli_args.config))?;
+            .with_context(|| t!("main.read_config_fail", path = &cli_args.config))?;
         let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
-            .with_context(|| format!("配置文件 {} 解析失败", cli_args.config))?;
+            .with_context(|| t!("main.parse_config_fail", path = &cli_args.config))?;
         if let Some(profile_args) = configs.get(profile_name) {
             let mut args = profile_args.clone();
             let main_mode = parse_mainmode(&args.main_mode)?;
             args.config = cli_args.config;
             (main_mode, args)
         } else {
-            anyhow::bail!(
-                "配置文件中找不到预设槽位 '{}'",
-                profile_name
-            );
+            anyhow::bail!(t!("main.profile_not_found", name = profile_name));
         }
     } else {
         // 加载配置列表

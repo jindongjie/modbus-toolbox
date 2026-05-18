@@ -356,7 +356,7 @@ pub async fn client_read_write_loop(
                                 is_tcp: s.is_tcp,
                                 unit: args.unit,
                                 func_code: 0x03,
-                                func_name: format!("读保持寄存器"),
+                                func_name: t!("func_code.read_holding").to_string(),
                                 addr,
                                 values: values[..write_len].to_vec(),
                                 is_request: false,
@@ -365,14 +365,14 @@ pub async fn client_read_write_loop(
                         offset += cnt;
                     }
                     Err(e) => {
-                        return Err(anyhow!("Modbus 异常响应: {e:?}"));
+                        return Err(anyhow!(t!("modbus.exception_response", err = format!("{:?}", e))));
                     }
                 },
                 Ok(Err(e)) => {
-                    return Err(anyhow!("客户端读取失败: {e}"));
+                    return Err(anyhow!(t!("modbus.client_read_fail", e = e)));
                 }
                 Err(_) => {
-                    return Err(anyhow!("客户端读取超时"));
+                    return Err(anyhow!(t!("modbus.client_read_timeout")));
                 }
             }
         }
@@ -407,7 +407,7 @@ pub async fn run_modbus_tcp_server(
 ) -> Result<()> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", args.tcp_port))
         .await
-        .context("打开 Modbus TCP 端口")?;
+        .context(t!("modbus.open_tcp_port"))?;
 
     let service = HoldingService {
         tx,
@@ -435,7 +435,7 @@ pub async fn run_modbus_tcp_server(
         .serve_until(&on_connected, on_process_error, abort_signal)
         .await
         .map_err(|e: std::io::Error| anyhow!(e))
-        .context("Modbus TCP server 运行失败")?;
+        .context(t!("modbus.tcp_server_fail"))?;
 
     Ok(())
 }
@@ -459,7 +459,7 @@ pub async fn run_modbus_rtu_client(
 
     let port = builder
         .open_native_async()
-        .context("open serial 正在打开串口")?;
+        .context(t!("modbus.open_rtu_port"))?;
 
     let ctx = tokio_modbus::client::rtu::attach_slave(port, slave);
 
@@ -484,7 +484,7 @@ pub async fn run_modbus_rtu_server(
 
     let port = builder
         .open_native_async()
-        .context("打开 Modbus RTU 串口")?;
+        .context(t!("modbus.open_rtu_port"))?;
 
     let service = HoldingService {
         tx,
