@@ -44,6 +44,7 @@ pub struct MenuSelection {
     pub main_mode: MainMode,
     pub profile_name: Option<String>,
     pub set_default_as: Option<String>,
+    pub quit: bool,
 }
 
 pub struct Ui {
@@ -493,11 +494,12 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
             _ => {}
         },
         KeyCode::Char('q') => {
-            // 退出
+            // 退出程序
             return Some(MenuSelection {
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
                 set_default_as: None,
+                quit: true,
             });
         }
         _ => {}
@@ -530,6 +532,7 @@ fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Op
                 main_mode: mode,
                 profile_name: profile,
                 set_default_as: None,
+                quit: false,
             });
         }
         KeyCode::Esc => {
@@ -540,6 +543,7 @@ fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Op
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
                 set_default_as: None,
+                quit: true,
             });
         }
         _ => {}
@@ -584,6 +588,7 @@ fn handle_profile_set_key(
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
                 set_default_as: None,
+                quit: true,
             });
         }
         _ => {}

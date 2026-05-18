@@ -272,7 +272,10 @@ async fn main() -> Result<()> {
 
         // 显示菜单
         let sel = run_menu(&cli_args.config, profiles).await?;
-        // 用户按 q 退出时的处理
+        if sel.quit {
+            return Ok(());
+        }
+        // 用户选择的配置解析
         resolve_selection(&cli_args.config, &sel)?
     };
 
