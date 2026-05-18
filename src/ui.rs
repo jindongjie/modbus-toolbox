@@ -19,7 +19,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Terminal, Frame,
 };
 
@@ -167,15 +167,13 @@ fn load_default_profile(config_path: &str) -> Option<String> {
 // 菜单渲染与事件处理
 // ─────────────────────────────────────────
 
-/// 主菜单渲染：水平分割为 4 列
+/// 主菜单：垂直排列，每个模式作为一个独立菜单项
 fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     let area = f.area();
-    // 垂直分割：上部留白 + Logo + 菜单行 + 帮助
     let vert = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Length(5),
-        Constraint::Min(10),
-        Constraint::Length(4),
+        Constraint::Length(6),  // Logo + 副标题
+        Constraint::Min(12),    // 菜单项
+        Constraint::Length(3),  // 底部信息栏
     ])
     .split(area);
 
@@ -186,93 +184,77 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
         .iter()
         .map(|l| Line::from(Span::styled(l.clone(), logo_style)))
         .collect();
-    f.render_widget(Paragraph::new(logo_text).alignment(ratatui::layout::Alignment::Center), vert[1]);
+    f.render_widget(Paragraph::new(logo_text).alignment(ratatui::layout::Alignment::Center), vert[0]);
 
-    // --- 主菜单区：水平分割为 4 列 ---
-    let cols = Layout::horizontal([
-        Constraint::Length(42),
-        Constraint::Min(20),
-        Constraint::Min(20),
-        Constraint::Min(20),
-    ])
-    .split(vert[2]);
+    // --- 主菜单区：垂直排列 ---
+    let menu_items = [
+        ("TCP Server", MainMode::TcpServer),
+        ("TCP Client", MainMode::TcpClient),
+        ("RTU Server", MainMode::RTUServer),
+        ("RTU Client", MainMode::RTUClient),
+    ];
 
-    let col_labels = ["LOGO", "TCP", "RTU", "PROFILE"];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("选择模式")
+        .border_style(Style::default().fg(Color::Cyan));
 
-    for (i, (col, &label)) in cols.iter().zip(&col_labels).enumerate() {
-        let is_focused = ui.menu_col == i;
+    let inner = block.inner(vert[1]);
+    f.render_widget(block, vert[1]);
 
-        let content: Vec<Line> = match i {
-            0 => {
-                // Logo 列：显示模块说明
-                vec![
-                    Line::from(Span::styled("  Modbus Toolbox", Style::default().fg(Color::Green))),
-                    Line::from(Span::styled("  RTU/TCP 调试终端", Style::default().fg(Color::DarkGray))),
-                ]
-            }
-            1 | 2 => {
-                // TCP 或 RTU 列
-                let (left, right) = if i == 1 { ("Server", "Client") } else { ("Server", "Client") };
-                let l_focus = ui.menu_col == i && ui.menu_row == 0;
-                let r_focus = ui.menu_col == i && ui.menu_row == 1;
-                let l_style = if l_focus {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                let r_style = if r_focus {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                vec![
-                    Line::from(vec![
-                        Span::styled(" [ ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(left, l_style),
-                        Span::styled(" | ", Style::default().fg(Color::DarkGray)),
-                        Span::styled(right, r_style),
-                        Span::styled(" ] ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                ]
-            }
-            3 => {
-                // Profile 列
-                let p_style = if is_focused {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                vec![
-                    Line::from(Span::styled(" [ Profile Settings ] ", p_style)),
-                ]
-            }
-            _ => unreachable!(),
+    let mut lines: Vec<Line> = Vec::new();
+
+    // 渲染 4 个模式菜单项
+    for (i, &(label, _mode)) in menu_items.iter().enumerate() {
+        let is_selected = i == ui.menu_list_idx;
+        let item_style = if is_selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
         };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(label)
-            .border_style(if is_focused {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            });
-
-        f.render_widget(Paragraph::new(content).block(block).wrap(Wrap { trim: false }), *col);
+        let prefix = if is_selected { " ▸ " } else { "   " };
+        lines.push(Line::from(Span::styled(
+            format!("{}[ {} ]", prefix, label),
+            item_style,
+        )));
+        lines.push(Line::from(Span::raw(""))); // spacer
     }
+
+    // 渲染 Profile Settings 项
+    let i = menu_items.len();
+    let is_selected = i == ui.menu_list_idx;
+    let p_style = if is_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let prefix = if is_selected { " ▸ " } else { "   " };
+    lines.push(Line::from(Span::styled(
+        format!("{}[ Profile Settings ]", prefix),
+        p_style,
+    )));
+
+    let paragraph = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Left);
+    f.render_widget(paragraph, inner);
 
     // --- 底部信息栏 ---
     let default_name = ui.default_profile.as_deref().unwrap_or("(无)");
     let selected = ui.selected_profile.as_deref().unwrap_or("(无)");
     let status = format!(
-        "默认配置: {} | 当前选中: {} | ← → 切换列  ↑ ↓ 切换选项  Enter 确认  q 退出",
+        "默认配置: {} | 当前选中: {} | ↑ ↓ 选择  Enter 确认  q 退出",
         default_name, selected
     );
     f.render_widget(
         Paragraph::new(status)
             .block(Block::default().borders(Borders::ALL).title("信息"))
             .style(Style::default().fg(Color::DarkGray)),
-        vert[3],
+        vert[2],
     );
 }
 
@@ -469,52 +451,41 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     );
 }
 
-/// 处理主菜单的按键事件
+/// 处理主菜单的按键事件（垂直导航）
 fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
+    const ITEM_COUNT: usize = 5; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), Profile Settings(4)
+
     match code {
-        KeyCode::Left => {
-            ui.menu_col = ui.menu_col.saturating_sub(1);
-            ui.menu_row = 0;
-        }
-        KeyCode::Right => {
-            ui.menu_col = (ui.menu_col + 1).min(3);
-            ui.menu_row = 0;
-        }
         KeyCode::Up => {
-            if ui.menu_col == 1 || ui.menu_col == 2 {
-                ui.menu_row = 0;
-            }
+            ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
         }
         KeyCode::Down => {
-            if ui.menu_col == 1 || ui.menu_col == 2 {
-                ui.menu_row = 1;
+            if ui.menu_list_idx + 1 < ITEM_COUNT {
+                ui.menu_list_idx += 1;
             }
         }
-        KeyCode::Enter => match ui.menu_col {
-            0 => { /* Logo, 不可选 */ }
+        KeyCode::Enter => match ui.menu_list_idx {
+            0 => {
+                ui.pending_mode = Some(MainMode::TcpServer);
+                ui.menu_screen = MenuScreen::ProfilePick;
+                ui.menu_list_idx = 0;
+            }
             1 => {
-                // TCP Server/Client
-                let mode = if ui.menu_row == 0 {
-                    MainMode::TcpServer
-                } else {
-                    MainMode::TcpClient
-                };
-                ui.pending_mode = Some(mode);
+                ui.pending_mode = Some(MainMode::TcpClient);
                 ui.menu_screen = MenuScreen::ProfilePick;
                 ui.menu_list_idx = 0;
             }
             2 => {
-                // RTU Server/Client
-                let mode = if ui.menu_row == 0 {
-                    MainMode::RTUServer
-                } else {
-                    MainMode::RTUClient
-                };
-                ui.pending_mode = Some(mode);
+                ui.pending_mode = Some(MainMode::RTUServer);
                 ui.menu_screen = MenuScreen::ProfilePick;
                 ui.menu_list_idx = 0;
             }
             3 => {
+                ui.pending_mode = Some(MainMode::RTUClient);
+                ui.menu_screen = MenuScreen::ProfilePick;
+                ui.menu_list_idx = 0;
+            }
+            4 => {
                 // Profile Settings
                 ui.menu_screen = MenuScreen::ProfileSet;
                 ui.menu_list_idx = 0;
