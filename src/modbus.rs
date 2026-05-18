@@ -2,9 +2,9 @@ use crate::Args;
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::time::timeout;
 use tokio_modbus::server;
 use tokio_modbus::server::tcp::accept_tcp_connection;
 use tokio_serial::SerialPortBuilderExt;
@@ -34,7 +34,6 @@ pub(crate) fn calc_crc16(data: &[u8]) -> u16 {
     }
     crc
 }
-
 
 pub enum RegCmd {
     ReadHolding {
@@ -288,15 +287,18 @@ pub async fn client_read_write_loop(
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 RegCmd::WriteSingleHolding { addr, value, resp } => {
-                    let out = match timeout(IO_TIMEOUT, ctx.write_single_register(addr as u16, value)).await {
-                        Ok(Ok(Ok(_))) => Ok(()),
-                        Ok(Ok(Err(e))) => Err(e),
-                        Ok(Err(_)) => Err(ExceptionCode::ServerDeviceFailure),
-                        Err(_) => {
-                            let _ = resp.send(Err(ExceptionCode::ServerDeviceFailure));
-                            continue;
-                        }
-                    };
+                    let out =
+                        match timeout(IO_TIMEOUT, ctx.write_single_register(addr as u16, value))
+                            .await
+                        {
+                            Ok(Ok(Ok(_))) => Ok(()),
+                            Ok(Ok(Err(e))) => Err(e),
+                            Ok(Err(_)) => Err(ExceptionCode::ServerDeviceFailure),
+                            Err(_) => {
+                                let _ = resp.send(Err(ExceptionCode::ServerDeviceFailure));
+                                continue;
+                            }
+                        };
                     let _ = resp.send(out);
                 }
                 RegCmd::WriteMultipleHolding { addr, values, resp } => {
@@ -308,7 +310,12 @@ pub async fn client_read_write_loop(
                         let chunk_len = (values.len() - idx).min(once_max_reg_cnt);
                         let chunk = &values[idx..idx + chunk_len];
 
-                        let out = match timeout(IO_TIMEOUT, ctx.write_multiple_registers(start as u16, chunk)).await {
+                        let out = match timeout(
+                            IO_TIMEOUT,
+                            ctx.write_multiple_registers(start as u16, chunk),
+                        )
+                        .await
+                        {
                             Ok(Ok(Ok(_))) => Ok(()),
                             Ok(Ok(Err(e))) => Err(e),
                             Ok(Err(_)) => Err(ExceptionCode::ServerDeviceFailure),
@@ -365,7 +372,10 @@ pub async fn client_read_write_loop(
                         offset += cnt;
                     }
                     Err(e) => {
-                        return Err(anyhow!(t!("modbus.exception_response", err = format!("{:?}", e))));
+                        return Err(anyhow!(t!(
+                            "modbus.exception_response",
+                            err = format!("{:?}", e)
+                        )));
                     }
                 },
                 Ok(Err(e)) => {

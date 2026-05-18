@@ -20,13 +20,13 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
-    Terminal, Frame,
+    Frame, Terminal,
 };
 
 // crate
 use crate::{
-    format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str,
-    AppState, Args, DisplayBase, FrameInfo, MainMode,
+    format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str, AppState, Args,
+    DisplayBase, FrameInfo, MainMode,
 };
 const UI_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -76,13 +76,12 @@ pub struct Ui {
 
 impl Ui {
     fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
-        let logo_lines = vec![
-            "   __  ___          _           _     ".into(),
-            "  /  |/  /__  _  __(_)___  ____(_)  __".into(),
-            " / /|_/ / _ \\| | | | / __|/ __ \\ / /".into(),
-            "/_/  /_/\\___/ \\__,_|_\\___//_/ /_//_/ ".into(),
-            "     Modbus Toolbox v0.1.0            ".into(),
-        ];
+        let logo_raw = include_str!("logo.txt");
+        let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
+        logo_lines.push(format!(
+            "                        Modbus Toolbox v{}",
+            env!("CARGO_PKG_VERSION")
+        ));
         let default = profiles.first().cloned();
         Self {
             base,
@@ -171,20 +170,25 @@ fn load_default_profile(config_path: &str) -> Option<String> {
 fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     let area = f.area();
     let vert = Layout::vertical([
-        Constraint::Length(6),  // Logo + 副标题
-        Constraint::Min(12),    // 菜单项
-        Constraint::Length(3),  // 底部信息栏
+        Constraint::Length(7), // Logo + version
+        Constraint::Min(12),   // 菜单项
+        Constraint::Length(3), // 底部信息栏
     ])
     .split(area);
 
     // --- Logo 区 ---
-    let logo_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let logo_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let logo_text: Vec<Line> = ui
         .logo_lines
         .iter()
         .map(|l| Line::from(Span::styled(l.clone(), logo_style)))
         .collect();
-    f.render_widget(Paragraph::new(logo_text).alignment(ratatui::layout::Alignment::Center), vert[0]);
+    f.render_widget(
+        Paragraph::new(logo_text).alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
 
     // --- 主菜单区：垂直排列 ---
     let menu_items = [
@@ -244,16 +248,28 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     f.render_widget(paragraph, inner);
 
     // --- 底部信息栏 ---
-    let default_name = ui.default_profile.as_deref()
+    let default_name = ui
+        .default_profile
+        .as_deref()
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|| t!("main_menu.none"));
-    let selected = ui.selected_profile.as_deref()
+    let selected = ui
+        .selected_profile
+        .as_deref()
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|| t!("main_menu.none"));
-    let status = t!("main_menu.info_bar", default = default_name, selected = selected);
+    let status = t!(
+        "main_menu.info_bar",
+        default = default_name,
+        selected = selected
+    );
     f.render_widget(
         Paragraph::new(status)
-            .block(Block::default().borders(Borders::ALL).title(t!("main_menu.info")))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(t!("main_menu.info")),
+            )
             .style(Style::default().fg(Color::DarkGray)),
         vert[2],
     );
@@ -279,13 +295,19 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     };
     let title = t!("profile_pick.title", mode = mode_name);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(title.as_ref(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(Span::styled(
+            title.as_ref(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
         vert[0],
     );
 
     // 主区域：左列表 + 右预览
-    let main = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
+    let main =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
 
     // 左：配置列表
     let mut items: Vec<Line> = Vec::new();
@@ -344,7 +366,11 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
                 t!("profile_pick.preview_baud", baud = args.baudrate),
             )
         } else {
-            format!("{}\n{}", t!("profile_pick.preview_name", name = name), t!("profile_pick.load_fail"))
+            format!(
+                "{}\n{}",
+                t!("profile_pick.preview_name", name = name),
+                t!("profile_pick.load_fail")
+            )
         }
     } else {
         t!("profile_pick.select_hint").to_string()
@@ -358,8 +384,11 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     // 底部帮助
     let help = t!("profile_pick.help");
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
         vert[2],
     );
 }
@@ -386,7 +415,8 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     );
 
     // 主体部分
-    let main = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(vert[1]);
+    let main =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(vert[1]);
 
     // 左：配置列表，可设置为默认
     let mut items: Vec<Line> = Vec::new();
@@ -404,7 +434,9 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         } else if is_default {
             Line::from(Span::styled(
                 format!(" {icon} {name}"),
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ))
         } else {
             Line::from(Span::styled(
@@ -415,7 +447,10 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         items.push(line);
     }
     if ui.profiles.is_empty() {
-        items.push(Line::from(Span::styled(t!("profile_settings.empty_list"), Style::default().fg(Color::DarkGray))));
+        items.push(Line::from(Span::styled(
+            t!("profile_settings.empty_list"),
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     let list_block = Block::default()
@@ -425,7 +460,9 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     f.render_widget(Paragraph::new(items).block(list_block), main[0]);
 
     // 右：当前默认配置信息 + 操作说明
-    let default_name = ui.default_profile.as_deref()
+    let default_name = ui
+        .default_profile
+        .as_deref()
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|| t!("profile_settings.info_default"));
     let info = t!("profile_settings.info_text", name = default_name);
@@ -438,8 +475,11 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     // 底部
     let help = t!("profile_settings.help");
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
         vert[2],
     );
 }
@@ -499,7 +539,11 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
 }
 
 /// 处理配置选择子菜单的按键事件
-fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Option<MenuSelection> {
+fn handle_profile_pick_key(
+    ui: &mut Ui,
+    code: KeyCode,
+    _config_path: &str,
+) -> Option<MenuSelection> {
     match code {
         KeyCode::Up => {
             if !ui.profiles.is_empty() {
@@ -541,11 +585,7 @@ fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Op
 }
 
 /// 处理配置管理设置的按键事件
-fn handle_profile_set_key(
-    ui: &mut Ui,
-    code: KeyCode,
-    config_path: &str,
-) -> Option<MenuSelection> {
+fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
     match code {
         KeyCode::Up => {
             if !ui.profiles.is_empty() {
@@ -563,7 +603,13 @@ fn handle_profile_set_key(
                 if save_default_profile(config_path, &name).is_ok() {
                     ui.default_profile = Some(name.clone());
                     ui.selected_profile = Some(name);
-                    set_status(ui, t!("profile_settings.set_success", name = ui.default_profile.as_deref().unwrap_or("")));
+                    set_status(
+                        ui,
+                        t!(
+                            "profile_settings.set_success",
+                            name = ui.default_profile.as_deref().unwrap_or("")
+                        ),
+                    );
                 } else {
                     set_status(ui, t!("profile_settings.set_fail"));
                 }
@@ -1038,7 +1084,11 @@ fn render_register_table(
         Cell::from(t!("register_table.col_label")),
         Cell::from(t!("register_table.col_value")),
     ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows = s
         .holding
@@ -1075,7 +1125,11 @@ fn render_register_table(
         ],
     )
     .header(header)
-    .block(Block::default().borders(Borders::ALL).title(t!("register_table.title")))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(t!("register_table.title")),
+    )
     .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
     .highlight_symbol(">> ");
 
@@ -1116,8 +1170,16 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
             t!("byte_panel.protocol_id_other")
         };
         text.push_str(&format!("2-3   {:04X}  {}\n", proto_id, proto_desc));
-        text.push_str(&format!("4-5   {:04X}  {}\n", len, t!("byte_panel.length", len = len)));
-        text.push_str(&format!("6     {:02X}    {}\n", unit, t!("byte_panel.unit", unit = unit)));
+        text.push_str(&format!(
+            "4-5   {:04X}  {}\n",
+            len,
+            t!("byte_panel.length", len = len)
+        ));
+        text.push_str(&format!(
+            "6     {:02X}    {}\n",
+            unit,
+            t!("byte_panel.unit", unit = unit)
+        ));
 
         // 从字节7开始是功能码
         let func = bytes[7];
@@ -1133,7 +1195,11 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
         // RTU 帧: [unit] [func] [data...] [crc]
         let unit = bytes[0];
         let func = bytes[1];
-        text.push_str(&format!("0     {:02X}    {}\n", unit, t!("byte_panel.unit", unit = unit)));
+        text.push_str(&format!(
+            "0     {:02X}    {}\n",
+            unit,
+            t!("byte_panel.unit", unit = unit)
+        ));
         text.push_str(&format!(
             "1     {:02X}    {}\n",
             func,
@@ -1161,7 +1227,8 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                 ));
                 let mut data_offset = 1;
                 let mut reg_idx = 0;
-                while data_offset + 1 < func_body.len().saturating_sub(2) && reg_idx < fi.values.len()
+                while data_offset + 1 < func_body.len().saturating_sub(2)
+                    && reg_idx < fi.values.len()
                 {
                     if data_offset + 1 >= func_body.len() {
                         break;
@@ -1183,14 +1250,15 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                 // CRC (最后2字节)
                 if func_body.len() >= 2 {
                     let crc_start = func_body.len() - 2;
-                    let crc_val = u16::from_le_bytes([
-                        func_body[crc_start],
-                        func_body[crc_start + 1],
-                    ]);
+                    let crc_val =
+                        u16::from_le_bytes([func_body[crc_start], func_body[crc_start + 1]]);
                     let abs_crc = offset_base + crc_start;
                     text.push_str(&format!(
                         "{}-{} {:04X}  {}\n",
-                        abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
+                        abs_crc,
+                        abs_crc + 1,
+                        crc_val,
+                        t!("byte_panel.crc16", crc = crc_val)
                     ));
                 }
             }
@@ -1216,14 +1284,15 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     ));
                     if !fi.is_tcp && func_body.len() >= 6 {
                         let crc_start = func_body.len() - 2;
-                        let crc_val = u16::from_le_bytes([
-                            func_body[crc_start],
-                            func_body[crc_start + 1],
-                        ]);
+                        let crc_val =
+                            u16::from_le_bytes([func_body[crc_start], func_body[crc_start + 1]]);
                         let abs_crc = offset_base + crc_start;
                         text.push_str(&format!(
                             "{}-{} {:04X}  {}\n",
-                            abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
+                            abs_crc,
+                            abs_crc + 1,
+                            crc_val,
+                            t!("byte_panel.crc16", crc = crc_val)
                         ));
                     }
                 }
@@ -1250,14 +1319,15 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
                     ));
                     if !fi.is_tcp && func_body.len() >= 6 {
                         let crc_start = func_body.len() - 2;
-                        let crc_val = u16::from_le_bytes([
-                            func_body[crc_start],
-                            func_body[crc_start + 1],
-                        ]);
+                        let crc_val =
+                            u16::from_le_bytes([func_body[crc_start], func_body[crc_start + 1]]);
                         let abs_crc = offset_base + crc_start;
                         text.push_str(&format!(
                             "{}-{} {:04X}  {}\n",
-                            abs_crc, abs_crc + 1, crc_val, t!("byte_panel.crc16", crc = crc_val)
+                            abs_crc,
+                            abs_crc + 1,
+                            crc_val,
+                            t!("byte_panel.crc16", crc = crc_val)
                         ));
                     }
                 }

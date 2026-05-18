@@ -35,7 +35,7 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 
 ### 操作系统
 
-1. Windows 7 以上
+1. Windows 7(10以下要 API拓展 VxKex) 以上
 2. Linux 无版本限制
 3. MacOS 无版本限制
 4. 其余 UNIX 操作系统
