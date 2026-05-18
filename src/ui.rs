@@ -43,7 +43,6 @@ enum MenuScreen {
 pub struct MenuSelection {
     pub main_mode: MainMode,
     pub profile_name: Option<String>,
-    pub set_default_as: Option<String>,
     pub quit: bool,
 }
 
@@ -214,7 +213,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default()
         };
         let prefix = if is_selected { " ▸ " } else { "   " };
         lines.push(Line::from(Span::styled(
@@ -233,7 +232,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default()
     };
     let prefix = if is_selected { " ▸ " } else { "   " };
     lines.push(Line::from(Span::styled(
@@ -498,7 +497,6 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
             return Some(MenuSelection {
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
-                set_default_as: None,
                 quit: true,
             });
         }
@@ -531,7 +529,6 @@ fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Op
             return Some(MenuSelection {
                 main_mode: mode,
                 profile_name: profile,
-                set_default_as: None,
                 quit: false,
             });
         }
@@ -542,7 +539,6 @@ fn handle_profile_pick_key(ui: &mut Ui, code: KeyCode, _config_path: &str) -> Op
             return Some(MenuSelection {
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
-                set_default_as: None,
                 quit: true,
             });
         }
@@ -587,7 +583,6 @@ fn handle_profile_set_key(
             return Some(MenuSelection {
                 main_mode: MainMode::TcpClient,
                 profile_name: None,
-                set_default_as: None,
                 quit: true,
             });
         }

@@ -35,69 +35,6 @@ pub(crate) fn calc_crc16(data: &[u8]) -> u16 {
     crc
 }
 
-// ---------- 帧字节构造（用于显示） ----------
-fn func_name(code: u8) -> &'static str {
-    match code {
-        0x01 => "读线圈",
-        0x02 => "读离散输入",
-        0x03 => "读保持寄存器",
-        0x04 => "读输入寄存器",
-        0x05 => "写单线圈",
-        0x06 => "写单寄存器",
-        0x0F => "写多线圈",
-        0x10 => "写多寄存器",
-        _ => "未知功能",
-    }
-}
-
-fn build_rtu_request_frame(unit: u8, func: u8, data: &[u8]) -> Vec<u8> {
-    let mut frame = vec![unit, func];
-    frame.extend_from_slice(data);
-    let crc = calc_crc16(&frame);
-    frame.push((crc & 0xFF) as u8);
-    frame.push((crc >> 8) as u8);
-    frame
-}
-
-fn build_tcp_request_frame(unit: u8, func: u8, data: &[u8]) -> Vec<u8> {
-    let mut frame = vec![
-        0x00, 0x01, // 事务标识符
-        0x00, 0x00, // 协议标识符
-        0x00, (data.len() as u8 + 2), // 长度
-        unit,
-        func,
-    ];
-    frame.extend_from_slice(data);
-    frame
-}
-
-fn build_read_holding_req_bytes(is_tcp: bool, unit: u8, addr: u16, cnt: u16) -> Vec<u8> {
-    let data = [
-        (addr >> 8) as u8,
-        (addr & 0xFF) as u8,
-        (cnt >> 8) as u8,
-        (cnt & 0xFF) as u8,
-    ];
-    if is_tcp {
-        build_tcp_request_frame(unit, 0x03, &data)
-    } else {
-        build_rtu_request_frame(unit, 0x03, &data)
-    }
-}
-
-fn build_write_single_req_bytes(is_tcp: bool, unit: u8, addr: u16, value: u16) -> Vec<u8> {
-    let data = [
-        (addr >> 8) as u8,
-        (addr & 0xFF) as u8,
-        (value >> 8) as u8,
-        (value & 0xFF) as u8,
-    ];
-    if is_tcp {
-        build_tcp_request_frame(unit, 0x06, &data)
-    } else {
-        build_rtu_request_frame(unit, 0x06, &data)
-    }
-}
 
 pub enum RegCmd {
     ReadHolding {
