@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
 mod modbus;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, RwLock};
 use tokio_serial::{DataBits, FlowControl, Parity, StopBits};
 mod ui;
@@ -139,12 +139,87 @@ pub struct FrameInfo {
     pub is_request: bool,
 }
 
+/// 单次帧记录（用于监听历史）
+#[derive(Clone, Debug)]
+pub struct FrameRecord {
+    pub timestamp: Instant,
+    pub human_time: String, // 可读时间 HH:MM:SS.fff
+    pub func_code: u8,
+    pub func_name: String,
+    pub addr: u16,
+    pub values: Vec<u16>,
+    pub is_tcp: bool,
+    pub is_request: bool, // true=请求, false=响应
+}
+
+/// 寄存器值变化方向
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChangeDirection {
+    Up,
+    Down,
+}
+
+impl std::fmt::Display for ChangeDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeDirection::Up => write!(f, "↑"),
+            ChangeDirection::Down => write!(f, "↓"),
+        }
+    }
+}
+
+/// 寄存器值变化记录
+#[derive(Clone, Debug)]
+pub struct RegChangeRecord {
+    pub addr: usize,
+    pub old_value: u16,
+    pub new_value: u16,
+    pub direction: ChangeDirection,
+    pub human_time: String,
+}
+
+/// 静默监听统计数据
+#[derive(Clone, Debug)]
+pub struct MonitorStats {
+    /// 历史记录（环状缓冲区最大 500 条）
+    pub history: Vec<FrameRecord>,
+    /// 各功能码出现次数
+    pub func_count: HashMap<u8, usize>,
+    /// 各地址出现次数
+    pub addr_count: HashMap<u16, usize>,
+    /// 总帧数
+    pub total_frames: usize,
+}
+
+impl Default for MonitorStats {
+    fn default() -> Self {
+        Self {
+            history: Vec::with_capacity(500),
+            func_count: HashMap::new(),
+            addr_count: HashMap::new(),
+            total_frames: 0,
+        }
+    }
+}
+
 #[derive(Default)]
-struct AppState {
+pub struct AppState {
     holding: Vec<u16>,
     holding_label: Vec<String>,
     pub last_frame: Option<FrameInfo>,
     pub is_tcp: bool,
+    /// 监听统计
+    pub monitor: MonitorStats,
+    /// 稳定性测试进行中
+    pub stability_test_running: bool,
+    /// 稳定性测试统计 (总周期, 成功, 失败)
+    pub stability_stats: (u64, u64, u64),
+    /// 寄存器变化历史 (环状缓冲区)
+    pub reg_change_history: Vec<RegChangeRecord>,
+    /// 寄存器当前值是否刚发生过变化（用于表格高亮）
+    pub reg_just_changed: Vec<bool>,
+    /// 寄存器变化方向
+    pub reg_change_direction: Vec<ChangeDirection>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -153,6 +228,111 @@ enum MainMode {
     TcpClient,
     RTUServer,
     RTUClient,
+    Monitor,
+}
+
+/// 向监听统计中添加一条帧记录
+pub fn record_frame(monitor: &mut MonitorStats, fi: &FrameInfo) {
+    const MAX_HISTORY: usize = 500;
+    let now = std::time::SystemTime::now();
+    let human_time = format_system_time(now);
+    let record = FrameRecord {
+        timestamp: Instant::now(),
+        human_time,
+        func_code: fi.func_code,
+        func_name: fi.func_name.clone(),
+        addr: fi.addr,
+        values: fi.values.clone(),
+        is_tcp: fi.is_tcp,
+        is_request: fi.is_request,
+    };
+    if monitor.history.len() >= MAX_HISTORY {
+        monitor.history.remove(0);
+    }
+    monitor.history.push(record);
+    *monitor.func_count.entry(fi.func_code).or_insert(0) += 1;
+    *monitor.addr_count.entry(fi.addr).or_insert(0) += 1;
+    monitor.total_frames += 1;
+}
+
+fn format_system_time(t: std::time::SystemTime) -> String {
+    match t.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => {
+            let secs = d.as_secs();
+            let millis = d.subsec_millis();
+            let hours = (secs / 3600) % 24;
+            let minutes = (secs / 60) % 60;
+            let seconds = secs % 60;
+            format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+        }
+        Err(_) => "??:??:??.???".to_string(),
+    }
+}
+
+/// 记录寄存器值变化
+pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_value: u16) {
+    const MAX_CHANGES: usize = 500;
+    let now = std::time::SystemTime::now();
+    let human_time = format_system_time(now);
+    let direction = if new_value > old_value {
+        ChangeDirection::Up
+    } else if new_value < old_value {
+        ChangeDirection::Down
+    } else {
+        return; // 没变化，不记录
+    };
+    let record = RegChangeRecord {
+        addr,
+        old_value,
+        new_value,
+        direction: direction.clone(),
+        human_time,
+    };
+    if state.reg_change_history.len() >= MAX_CHANGES {
+        state.reg_change_history.remove(0);
+    }
+    state.reg_change_history.push(record);
+    if addr < state.reg_just_changed.len() {
+        state.reg_just_changed[addr] = true;
+        state.reg_change_direction[addr] = direction;
+    }
+}
+
+/// 模拟寄存器值随机变化（仅服务端模式下运行）
+pub async fn run_register_simulator(
+    state: Arc<RwLock<AppState>>,
+    holding_count: usize,
+    tick_ms: u64,
+) {
+    use rand::Rng;
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
+    loop {
+        interval.tick().await;
+        let mut rng = StdRng::from_entropy();
+        // 随机选取 1~3 个寄存器
+        let count = rng.gen_range(1..=3.min(holding_count));
+        let mut changes: Vec<(usize, u16)> = Vec::new();
+        for _ in 0..count {
+            let addr = rng.gen_range(0..holding_count);
+            let delta: u16 = rng.gen_range(1..=50);
+            changes.push((addr, delta));
+        }
+        let mut s = state.write().await;
+        for (addr, delta) in changes {
+            let old = s.holding[addr];
+            let new = if rng.gen_bool(0.5) {
+                old.saturating_add(delta)
+            } else {
+                old.saturating_sub(delta)
+            };
+            if old != new {
+                s.holding[addr] = new;
+                record_reg_change(&mut s, addr, old, new);
+            }
+        }
+    }
 }
 
 fn parse_mainmode(s: &str) -> Result<MainMode> {
@@ -161,6 +341,7 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
         "tc" | "tcp-client" => Ok(MainMode::TcpClient),
         "rs" | "rtu-server" => Ok(MainMode::RTUServer),
         "rc" | "rtu-client" => Ok(MainMode::RTUClient),
+        "mo" | "monitor" => Ok(MainMode::Monitor),
         _ => Err(anyhow!(t!("main.invalid_main_mode", mode = s))),
     }
 }
@@ -249,6 +430,7 @@ fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode
         MainMode::TcpClient => "tcp-client".into(),
         MainMode::RTUServer => "rtu-server".into(),
         MainMode::RTUClient => "rtu-client".into(),
+        MainMode::Monitor => "monitor".into(),
     };
 
     Ok((main_mode, args))
@@ -288,9 +470,8 @@ async fn main() -> Result<()> {
         resolve_selection(&cli_args.config, &sel)?
     };
 
-    let holding = vec![0u16; args.holding_count];
-
-    let mut holding_label = vec!["".to_string(); args.holding_count];
+    let binding_count = args.holding_count;
+    let mut holding_label = vec!["".to_string(); binding_count];
     args.labels.iter().for_each(|(k, v)| {
         if let Ok(idx) = k.parse::<usize>() {
             if idx < holding_label.len() {
@@ -298,12 +479,17 @@ async fn main() -> Result<()> {
             }
         }
     });
-
     let state = Arc::new(RwLock::new(AppState {
-        holding,
+        holding: vec![0u16; binding_count],
         holding_label,
         last_frame: None,
         is_tcp: matches!(main_mode, MainMode::TcpServer | MainMode::TcpClient),
+        monitor: MonitorStats::default(),
+        stability_test_running: false,
+        stability_stats: (0, 0, 0),
+        reg_change_history: Vec::new(),
+        reg_just_changed: vec![false; binding_count],
+        reg_change_direction: vec![ChangeDirection::Up; binding_count],
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
@@ -315,6 +501,16 @@ async fn main() -> Result<()> {
         args.holding_count,
         server_rx,
     ));
+
+    // 服务端模式下启动寄存器值模拟器（随机变化）
+    let is_server = matches!(main_mode, MainMode::TcpServer | MainMode::RTUServer);
+    if is_server {
+        let sim_state = Arc::clone(&state);
+        let hc = args.holding_count;
+        tokio::spawn(async move {
+            run_register_simulator(sim_state, hc, /* 每 500ms 变化一次 */ 500).await;
+        });
+    }
 
     let (client_tx, inner_rx) = mpsc::unbounded_channel::<RegCmd>();
 
@@ -328,6 +524,10 @@ async fn main() -> Result<()> {
             MainMode::RTUClient => run_modbus_rtu_client(inner_args, inner_state, inner_rx).await,
             MainMode::TcpServer => run_modbus_tcp_server(inner_args, inner_state, inner_tx).await,
             MainMode::TcpClient => run_modbus_tcp_client(inner_args, inner_state, inner_rx).await,
+            MainMode::Monitor => {
+                // Monitor 模式不需要 modbus 后端，仅保持运行
+                futures::future::pending::<Result<()>>().await
+            }
         };
 
         if let Err(e) = &r {

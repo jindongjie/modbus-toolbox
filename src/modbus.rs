@@ -13,6 +13,7 @@ use crate::parse_databits;
 use crate::parse_flow;
 use crate::parse_parity;
 use crate::parse_stopbits;
+use crate::record_frame;
 use crate::AppState;
 use crate::FrameInfo;
 use tokio_modbus::prelude::*;
@@ -75,7 +76,11 @@ pub async fn reg_worker_loop(
                     Err(ExceptionCode::IllegalDataAddress)
                 } else {
                     let mut s = state.write().await;
+                    let old = s.holding[addr];
                     s.holding[addr] = value;
+                    if old != value {
+                        crate::record_reg_change(&mut s, addr, old, value);
+                    }
                     Ok(())
                 };
                 let _ = resp.send(out);
@@ -85,7 +90,16 @@ pub async fn reg_worker_loop(
                     Err(ExceptionCode::IllegalDataAddress)
                 } else {
                     let mut s = state.write().await;
-                    s.holding[addr..addr + values.len()].copy_from_slice(&values);
+                    for (i, &v) in values.iter().enumerate() {
+                        let idx = addr + i;
+                        if idx < holding_len {
+                            let old = s.holding[idx];
+                            s.holding[idx] = v;
+                            if old != v {
+                                crate::record_reg_change(&mut s, idx, old, v);
+                            }
+                        }
+                    }
                     Ok(())
                 };
                 let _ = resp.send(out);
@@ -160,7 +174,7 @@ impl tokio_modbus::server::Service for HoldingService {
 
                     match resp_rx.await {
                         Ok(Ok(values)) => {
-                            state.write().await.last_frame = Some(FrameInfo {
+                            let fi = FrameInfo {
                                 is_tcp,
                                 unit,
                                 func_code: 0x03,
@@ -168,7 +182,9 @@ impl tokio_modbus::server::Service for HoldingService {
                                 addr: addr as u16,
                                 values: values.clone(),
                                 is_request: false,
-                            });
+                            };
+                            record_frame(&mut state.write().await.monitor, &fi);
+                            state.write().await.last_frame = Some(fi);
                             Ok(Response::ReadHoldingRegisters(values))
                         }
                         Ok(Err(ex)) => Err(ex),
@@ -203,7 +219,7 @@ impl tokio_modbus::server::Service for HoldingService {
 
                     match resp_rx.await {
                         Ok(Ok(())) => {
-                            state.write().await.last_frame = Some(FrameInfo {
+                            let fi = FrameInfo {
                                 is_tcp,
                                 unit,
                                 func_code: 0x06,
@@ -211,7 +227,9 @@ impl tokio_modbus::server::Service for HoldingService {
                                 addr: addr as u16,
                                 values: vec![value],
                                 is_request: false,
-                            });
+                            };
+                            record_frame(&mut state.write().await.monitor, &fi);
+                            state.write().await.last_frame = Some(fi);
                             Ok(Response::WriteSingleRegister(addr as u16, value))
                         }
                         Ok(Err(ex)) => Err(ex),
@@ -248,7 +266,7 @@ impl tokio_modbus::server::Service for HoldingService {
 
                     match resp_rx.await {
                         Ok(Ok(())) => {
-                            state.write().await.last_frame = Some(FrameInfo {
+                            let fi = FrameInfo {
                                 is_tcp,
                                 unit,
                                 func_code: 0x10,
@@ -256,7 +274,9 @@ impl tokio_modbus::server::Service for HoldingService {
                                 addr: addr as u16,
                                 values: values.to_vec(),
                                 is_request: false,
-                            });
+                            };
+                            record_frame(&mut state.write().await.monitor, &fi);
+                            state.write().await.last_frame = Some(fi);
                             Ok(Response::WriteMultipleRegisters(addr, qty))
                         }
                         Ok(Err(ex)) => Err(ex),
@@ -354,12 +374,20 @@ pub async fn client_read_write_loop(
                         let end = (offset + values.len()).min(s.holding.len());
                         let write_len = end.saturating_sub(offset);
                         if write_len > 0 {
-                            s.holding[offset..offset + write_len]
-                                .copy_from_slice(&values[..write_len]);
+                            // 记录寄存器值变化（客户端可见）
+                            for i in 0..write_len {
+                                let idx = offset + i;
+                                let old = s.holding[idx];
+                                let new = values[i];
+                                if old != new {
+                                    s.holding[idx] = new;
+                                    crate::record_reg_change(&mut s, idx, old, new);
+                                }
+                            }
                         }
                         // 更新字节流显示信息
                         if write_len > 0 {
-                            s.last_frame = Some(FrameInfo {
+                            let fi = FrameInfo {
                                 is_tcp: s.is_tcp,
                                 unit: args.unit,
                                 func_code: 0x03,
@@ -367,7 +395,9 @@ pub async fn client_read_write_loop(
                                 addr,
                                 values: values[..write_len].to_vec(),
                                 is_request: false,
-                            });
+                            };
+                            record_frame(&mut s.monitor, &fi);
+                            s.last_frame = Some(fi);
                         }
                         offset += cnt;
                     }

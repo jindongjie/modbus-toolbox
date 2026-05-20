@@ -1,12 +1,12 @@
 # Modbus Toolbox
 
-<img src="art/logo.png" alt="logo" width="300" height="300">  
+<img src="art/logo-en.png" alt="logo" width="300" height="300">  
 
 Modbus Toolbox is a collection of tools created to help developers debug the Modbus communication protocol more quickly and stably. It implements both server and client for the RTU/TCP transport layers, and additionally features silent monitoring of RTU communications. The interface is presented through a terminal-based graphical interface (TUI) — streamlined, efficient, and runnable on all major operating systems via the command line. Single binary, zero runtime dependencies, an indispensable tool for debugging Modbus communications.
 
 ## Key Features
 
-<img src="art/breif.png" alt="features overview" width="300" height="300">  
+<img src="art/breif-cn.png" alt="features overview" width="300" height="300">  
 
 1. Modbus TCP/RTU Server & Client
    - TUI table interface, single/batch read and modify
@@ -23,7 +23,7 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 
 ## Compatibility (detailed list below)
 
-<img src="art/comp.png" alt="compatibility" width="300" height="300">  
+<img src="art/comp-cn.png" alt="compatibility" width="300" height="300">  
 
 ### Instruction Sets
 

@@ -26,7 +26,7 @@ use ratatui::{
 // crate
 use crate::{
     format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str, AppState, Args,
-    DisplayBase, FrameInfo, MainMode,
+    DisplayBase, FrameInfo, MainMode, MonitorStats,
 };
 const UI_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -58,6 +58,13 @@ pub struct Ui {
     edit_buf: String,
     status_msg: Option<String>,
     show_byte_panel: bool,
+
+    // --- 静默监听 ---
+    show_monitor: bool,
+    /// 历史记录滚动偏移
+    monitor_scroll: usize,
+    /// true=焦点在历史面板, false=焦点在统计面板
+    monitor_focus_history: bool,
 
     // --- 菜单相关字段 ---
     /// 当前菜单屏幕：Main / ProfilePick / ProfileSet
@@ -110,6 +117,9 @@ impl Ui {
             edit_buf: String::new(),
             status_msg: None,
             show_byte_panel: true,
+            show_monitor: false,
+            monitor_scroll: 0,
+            monitor_focus_history: true,
 
             menu_screen: MenuScreen::Main,
             menu_list_idx: 0,
@@ -219,11 +229,12 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     );
 
     // --- 主菜单区：垂直排列 ---
-    let menu_items: [(&str, MainMode); 4] = [
+    let menu_items: [(&str, MainMode); 5] = [
         ("main_menu.tcp_server", MainMode::TcpServer),
         ("main_menu.tcp_client", MainMode::TcpClient),
         ("main_menu.rtu_server", MainMode::RTUServer),
         ("main_menu.rtu_client", MainMode::RTUClient),
+        ("main_menu.monitor", MainMode::Monitor),
     ];
 
     let block = Block::default()
@@ -320,7 +331,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
         Some(MainMode::TcpClient) => "TCP Client",
         Some(MainMode::RTUServer) => "RTU Server",
         Some(MainMode::RTUClient) => "RTU Client",
-        None => "?",
+        Some(MainMode::Monitor) | None => "?",
     };
     let title = t!("profile_pick.title", mode = mode_name);
     f.render_widget(
@@ -508,7 +519,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 
 /// 处理主菜单的按键事件（垂直导航）
 fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
-    const ITEM_COUNT: usize = 5; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), Profile Settings(4)
+    const ITEM_COUNT: usize = 6; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), Monitor(4), Profile Settings(5)
 
     match code {
         KeyCode::Up => {
@@ -541,6 +552,14 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
                 ui.menu_list_idx = 0;
             }
             4 => {
+                // Monitor 模式直接返回 Selection（不需要配置）
+                return Some(MenuSelection {
+                    main_mode: MainMode::Monitor,
+                    profile_name: None,
+                    quit: false,
+                });
+            }
+            5 => {
                 // Profile Settings
                 ui.menu_screen = MenuScreen::ProfileSet;
                 ui.menu_list_idx = 0;
@@ -1337,6 +1356,11 @@ pub async fn run_ui(
     let mut events = EventStream::new();
     let mut ui = Ui::new(args.base, Vec::new());
 
+    // Monitor 模式默认开启监听面板
+    if args.main_mode == "monitor" {
+        ui.show_monitor = true;
+    }
+
     let tick = Duration::from_millis(args.ui_tick_ms);
     let mut interval = tokio::time::interval(tick);
 
@@ -1345,44 +1369,140 @@ pub async fn run_ui(
                     _ = interval.tick() => {
                         let s = state.read().await;
                         let server_err = server_status.read().await.clone();
+                        let is_monitor_mode = args.main_mode == "monitor";
                         terminal.draw(|f| {
-                            let vert = Layout::vertical([
-                                Constraint::Min(5),
-                                Constraint::Length(3),
-                                Constraint::Length(3),
-                            ]).split(f.area());
+                            let monitor_active = is_monitor_mode || ui.show_monitor;
 
-                            // 顶部区域：字节流面板(左) + 寄存器列表(右)
-                            if ui.show_byte_panel {
-                                let top = Layout::horizontal([
-                                    Constraint::Length(42),
-                                    Constraint::Min(20),
-                                ]).split(vert[0]);
+                            // 纯监听模式：仅显示监听面板；否则显示寄存器表 + 可选的监听覆盖层
+                            let (monitor_constraint, keep) = if is_monitor_mode {
+                                (Constraint::Min(3), false)
+                            } else if monitor_active {
+                                (Constraint::Length(12), true)
+                            } else {
+                                (Constraint::Length(0), false) // 不显示
+                            };
 
-                                // --- 字节流面板 ---
-                                if let Some(ref fi) = s.last_frame {
-                                    let panel_text = format_byte_panel(fi);
-                                    f.render_widget(
-                                        ratatui::widgets::Paragraph::new(panel_text)
-                                            .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
-                                            .style(Style::default().fg(Color::Cyan)),
-                                        top[0],
-                                    );
+                            let constraints: Vec<Constraint> = if is_monitor_mode {
+                                vec![monitor_constraint, Constraint::Length(3), Constraint::Length(3)]
+                            } else if keep {
+                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Length(3)]
+                            } else {
+                                vec![Constraint::Min(5), Constraint::Length(3), Constraint::Length(3)]
+                            };
+
+                            let areas = Layout::vertical(&constraints).split(f.area());
+                            let mut area_idx = 0;
+
+                            if is_monitor_mode {
+                                // 纯监听模式：全屏监听面板
+                                let monitor_area = areas[area_idx]; area_idx += 1;
+
+                                // 水平分割：历史流（左 55%），统计表（右 45%）
+                                let monitor_split = Layout::horizontal([
+                                    Constraint::Percentage(55),
+                                    Constraint::Percentage(45),
+                                ]).split(monitor_area);
+
+                                // 左面板：历史流水
+                                let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
+                                let history_style = if ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                f.render_widget(
+                                    ratatui::widgets::Paragraph::new(history_text)
+                                        .block(Block::default()
+                                            .borders(Borders::ALL)
+                                            .title(t!("run_ui.monitor_history_title"))
+                                            .border_style(Style::default().fg(history_style))
+                                        )
+                                        .style(Style::default().fg(Color::Green)),
+                                    monitor_split[0],
+                                );
+
+                                // 右面板：统计一览
+                                let stats_text = format_monitor_stats(&s.monitor);
+                                let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                f.render_widget(
+                                    ratatui::widgets::Paragraph::new(stats_text)
+                                        .block(Block::default()
+                                            .borders(Borders::ALL)
+                                            .title(t!("run_ui.monitor_stats_title"))
+                                            .border_style(Style::default().fg(stats_style))
+                                        )
+                                        .style(Style::default().fg(Color::Green)),
+                                    monitor_split[1],
+                                );
+                            } else {
+                                // Server/Client 模式：顶部区域
+                                let top_area = &areas[area_idx]; area_idx += 1;
+
+                                if ui.show_byte_panel {
+                                    let top = Layout::horizontal([
+                                        Constraint::Length(42),
+                                        Constraint::Min(20),
+                                    ]).split(*top_area);
+
+                                    // 字节流面板
+                                    if let Some(ref fi) = s.last_frame {
+                                        let panel_text = format_byte_panel(fi);
+                                        f.render_widget(
+                                            ratatui::widgets::Paragraph::new(panel_text)
+                                                .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
+                                                .style(Style::default().fg(Color::Cyan)),
+                                            top[0],
+                                        );
+                                    } else {
+                                        f.render_widget(
+                                            ratatui::widgets::Paragraph::new(t!("run_ui.no_data"))
+                                                .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
+                                                .style(Style::default().fg(Color::DarkGray)),
+                                            top[0],
+                                        );
+                                    }
+
+                                    render_register_table(f, &s, &mut ui, top[1]);
                                 } else {
-                                    f.render_widget(
-                                        ratatui::widgets::Paragraph::new(t!("run_ui.no_data"))
-                                            .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
-                                            .style(Style::default().fg(Color::DarkGray)),
-                                        top[0],
-                                    );
+                                    render_register_table(f, &s, &mut ui, *top_area);
                                 }
 
-                                render_register_table(f, &s, &mut ui, top[1]);
-                            } else {
-                                render_register_table(f, &s, &mut ui, vert[0]);
+                                // 监听覆盖层
+                                if monitor_active {
+                                    let monitor_area = areas[area_idx]; area_idx += 1;
+                                    let monitor_split = Layout::horizontal([
+                                        Constraint::Percentage(55),
+                                        Constraint::Percentage(45),
+                                    ]).split(monitor_area);
+
+                                    let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
+                                    let history_style = if ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(history_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_history_title"))
+                                                .border_style(Style::default().fg(history_style))
+                                            )
+                                            .style(Style::default().fg(Color::Green)),
+                                        monitor_split[0],
+                                    );
+
+                                    let stats_text = format_monitor_stats(&s.monitor);
+                                    let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(stats_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_stats_title"))
+                                                .border_style(Style::default().fg(stats_style))
+                                            )
+                                            .style(Style::default().fg(Color::Green)),
+                                        monitor_split[1],
+                                    );
+                                }
                             }
 
-                            // --- 状态栏 (全宽) ---
+                            let status_bar_index = area_idx; area_idx += 1;
+                            let help_index = area_idx;
+
+                            // --- 状态栏 ---
                             let status_line = if let Some(m) = server_err.as_deref() {
                                 t!("run_ui.error_prefix", msg = m)
                             } else if let Some(m) = ui.status_msg.as_deref() {
@@ -1395,6 +1515,17 @@ pub async fn run_ui(
                                 } else {
                                     t!("run_ui.edit_value", base = format!("{:?}", ui.base), buf = &ui.edit_buf)
                                 }
+                            } else if s.stability_test_running {
+                                let (total, ok, fail) = s.stability_stats;
+                                t!("run_ui.status_stability", total = total, ok = ok, fail = fail)
+                            } else if is_monitor_mode {
+                                t!("run_ui.status_monitoring", frames = s.monitor.total_frames)
+                            } else if s.monitor.total_frames > 0 && ui.show_monitor {
+                                t!("run_ui.status_monitor", frames = s.monitor.total_frames)
+                            } else if !s.reg_change_history.is_empty() {
+                                let changes = s.reg_change_history.len();
+                                let last = s.reg_change_history.last().unwrap();
+                                t!("run_ui.status_reg_change", count = changes, addr = last.addr, dir = format!("{}", last.direction))
                             } else if let Some(ref fi) = s.last_frame {
                                 if fi.is_tcp {
                                     t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base))
@@ -1413,12 +1544,18 @@ pub async fn run_ui(
                                     } else {
                                         Style::default()
                                     }),
-                                vert[1],
+                                areas[status_bar_index],
                             );
 
-                            // --- 帮助栏 (全宽) ---
+                            // --- 帮助栏 ---
                             let help = if ui.edit_mode {
                                 t!("run_ui.help_edit", buf = &ui.edit_buf)
+                            } else if s.stability_test_running {
+                                t!("run_ui.help_stability")
+                            } else if is_monitor_mode {
+                                t!("run_ui.help_monitoring")
+                            } else if monitor_active {
+                                t!("run_ui.help_monitor")
                             } else {
                                 t!("run_ui.help_normal")
                             };
@@ -1426,7 +1563,7 @@ pub async fn run_ui(
                             f.render_widget(
                                 ratatui::widgets::Paragraph::new(help)
                                     .block(Block::default().borders(Borders::ALL).title(t!("run_ui.help_title"))),
-                                vert[2],
+                                areas[help_index],
                             );
                         })?;
                     }
@@ -1459,6 +1596,8 @@ pub async fn run_ui(
                                 {
                                     break Ok(());
                                 }
+
+                                let is_monitor_mode = args.main_mode == "monitor";
 
                                 if ui.edit_mode {
                                     match code {
@@ -1604,11 +1743,22 @@ pub async fn run_ui(
                                         }
 
                                         KeyCode::Char('k') | KeyCode::Up => {
-                                            ui.selected = ui.selected.saturating_sub(1);
+                                            if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                                ui.monitor_scroll = ui.monitor_scroll.saturating_sub(1);
+                                            } else {
+                                                ui.selected = ui.selected.saturating_sub(1);
+                                            }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => {
-                                            let len = state.read().await.holding.len();
-                                            ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
+                                            if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                                let len = state.read().await.monitor.history.len();
+                                                if ui.monitor_scroll + 1 < len.saturating_sub(8) {
+                                                    ui.monitor_scroll += 1;
+                                                }
+                                            } else {
+                                                let len = state.read().await.holding.len();
+                                                ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
+                                            }
                                         }
                                         KeyCode::Char('d') => {
                                             ui.base = DisplayBase::Dec;
@@ -1660,6 +1810,36 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.byte_panel_hidden"));
                                             }
                                         }
+                                        KeyCode::Char('M') => {
+                                            if !is_monitor_mode {
+                                                ui.show_monitor = !ui.show_monitor;
+                                                if ui.show_monitor {
+                                                    set_status(&mut ui, t!("run_ui.monitor_shown"));
+                                                } else {
+                                                    set_status(&mut ui, t!("run_ui.monitor_hidden"));
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Tab => {
+                                            if is_monitor_mode || ui.show_monitor {
+                                                ui.monitor_focus_history = !ui.monitor_focus_history;
+                                                if !ui.monitor_focus_history {
+                                                    set_status(&mut ui, t!("run_ui.monitor_stats_mode"));
+                                                } else {
+                                                    set_status(&mut ui, t!("run_ui.monitor_history_mode"));
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Char('S') => {
+                                            let mut s = state.write().await;
+                                            s.stability_test_running = !s.stability_test_running;
+                                            if s.stability_test_running {
+                                                s.stability_stats = (0, 0, 0);
+                                                set_status(&mut ui, t!("run_ui.stability_started"));
+                                            } else {
+                                                set_status(&mut ui, t!("run_ui.stability_stopped"));
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1703,6 +1883,7 @@ fn render_register_table(
         Cell::from(t!("register_table.col_addr")),
         Cell::from(t!("register_table.col_label")),
         Cell::from(t!("register_table.col_value")),
+        Cell::from(t!("register_table.col_change")),
     ])
     .style(
         Style::default()
@@ -1726,10 +1907,17 @@ fn render_register_table(
                     val = ui.edit_buf.clone();
                 }
             }
+            // 变化方向指示
+            let change_str = if i < s.reg_just_changed.len() && s.reg_just_changed[i] {
+                format!("{}", s.reg_change_direction[i])
+            } else {
+                String::new()
+            };
             Row::new(vec![
-                Cell::from(format!("{i}")),
+                Cell::from(format!("{}", i)),
                 Cell::from(label),
                 Cell::from(val),
+                Cell::from(change_str),
             ])
         });
 
@@ -1742,6 +1930,7 @@ fn render_register_table(
             Constraint::Length(18),
             Constraint::Length(42),
             Constraint::Min(10),
+            Constraint::Length(6),
         ],
     )
     .header(header)
@@ -1966,5 +2155,60 @@ fn format_byte_panel(fi: &FrameInfo) -> String {
         text.push_str(&format!("  {}\n", line.join(" ")));
     }
 
+    text
+}
+
+/// 格式化监听历史流水
+fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String {
+    const MAX_LINES: usize = 8;
+    let total = m.history.len();
+    let start = if total > scroll + MAX_LINES {
+        total - MAX_LINES - scroll
+    } else {
+        0
+    };
+    let mut text = String::new();
+    for rec in m.history.iter().skip(start).rev().take(MAX_LINES) {
+        let dir = if rec.is_request { "⇒" } else { "⇐" };
+        let tag = if rec.is_tcp { "TCP" } else { "RTU" };
+        text.push_str(&format!(
+            "{} {} {} {} addr=0x{:04X}\n",
+            rec.human_time, dir, tag, rec.func_name, rec.addr
+        ));
+    }
+    if text.is_empty() {
+        text.push_str(&t!("run_ui.no_data"));
+    }
+    text
+}
+
+/// 格式化监听统计一览
+fn format_monitor_stats(m: &MonitorStats) -> String {
+    let mut text = String::new();
+    text.push_str(&format!(
+        "{}: {}\n",
+        t!("run_ui.monitor_total_frames"),
+        m.total_frames
+    ));
+    text.push_str(&format!("{}\n", t!("run_ui.monitor_func_header")));
+    if m.func_count.is_empty() {
+        text.push_str(&format!("  {}\n", t!("run_ui.no_data")));
+    } else {
+        let mut funcs: Vec<_> = m.func_count.iter().collect();
+        funcs.sort_by(|a, b| b.1.cmp(a.1));
+        for (code, count) in funcs {
+            text.push_str(&format!("  0x{:02X}: {}\n", code, count));
+        }
+    }
+    text.push_str(&format!("{}\n", t!("run_ui.monitor_addr_header")));
+    if m.addr_count.is_empty() {
+        text.push_str(&format!("  {}\n", t!("run_ui.no_data")));
+    } else {
+        let mut addrs: Vec<_> = m.addr_count.iter().collect();
+        addrs.sort_by(|a, b| b.1.cmp(a.1));
+        for (addr, count) in addrs.iter().take(10) {
+            text.push_str(&format!("  0x{:04X}: {}\n", addr, count));
+        }
+    }
     text
 }

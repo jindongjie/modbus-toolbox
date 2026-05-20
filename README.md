@@ -2,13 +2,13 @@
 
 [English](./README.en.md) | 简体中文
 
-<img src="art/logo.png" alt="简介图片" width="300" height="300">  
+<img src="art/logo-cn.png" alt="简介图片" width="300" height="300">  
 
 Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus 通讯协议所创建的工具集，实现了 RTU/TCP 传输层的服务器端与客户端，还特增加对 RTU 通讯进行静默侦听的功能。界面通过命令行图形界面的方式呈现，精简高效，所有主流操作系统都可通过命令行终端运行软件，单文件，无任何依赖，是男女老少调试 Modbus 通讯的不可或缺之工具。
 
 ## 主要功能列表
 
-<img src="art/breif.png" alt="主要功能图片" width="300" height="300">  
+<img src="art/breif-cn.png" alt="主要功能图片" width="300" height="300">  
 
 1. Modbus TCP/RTU 服务端/客户端
    - TUI表格界面，单次/批量 进行 读取/修改
@@ -25,7 +25,7 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 
 ## 兼容性(后有详细列表)
 
-<img src="art/comp.png" alt="兼容性图片" width="300" height="300">  
+<img src="art/comp-cn.png" alt="兼容性图片" width="300" height="300">  
 
 ### 指令集
 
@@ -54,7 +54,7 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 
 ## 开发指北
 
-懂得rust tokio.
+懂得rust async tokio.
 
 ### TODOLIST
 
