@@ -84,6 +84,9 @@ run_ui.monitor_stats_title: "Статистика"
 run_ui.monitor_total_frames: "Всего кадров"
 run_ui.monitor_func_header: "Распределение кодов функций"
 run_ui.monitor_addr_header: "Распределение адресов"
+run_ui.monitor_pick_title: "Выбор цели мониторинга"
+run_ui.monitor_pick_help: "↑↓ Навигация · Enter Выбор · P Назад · Q Выход"
+run_ui.monitor_selected: "Мониторинг: %{name}"
 run_ui.status_stability: "Тест стабильности · всего=%{total} ок=%{ok} ошибок=%{fail}"
 
 # Таблица регистров

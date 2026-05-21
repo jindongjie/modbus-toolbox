@@ -6,7 +6,7 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 
 ## Key Features
 
-<img src="art/breif-cn.png" alt="features overview" width="300" height="300">  
+<img src="art/breif-en.png" alt="features overview" width="300" height="300">  
 
 1. Modbus TCP/RTU Server & Client
    - TUI table interface, single/batch read and modify

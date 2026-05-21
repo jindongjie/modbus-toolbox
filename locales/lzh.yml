@@ -84,6 +84,9 @@ run_ui.monitor_stats_title: "統計表"
 run_ui.monitor_total_frames: "總幀數"
 run_ui.monitor_func_header: "功能碼分佈"
 run_ui.monitor_addr_header: "地址分佈"
+run_ui.monitor_pick_title: "選監聽目標"
+run_ui.monitor_pick_help: "↑↓ 導航 · Enter 選 · P 返 · Q 退"
+run_ui.monitor_selected: "監聽中: %{name}"
 run_ui.status_stability: "穩定測 · 共=%{total} 成=%{ok} 敗=%{fail}"
 
 # 寄存器表

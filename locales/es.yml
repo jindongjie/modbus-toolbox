@@ -84,6 +84,9 @@ run_ui.monitor_stats_title: "Estadísticas"
 run_ui.monitor_total_frames: "Tramas totales"
 run_ui.monitor_func_header: "Distribución de códigos de función"
 run_ui.monitor_addr_header: "Distribución de direcciones"
+run_ui.monitor_pick_title: "Seleccionar objetivo de monitoreo"
+run_ui.monitor_pick_help: "↑↓ Navegar · Enter Seleccionar · P Volver · Q Salir"
+run_ui.monitor_selected: "Monitoreando: %{name}"
 run_ui.status_stability: "Prueba de estabilidad · total=%{total} ok=%{ok} fallo=%{fail}"
 
 # Tabla de registros

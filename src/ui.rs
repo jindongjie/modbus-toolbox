@@ -99,6 +99,14 @@ pub struct Ui {
     name_prompt_is_clone: bool,
     /// 克隆时暂存的原配置 Args
     name_prompt_clone_args: Option<Args>,
+
+    // --- 监听模式配置选择 ---
+    /// 监听模式下是否正在选择配置
+    monitor_picking: bool,
+    /// 监听模式下已选中的配置名
+    monitor_selected_profile: Option<String>,
+    /// 配置文件路径
+    config_path: String,
 }
 
 impl Ui {
@@ -116,7 +124,7 @@ impl Ui {
             edit_is_profile: false,
             edit_buf: String::new(),
             status_msg: None,
-            show_byte_panel: true,
+            show_byte_panel: false,
             show_monitor: false,
             monitor_scroll: 0,
             monitor_focus_history: true,
@@ -139,6 +147,11 @@ impl Ui {
             name_prompt_buf: String::new(),
             name_prompt_is_clone: false,
             name_prompt_clone_args: None,
+
+            // 监听模式配置选择
+            monitor_picking: true, // 启动时直接进入选择模式
+            monitor_selected_profile: None,
+            config_path: String::new(),
         }
     }
 }
@@ -420,6 +433,109 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
 
     // 底部帮助
     let help = t!("profile_pick.help");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[2],
+    );
+}
+
+/// 监听模式下显示配置选择界面（全屏）
+fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(10),
+        Constraint::Length(3),
+    ])
+    .split(area);
+
+    // 标题
+    let title = t!("run_ui.monitor_pick_title");
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            title.as_ref(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        vert[0],
+    );
+
+    // 主区域
+    let main =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
+
+    // 左：配置列表
+    let mut items: Vec<Line> = Vec::new();
+    for (i, name) in ui.profiles.iter().enumerate() {
+        let is_sel = i == ui.menu_list_idx;
+        let prefix = "  ";
+        let line = if is_sel {
+            Line::from(Span::styled(
+                format!("{prefix}{name}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            Line::from(Span::styled(format!("{prefix}{name}"), Style::default()))
+        };
+        items.push(line);
+    }
+    if ui.profiles.is_empty() {
+        items.push(Line::from(Span::styled(
+            t!("profile_pick.empty_list"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_pick.list_title"))
+        .border_style(Style::default().fg(Color::Blue));
+    f.render_widget(
+        ratatui::widgets::Paragraph::new(ratatui::text::Text::from(items)).block(list_block),
+        main[0],
+    );
+
+    // 右：配置预览
+    let preview_text = if ui.menu_list_idx < ui.profiles.len() {
+        let name = &ui.profiles[ui.menu_list_idx];
+        if let Some((_, args)) = load_profile_args(config_path, name) {
+            format!(
+                "{}\n{}: {}\n{}: {}\n{}: {}",
+                name,
+                t!("profile_pick.mode"),
+                args.main_mode,
+                t!("profile_pick.tcp_port"),
+                args.tcp_port,
+                t!("profile_pick.device"),
+                if args.device == "dev/null" {
+                    "127.0.0.1".to_string()
+                } else {
+                    args.device.clone()
+                },
+            )
+        } else {
+            format!("{}\n{}", name, t!("profile_pick.load_fail"))
+        }
+    } else {
+        t!("profile_pick.select_hint").to_string()
+    };
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_pick.preview_title"))
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(Paragraph::new(preview_text).block(preview_block), main[1]);
+
+    // 底部帮助
+    let help = t!("run_ui.monitor_pick_help");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             help,
@@ -1346,6 +1462,8 @@ pub async fn run_ui(
     tx: mpsc::UnboundedSender<RegCmd>,
     args: Args,
     server_status: Arc<RwLock<Option<String>>>,
+    config_path: String,
+    profiles: Vec<String>,
 ) -> Result<()> {
     enable_raw_mode().context(t!("run_ui.enable_raw_mode"))?;
     let mut stdout = io::stdout();
@@ -1354,7 +1472,8 @@ pub async fn run_ui(
     let mut terminal = Terminal::new(backend).context(t!("run_ui.create_terminal"))?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(args.base, Vec::new());
+    let mut ui = Ui::new(args.base, profiles);
+    ui.config_path = config_path;
 
     // Monitor 模式默认开启监听面板
     if args.main_mode == "monitor" {
@@ -1397,41 +1516,46 @@ pub async fn run_ui(
                                 // 纯监听模式：全屏监听面板
                                 let monitor_area = areas[area_idx]; area_idx += 1;
 
-                                // 水平分割：历史流（左 55%），统计表（右 45%）
-                                let monitor_split = Layout::horizontal([
-                                    Constraint::Percentage(55),
-                                    Constraint::Percentage(45),
-                                ]).split(monitor_area);
+                                if ui.monitor_picking || ui.monitor_selected_profile.is_none() {
+                                    // 显示配置选择界面
+                                    render_monitor_profile_pick(f, &ui, &ui.config_path);
+                                } else {
+                                    // 水平分割：历史流（左 55%），统计表（右 45%）
+                                    let monitor_split = Layout::horizontal([
+                                        Constraint::Percentage(55),
+                                        Constraint::Percentage(45),
+                                    ]).split(monitor_area);
 
-                                // 左面板：历史流水
-                                let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
-                                let history_style = if ui.monitor_focus_history { Color::Yellow } else { Color::Green };
-                                f.render_widget(
-                                    ratatui::widgets::Paragraph::new(history_text)
-                                        .block(Block::default()
-                                            .borders(Borders::ALL)
-                                            .title(t!("run_ui.monitor_history_title"))
-                                            .border_style(Style::default().fg(history_style))
-                                        )
-                                        .style(Style::default().fg(Color::Green)),
-                                    monitor_split[0],
-                                );
+                                    // 左面板：历史流水
+                                    let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
+                                    let history_style = if ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(history_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_history_title"))
+                                                .border_style(Style::default().fg(history_style))
+                                            )
+                                            .style(Style::default().fg(Color::Green)),
+                                        monitor_split[0],
+                                    );
 
-                                // 右面板：统计一览
-                                let stats_text = format_monitor_stats(&s.monitor);
-                                let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
-                                f.render_widget(
-                                    ratatui::widgets::Paragraph::new(stats_text)
-                                        .block(Block::default()
-                                            .borders(Borders::ALL)
-                                            .title(t!("run_ui.monitor_stats_title"))
-                                            .border_style(Style::default().fg(stats_style))
-                                        )
-                                        .style(Style::default().fg(Color::Green)),
-                                    monitor_split[1],
-                                );
+                                    // 右面板：统计一览
+                                    let stats_text = format_monitor_stats(&s.monitor);
+                                    let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(stats_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_stats_title"))
+                                                .border_style(Style::default().fg(stats_style))
+                                            )
+                                            .style(Style::default().fg(Color::Green)),
+                                        monitor_split[1],
+                                    );
+                                }
                             } else {
-                                // Server/Client 模式：顶部区域
+                            // Server/Client 模式：顶部区域
                                 let top_area = &areas[area_idx]; area_idx += 1;
 
                                 if ui.show_byte_panel {
@@ -1734,6 +1858,32 @@ pub async fn run_ui(
                                     }
                                 } else {
                                     match code {
+                                        KeyCode::Enter => {
+                                            if is_monitor_mode && ui.monitor_picking {
+                                                let idx = ui.menu_list_idx;
+                                                if idx < ui.profiles.len() {
+                                                    let name = ui.profiles[idx].clone();
+                                                    ui.monitor_selected_profile = Some(name.clone());
+                                                    ui.monitor_picking = false;
+                                                    set_status(&mut ui, t!("run_ui.monitor_selected", name = &name));
+                                                    // 异步加载配置并启动监听任务
+                                                    let cfg_path = ui.config_path.clone();
+                                                    let pname = name.clone();
+                                                    let mon_state = Arc::clone(&state);
+                                                    let _ = tokio::spawn(async move {
+                                                        let config_str = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+                                                        let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+                                                        if let Some(profile_args) = configs.get(&pname) {
+                                                            let mut args = profile_args.clone();
+                                                            args.main_mode = "monitor".to_string();
+                                                            if let Err(e) = crate::modbus::run_modbus_monitor_tcp(args, mon_state).await {
+                                                                eprintln!("监听任务失败: {}", e);
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
+                                        }
                                         KeyCode::PageDown => {
                                             let len = state.read().await.holding.len();
                                             ui.selected = len.saturating_sub(1);
@@ -1743,14 +1893,19 @@ pub async fn run_ui(
                                         }
 
                                         KeyCode::Char('k') | KeyCode::Up => {
-                                            if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                            if is_monitor_mode && ui.monitor_picking {
+                                                ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
+                                            } else if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
                                                 ui.monitor_scroll = ui.monitor_scroll.saturating_sub(1);
                                             } else {
                                                 ui.selected = ui.selected.saturating_sub(1);
                                             }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => {
-                                            if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                            if is_monitor_mode && ui.monitor_picking {
+                                                let len = ui.profiles.len();
+                                                ui.menu_list_idx = (ui.menu_list_idx + 1).min(len.saturating_sub(1));
+                                            } else if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
                                                 let len = state.read().await.monitor.history.len();
                                                 if ui.monitor_scroll + 1 < len.saturating_sub(8) {
                                                     ui.monitor_scroll += 1;
@@ -1817,6 +1972,14 @@ pub async fn run_ui(
                                                     set_status(&mut ui, t!("run_ui.monitor_shown"));
                                                 } else {
                                                     set_status(&mut ui, t!("run_ui.monitor_hidden"));
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Char('P') => {
+                                            if is_monitor_mode && !ui.profiles.is_empty() {
+                                                ui.monitor_picking = !ui.monitor_picking;
+                                                if ui.monitor_picking {
+                                                    set_status(&mut ui, t!("run_ui.monitor_picking"));
                                                 }
                                             }
                                         }

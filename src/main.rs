@@ -304,8 +304,8 @@ pub async fn run_register_simulator(
     holding_count: usize,
     tick_ms: u64,
 ) {
-    use rand::Rng;
     use rand::rngs::StdRng;
+    use rand::Rng;
     use rand::SeedableRng;
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
     loop {
@@ -443,6 +443,9 @@ async fn main() -> Result<()> {
     // 设置界面语言
     rust_i18n::set_locale(&cli_args.lang);
 
+    // 配置路径（Clone 以避免 move）
+    let config_path_base = cli_args.config.clone();
+
     // 如果 CLI 指定了 --profile，直接使用（跳过菜单）
     let (main_mode, args) = if let Some(profile_name) = &cli_args.profile {
         let config_str = std::fs::read_to_string(&cli_args.config)
@@ -452,7 +455,7 @@ async fn main() -> Result<()> {
         if let Some(profile_args) = configs.get(profile_name) {
             let mut args = profile_args.clone();
             let main_mode = parse_mainmode(&args.main_mode)?;
-            args.config = cli_args.config;
+            args.config = config_path_base;
             (main_mode, args)
         } else {
             anyhow::bail!(t!("main.profile_not_found", name = profile_name));
@@ -537,10 +540,29 @@ async fn main() -> Result<()> {
         r
     });
     let ui_res;
+    // 加载配置列表（供监听模式使用）
+    let config_path = cli_args.config.clone();
+    let profiles = load_profile_list(&config_path);
     if main_mode == MainMode::TcpClient || main_mode == MainMode::RTUClient {
-        ui_res = run_ui(Arc::clone(&state), client_tx, args, server_status).await;
+        ui_res = run_ui(
+            Arc::clone(&state),
+            client_tx,
+            args,
+            server_status,
+            config_path,
+            profiles,
+        )
+        .await;
     } else {
-        ui_res = run_ui(Arc::clone(&state), server_tx, args, server_status).await;
+        ui_res = run_ui(
+            Arc::clone(&state),
+            server_tx,
+            args,
+            server_status,
+            config_path,
+            profiles,
+        )
+        .await;
     }
 
     inner_task.abort();

@@ -84,6 +84,9 @@ run_ui.monitor_stats_title: "Statistik"
 run_ui.monitor_total_frames: "Gesamtframes"
 run_ui.monitor_func_header: "Funktionscode-Verteilung"
 run_ui.monitor_addr_header: "Adressverteilung"
+run_ui.monitor_pick_title: "Überwachungsziel auswählen"
+run_ui.monitor_pick_help: "↑↓ Navigieren · Enter Auswählen · P Zurück · Q Beenden"
+run_ui.monitor_selected: "Überwache: %{name}"
 run_ui.status_stability: "Stabilitätstest · gesamt=%{total} ok=%{ok} fehl=%{fail}"
 
 # Registertabelle
