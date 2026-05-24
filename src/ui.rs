@@ -108,10 +108,6 @@ pub struct Ui {
     /// 配置文件路径
     config_path: String,
 
-    // --- 寄存器值变化模拟确认对话框 ---
-    /// 是否正在显示"确认开启值变化模拟"警告
-    value_change_warning: bool,
-
     // --- 寄存器视图选择 ---
     /// 当前显示的寄存器类型：0=保持寄存器, 1=线圈, 2=离散输入, 3=输入寄存器
     reg_view: usize,
@@ -149,7 +145,7 @@ impl Ui {
     fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
         let logo_raw = include_str!("logo.txt");
         let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
-        logo_lines.push(format!("                   v{}", env!("CARGO_PKG_VERSION")));
+        logo_lines.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
         let default = profiles.first().cloned();
         Self {
             base,
@@ -188,9 +184,6 @@ impl Ui {
             monitor_picking: true, // 启动时直接进入选择模式
             monitor_selected_profile: None,
             config_path: String::new(),
-
-            // 值变化模拟确认对话框
-            value_change_warning: false,
 
             // 寄存器视图
             reg_view: REG_VIEW_HOLDING,
@@ -313,7 +306,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // 渲染 4 个模式菜单项
+    // 渲染 5 个模式菜单项
     for (i, &(key, _mode)) in menu_items.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
         let item_style = if is_selected {
@@ -381,28 +374,30 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     );
 }
 
-/// 配置选择子菜单（ProfilePick）：预览并选择配置
-fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
+/// 渲染配置选择列表（从主菜单选择模式后选择配置）
+fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let area = f.area();
     let vert = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(10),
+        Constraint::Min(5),
         Constraint::Length(3),
     ])
     .split(area);
 
-    // 标题
-    let mode_name = match ui.pending_mode {
-        Some(MainMode::TcpServer) => "TCP Server",
-        Some(MainMode::TcpClient) => "TCP Client",
-        Some(MainMode::RTUServer) => "RTU Server",
-        Some(MainMode::RTUClient) => "RTU Client",
-        Some(MainMode::Monitor) | None => "?",
-    };
-    let title = t!("profile_pick.title", mode = mode_name);
+    let mode_name = ui
+        .pending_mode
+        .map(|m| match m {
+            MainMode::TcpServer => "TCP Server",
+            MainMode::TcpClient => "TCP Client",
+            MainMode::RTUServer => "RTU Server",
+            MainMode::RTUClient => "RTU Client",
+            MainMode::Monitor => "Monitor",
+        })
+        .unwrap_or("?");
+    let title = format!("Select Profile — {mode_name}");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            title.as_ref(),
+            title,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -411,80 +406,42 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
         vert[0],
     );
 
-    // 主区域：左列表 + 右预览
-    let main =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
-
-    // 左：配置列表
     let mut items: Vec<Line> = Vec::new();
     for (i, name) in ui.profiles.iter().enumerate() {
-        let is_sel = i == ui.menu_list_idx;
         let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
-        let prefix = if is_default { "★ " } else { "  " };
-        let line = if is_sel {
+        let icon = if is_default { "●" } else { "○" };
+        let line = if i == ui.menu_list_idx {
             Line::from(Span::styled(
-                format!("{prefix}{name}"),
+                format!(" {icon} {name}"),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ))
+        } else if is_default {
+            Line::from(Span::styled(
+                format!(" {icon} {name}"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ))
         } else {
-            Line::from(Span::styled(format!("{prefix}{name}"), Style::default()))
+            Line::from(Span::styled(format!(" {icon} {name}"), Style::default()))
         };
         items.push(line);
     }
     if ui.profiles.is_empty() {
         items.push(Line::from(Span::styled(
-            t!("profile_pick.empty_list"),
+            t!("profile_settings.empty_list"),
             Style::default().fg(Color::DarkGray),
         )));
     }
-
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title(t!("profile_pick.list_title"))
+        .title(t!("profile_settings.list_title"))
         .border_style(Style::default().fg(Color::Cyan));
-    f.render_widget(Paragraph::new(items).block(list_block), main[0]);
+    f.render_widget(Paragraph::new(items).block(list_block), vert[1]);
 
-    // 右：预览所选配置
-    let preview_text = if ui.menu_list_idx < ui.profiles.len() {
-        let name = &ui.profiles[ui.menu_list_idx];
-        if let Some((_, args)) = load_profile_args(config_path, name) {
-            format!(
-                "{}\n\
-                 ─────────────────\n\
-                 {}\n\
-                 {}\n\
-                 {}\n\
-                 {}\n\
-                 {}\n\
-                 {}",
-                t!("profile_pick.preview_name", name = name),
-                t!("profile_pick.preview_mode", mode = &args.main_mode),
-                t!("profile_pick.preview_port", port = args.tcp_port),
-                t!("profile_pick.preview_unit", unit = args.unit),
-                t!("profile_pick.preview_count", count = args.holding_count),
-                t!("profile_pick.preview_device", device = &args.device),
-                t!("profile_pick.preview_baud", baud = args.baudrate),
-            )
-        } else {
-            format!(
-                "{}\n{}",
-                t!("profile_pick.preview_name", name = name),
-                t!("profile_pick.load_fail")
-            )
-        }
-    } else {
-        t!("profile_pick.select_hint").to_string()
-    };
-    let preview_block = Block::default()
-        .borders(Borders::ALL)
-        .title(t!("profile_pick.preview_title"))
-        .border_style(Style::default().fg(Color::Green));
-    f.render_widget(Paragraph::new(preview_text).block(preview_block), main[1]);
-
-    // 底部帮助
     let help = t!("profile_pick.help");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -496,18 +453,17 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     );
 }
 
-/// 监听模式下显示配置选择界面（全屏）
-fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
+/// 渲染监听模式下的配置选择界面
+fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let area = f.area();
     let vert = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Min(10),
+        Constraint::Min(5),
         Constraint::Length(3),
     ])
     .split(area);
 
-    // 标题
-    let title = t!("run_ui.monitor_pick_title");
+    let title = t!("run_ui.monitor_profile_pick_title");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             title.as_ref(),
@@ -519,76 +475,34 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
         vert[0],
     );
 
-    // 主区域
-    let main =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(vert[1]);
-
-    // 左：配置列表
     let mut items: Vec<Line> = Vec::new();
     for (i, name) in ui.profiles.iter().enumerate() {
-        let is_sel = i == ui.menu_list_idx;
-        let prefix = "  ";
-        let line = if is_sel {
+        let line = if i == ui.menu_list_idx {
             Line::from(Span::styled(
-                format!("{prefix}{name}"),
+                format!(" ○ {name}"),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
-            Line::from(Span::styled(format!("{prefix}{name}"), Style::default()))
+            Line::from(Span::styled(format!(" ○ {name}"), Style::default()))
         };
         items.push(line);
     }
     if ui.profiles.is_empty() {
         items.push(Line::from(Span::styled(
-            t!("profile_pick.empty_list"),
+            t!("profile_settings.empty_list"),
             Style::default().fg(Color::DarkGray),
         )));
     }
-
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title(t!("profile_pick.list_title"))
-        .border_style(Style::default().fg(Color::Blue));
-    f.render_widget(
-        ratatui::widgets::Paragraph::new(ratatui::text::Text::from(items)).block(list_block),
-        main[0],
-    );
+        .title(t!("run_ui.monitor_profile_pick_list_title"))
+        .border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(Paragraph::new(items).block(list_block), vert[1]);
 
-    // 右：配置预览
-    let preview_text = if ui.menu_list_idx < ui.profiles.len() {
-        let name = &ui.profiles[ui.menu_list_idx];
-        if let Some((_, args)) = load_profile_args(config_path, name) {
-            format!(
-                "{}\n{}: {}\n{}: {}\n{}: {}",
-                name,
-                t!("profile_pick.mode"),
-                args.main_mode,
-                t!("profile_pick.tcp_port"),
-                args.tcp_port,
-                t!("profile_pick.device"),
-                if args.device == "dev/null" {
-                    "127.0.0.1".to_string()
-                } else {
-                    args.device.clone()
-                },
-            )
-        } else {
-            format!("{}\n{}", name, t!("profile_pick.load_fail"))
-        }
-    } else {
-        t!("profile_pick.select_hint").to_string()
-    };
-    let preview_block = Block::default()
-        .borders(Borders::ALL)
-        .title(t!("profile_pick.preview_title"))
-        .border_style(Style::default().fg(Color::Green));
-    f.render_widget(Paragraph::new(preview_text).block(preview_block), main[1]);
-
-    // 底部帮助
-    let help = t!("run_ui.monitor_pick_help");
+    let help = t!("run_ui.monitor_profile_pick_help");
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             help,
@@ -604,7 +518,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let vert = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(10),
-        Constraint::Length(3),
+        Constraint::Length(6),
     ])
     .split(area);
 
@@ -1042,7 +956,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let vert = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(10),
-        Constraint::Length(3),
+        Constraint::Length(6),
     ])
     .split(area);
 
@@ -1557,12 +1471,11 @@ pub async fn run_ui(
                             } else {
                                 t!("run_ui.help_normal").into_owned()
                             };
-                            // 追加寄存器值变化模拟状态指示
-                            if s.value_change_enabled {
-                                help.push_str(&format!(" | {}", t!("run_ui.value_change_on")));
-                            } else {
-                                help.push_str(&format!(" | {}", t!("run_ui.value_change_off")));
-                            }
+                            // 追加启用值变化模拟的寄存器数量
+                            let enabled_holding = s.holding_change_enabled.iter().filter(|&&e| e).count();
+                            let enabled_input = s.input_change_enabled.iter().filter(|&&e| e).count();
+                            let total = enabled_holding + enabled_input;
+                            help.push_str(&format!(" | v:{}", total));
 
                             let term_width = f.area().width;
                             let panel_width = term_width.saturating_sub(2).max(1) as usize;
@@ -1775,29 +1688,6 @@ pub async fn run_ui(
                                 areas[help_index],
                             );
 
-                            // --- 值变化模拟确认警告对话框 ---
-                            if ui.value_change_warning {
-                                let overlay_area = centered_rect(60, 40, f.area());
-                                let warning_block = Block::default()
-                                    .borders(Borders::ALL)
-                                    .border_style(Style::default().fg(Color::Red))
-                                    .title(t!("run_ui.value_change_warning_title"))
-                                    .style(Style::default().bg(Color::Black));
-                                let warning_text = format!(
-                                    "\n\n{}\n\n{}\n\n{}",
-                                    t!("run_ui.value_change_warning_msg"),
-                                    t!("run_ui.value_change_warning_confirm"),
-                                    t!("run_ui.value_change_warning_cancel"),
-                                );
-                                f.render_widget(
-                                    ratatui::widgets::Paragraph::new(warning_text)
-                                        .block(warning_block)
-                                        .alignment(ratatui::layout::Alignment::Center)
-                                        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                                    overlay_area,
-                                );
-                            }
-
                             // --- 从设备扫描结果对话框 ---
                             if ui.show_scan_dialog {
                                 if let Some(ref results) = s.slave_scan_result {
@@ -1907,23 +1797,6 @@ pub async fn run_ui(
                                             ui.pattern_dialog_open = false;
                                             ui.pattern_dialog_editing_freq = false;
                                             set_status(&mut ui, "Pattern config cancelled");
-                                        }
-                                        _ => {}
-                                    }
-                                } else if ui.value_change_warning {
-                                    match code {
-                                        KeyCode::Enter => {
-                                            // 确认开启值变化模拟
-                                            ui.value_change_warning = false;
-                                            let mut s = state.write().await;
-                                            s.value_change_enabled = true;
-                                            set_status(&mut ui, t!("run_ui.value_change_on"));
-                                        }
-                                        KeyCode::Esc => {
-                                            // 取消
-                                            ui.value_change_warning = false;
-                                            drop(state.read().await);
-                                            set_status(&mut ui, t!("run_ui.value_change_cancelled"));
                                         }
                                         _ => {}
                                     }
@@ -2239,18 +2112,41 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.stability_stopped"));
                                             }
                                         }
-                                        KeyCode::Char('V') => {
-                                            let s = state.read().await;
-                                            if s.value_change_enabled {
-                                                // 已开启 → 直接关闭（无害操作，无需确认）
-                                                drop(s);
+                                        KeyCode::Char('v') => {
+                                            // 切换当前选中寄存器的值变化模拟开关
+                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                                let reg_type = ui.reg_view;
+                                                let addr = ui.selected;
+                                                let reg_len = if reg_type == REG_VIEW_HOLDING {
+                                                    state.read().await.holding.len()
+                                                } else if reg_type == REG_VIEW_INPUT {
+                                                    state.read().await.input_registers.len()
+                                                } else {
+                                                    set_status(&mut ui, t!("run_ui.value_change_unsupported"));
+                                                    continue;
+                                                };
                                                 let mut s = state.write().await;
-                                                s.value_change_enabled = false;
-                                                set_status(&mut ui, t!("run_ui.value_change_off"));
-                                            } else if !ui.value_change_warning {
-                                                // 未开启 → 显示确认警告
-                                                drop(s);
-                                                ui.value_change_warning = true;
+                                                let enabled = if reg_type == REG_VIEW_HOLDING {
+                                                    &mut s.holding_change_enabled
+                                                } else {
+                                                    &mut s.input_change_enabled
+                                                };
+                                                if addr < reg_len {
+                                                    while enabled.len() <= addr {
+                                                        enabled.push(false);
+                                                    }
+                                                    enabled[addr] = !enabled[addr];
+                                                    let status = if enabled[addr] {
+                                                        t!("run_ui.value_change_on")
+                                                    } else {
+                                                        t!("run_ui.value_change_off")
+                                                    };
+                                                    let reg_name = if reg_type == REG_VIEW_HOLDING { "Holding" } else { "Input" };
+                                                    drop(s);
+                                                    set_status(&mut ui, format!("{}[{}] {}", reg_name, addr, status));
+                                                } else {
+                                                    drop(s);
+                                                }
                                             }
                                         }
                                         // 寄存器视图切换：R 循环切换 4 种寄存器类型
@@ -2495,8 +2391,15 @@ fn render_register_table(
                         val = ui.edit_buf.clone();
                     }
                 }
+                let change_enabled = match ui.reg_view {
+                    REG_VIEW_HOLDING => s.holding_change_enabled.get(i).copied().unwrap_or(false),
+                    REG_VIEW_INPUT => s.input_change_enabled.get(i).copied().unwrap_or(false),
+                    _ => false,
+                };
                 let change_str = if i < s.reg_just_changed.len() && s.reg_just_changed[i] {
                     format!("{}", s.reg_change_direction[i])
+                } else if change_enabled {
+                    t!("register_table.change_on").to_string()
                 } else {
                     String::new()
                 };

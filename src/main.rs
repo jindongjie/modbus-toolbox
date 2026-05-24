@@ -269,8 +269,9 @@ pub struct AppState {
     pub reg_just_changed: Vec<bool>,
     /// 寄存器变化方向
     pub reg_change_direction: Vec<ChangeDirection>,
-    /// 寄存器值变化模拟开启
-    pub value_change_enabled: bool,
+    /// 每个寄存器的值变化开启状态（true=开启该寄存器的值变化模拟）
+    pub holding_change_enabled: Vec<bool>,
+    pub input_change_enabled: Vec<bool>,
     /// 每个寄存器的值变化模式（索引对应 holding 和 input 寄存器）
     pub holding_change_patterns: Vec<RegChangePattern>,
     pub input_change_patterns: Vec<RegChangePattern>,
@@ -304,7 +305,8 @@ impl Default for AppState {
             reg_change_history: Vec::new(),
             reg_just_changed: Vec::new(),
             reg_change_direction: Vec::new(),
-            value_change_enabled: false,
+            holding_change_enabled: Vec::new(),
+            input_change_enabled: Vec::new(),
             holding_change_patterns: Vec::new(),
             input_change_patterns: Vec::new(),
             holding_pattern_freqs: Vec::new(),
@@ -479,14 +481,15 @@ pub async fn run_register_simulator(
     loop {
         interval.tick().await;
 
-        // 检查开关，关闭时不产生任何变化
-        if !state.read().await.value_change_enabled {
-            continue;
-        }
-
         let mut s = state.write().await;
 
-        // 确保 pattern/phase/freq 向量长度 >= 寄存器数量
+        // 确保 pattern/phase/freq/enabled 向量长度 >= 寄存器数量
+        while s.holding_change_enabled.len() < s.holding.len() {
+            s.holding_change_enabled.push(false);
+        }
+        while s.input_change_enabled.len() < s.input_registers.len() {
+            s.input_change_enabled.push(false);
+        }
         while s.holding_change_patterns.len() < s.holding.len() {
             s.holding_change_patterns.push(RegChangePattern::Random);
             s.holding_pattern_freqs.push(1.0);
@@ -507,6 +510,9 @@ pub async fn run_register_simulator(
 
         // --- 更新每个保持寄存器 ---
         for addr in 0..s.holding.len() {
+            if addr >= s.holding_change_enabled.len() || !s.holding_change_enabled[addr] {
+                continue;
+            }
             if addr >= s.holding_change_patterns.len() {
                 break;
             }
@@ -553,6 +559,9 @@ pub async fn run_register_simulator(
 
         // --- 更新每个输入寄存器 ---
         for addr in 0..s.input_registers.len() {
+            if addr >= s.input_change_enabled.len() || !s.input_change_enabled[addr] {
+                continue;
+            }
             if addr >= s.input_change_patterns.len() {
                 break;
             }
@@ -763,7 +772,8 @@ async fn main() -> Result<()> {
         reg_change_history: Vec::new(),
         reg_just_changed: vec![false; max_count],
         reg_change_direction: vec![ChangeDirection::Up; max_count],
-        value_change_enabled: false,
+        holding_change_enabled: vec![false; binding_count],
+        input_change_enabled: vec![false; args.input_count],
         holding_change_patterns: vec![RegChangePattern::Random; binding_count],
         input_change_patterns: vec![RegChangePattern::Random; args.input_count],
         holding_pattern_freqs: vec![1.0; binding_count],
