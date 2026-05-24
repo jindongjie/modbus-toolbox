@@ -1,5 +1,5 @@
 # Modbus Toolbox
-
+# WIP (not stable yet!)
 English | [简体中文](./README.md)
 
 <img src="art/logo-en.png" alt="logo" width="300" height="300">  

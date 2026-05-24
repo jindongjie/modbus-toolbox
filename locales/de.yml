@@ -99,6 +99,9 @@ run_ui.monitor_addr_header: "Adressverteilung"
 run_ui.monitor_pick_title: "Überwachungsziel auswählen"
 run_ui.monitor_pick_help: "↑↓ Navigieren · Enter Auswählen · P Zurück · Q Beenden"
 run_ui.monitor_selected: "Überwache: %{name}"
+run_ui.analysis_title: "Protokollanalyse (Enter/Esc zum Schließen)"
+run_ui.analysis_opened: "Protokollanalyse geöffnet"
+run_ui.analysis_closed: "Protokollanalyse geschlossen"
 run_ui.status_stability: "Stabilitätstest · gesamt=%{total} ok=%{ok} fehl=%{fail}"
 
 # Registertabelle
@@ -127,6 +130,13 @@ byte_panel.start_addr: "Startadresse=%{addr}"
 byte_panel.register_qty: "Registeranzahl=%{qty}"
 byte_panel.crc16: "CRC16=%{crc:04X}"
 byte_panel.raw_frame: "Rohdatenrahmen:"
+byte_panel.crc_verify_title: "─ CRC-Prüfung ─"
+byte_panel.crc_calculated: "Berechnetes CRC16:"
+byte_panel.crc_stored: "CRC16 im Frame:"
+byte_panel.crc_match: "✓ CRC ÜBEREINSTIMMUNG"
+byte_panel.crc_mismatch: "✗ CRC FEHLER"
+byte_panel.tcp_req_note: "✓ TCP-Anfrage (kein CRC)"
+byte_panel.tcp_resp_note: "✓ TCP-Antwort (kein CRC)"
 
 # Modbus-Modul
 modbus.open_tcp_port: "Modbus TCP-Port öffnen"

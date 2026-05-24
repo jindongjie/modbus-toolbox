@@ -165,6 +165,7 @@ pub struct FrameRecord {
     pub values: Vec<u16>,
     pub is_tcp: bool,
     pub is_request: bool, // true=请求, false=响应
+    pub unit: u8,         // 单元标识符（RTU 时也作为从站地址）
 }
 
 /// 寄存器值变化方向
@@ -291,6 +292,7 @@ pub fn record_frame(monitor: &mut MonitorStats, fi: &FrameInfo) {
         values: fi.values.clone(),
         is_tcp: fi.is_tcp,
         is_request: fi.is_request,
+        unit: fi.unit,
     };
     if monitor.history.len() >= MAX_HISTORY {
         monitor.history.remove(0);

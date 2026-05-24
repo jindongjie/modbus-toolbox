@@ -26,7 +26,7 @@ use ratatui::{
 // crate
 use crate::{
     format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str, AppState, Args,
-    DisplayBase, FrameInfo, MainMode, MonitorStats,
+    DisplayBase, FrameInfo, FrameRecord, MainMode, MonitorStats,
 };
 const UI_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -115,6 +115,12 @@ pub struct Ui {
     // --- 寄存器视图选择 ---
     /// 当前显示的寄存器类型：0=保持寄存器, 1=线圈, 2=离散输入, 3=输入寄存器
     reg_view: usize,
+
+    // --- 协议分析对话框 ---
+    /// 是否显示协议分析弹窗
+    show_analysis_dialog: bool,
+    /// 被分析的历史记录索引
+    analysis_idx: usize,
 }
 
 /// 寄存器视图类型常量
@@ -172,6 +178,9 @@ impl Ui {
 
             // 寄存器视图
             reg_view: REG_VIEW_HOLDING,
+
+            show_analysis_dialog: false,
+            analysis_idx: 0,
         }
     }
 }
@@ -1597,6 +1606,26 @@ pub async fn run_ui(
                                         monitor_split[1],
                                     );
                                 }
+
+                                // 协议分析对话框（覆盖在监听面板之上）
+                                if ui.show_analysis_dialog {
+                                    let total = s.monitor.history.len();
+                                    if ui.analysis_idx < total {
+                                        let rec = &s.monitor.history[ui.analysis_idx];
+                                        let analysis_text = format_protocol_analysis(rec);
+                                        let dialog_area = centered_rect(75, 80, f.area());
+                                        let dialog = ratatui::widgets::Paragraph::new(analysis_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.analysis_title"))
+                                                .border_style(Style::default().fg(Color::Yellow))
+                                            )
+                                            .style(Style::default().fg(Color::Cyan).bg(Color::Black))
+                                            .scroll((0, 0));
+                                        f.render_widget(ratatui::widgets::Clear, dialog_area);
+                                        f.render_widget(dialog, dialog_area);
+                                    }
+                                }
                             } else {
                             // Server/Client 模式：顶部区域
                                 let top_area = &areas[area_idx]; area_idx += 1;
@@ -1928,6 +1957,16 @@ pub async fn run_ui(
 
                                         _ => {}
                                     }
+                                } else if ui.show_analysis_dialog {
+                                    // 对话框已打开 → 按 Esc 关闭
+                                    match code {
+                                        KeyCode::Esc | KeyCode::Enter => {
+                                            ui.show_analysis_dialog = false;
+                                            ui.monitor_focus_history = true;
+                                            set_status(&mut ui, t!("run_ui.analysis_closed"));
+                                        }
+                                        _ => {}
+                                    }
                                 } else {
                                     match code {
                                         KeyCode::Enter => {
@@ -1953,6 +1992,17 @@ pub async fn run_ui(
                                                             }
                                                         }
                                                     });
+                                                }
+                                            } else if is_monitor_mode && ui.monitor_focus_history && !ui.monitor_picking {
+                                                // 在历史面板按 Enter → 打开协议分析对话框
+                                                let total = state.read().await.monitor.history.len();
+                                                if total > 0 {
+                                                    let idx = total.saturating_sub(1).saturating_sub(ui.monitor_scroll);
+                                                    if idx < total {
+                                                        ui.analysis_idx = idx;
+                                                        ui.show_analysis_dialog = true;
+                                                        set_status(&mut ui, t!("run_ui.analysis_opened"));
+                                                    }
                                                 }
                                             }
                                         }
@@ -2525,6 +2575,73 @@ fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String {
     if text.is_empty() {
         text.push_str(&t!("run_ui.no_data"));
     }
+    text
+}
+
+/// 生成协议分析文本（字节级分析 + CRC 校验）
+fn format_protocol_analysis(rec: &FrameRecord) -> String {
+    use crate::modbus::calc_crc16;
+
+    // 将 FrameRecord 转为 FrameInfo
+    let fi = FrameInfo {
+        is_tcp: rec.is_tcp,
+        unit: rec.unit,
+        func_code: rec.func_code,
+        func_name: rec.func_name.clone(),
+        addr: rec.addr,
+        values: rec.values.clone(),
+        is_request: rec.is_request,
+    };
+
+    // 复用已有的字节面板分析
+    let mut text = format_byte_panel(&fi);
+
+    // 追加 CRC 校验结果
+    if !rec.is_tcp {
+        let bytes = frame_bytes_from_info(&fi);
+        if bytes.len() >= 3 {
+            let data_len = bytes.len() - 2;
+            let calc = calc_crc16(&bytes[..data_len]);
+            let stored = u16::from_le_bytes([bytes[data_len], bytes[data_len + 1]]);
+            let ok = calc == stored;
+            text.push_str(&format!(
+                "\n{}\n",
+                t!("byte_panel.crc_verify_title")
+            ));
+            text.push_str(&format!(
+                "  {} {:04X}\n",
+                t!("byte_panel.crc_calculated"),
+                calc
+            ));
+            text.push_str(&format!(
+                "  {} {:04X}\n",
+                t!("byte_panel.crc_stored"),
+                stored
+            ));
+            text.push_str(&format!(
+                "  {}",
+                if ok {
+                    t!("byte_panel.crc_match")
+                } else {
+                    t!("byte_panel.crc_mismatch")
+                }
+            ));
+        }
+    } else {
+        // TCP 无 CRC，显示 MBAP header 简析
+        if rec.is_request {
+            text.push_str(&format!(
+                "\n  {}",
+                t!("byte_panel.tcp_req_note")
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n  {}",
+                t!("byte_panel.tcp_resp_note")
+            ));
+        }
+    }
+
     text
 }
 

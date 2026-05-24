@@ -77,6 +77,10 @@ pub enum RegCmd {
         cnt: usize,
         resp: oneshot::Sender<std::result::Result<Vec<u16>, ExceptionCode>>,
     },
+    /// 从设备扫描：遍历 1..255，读保持寄存器 0，返回 (slave_id, Option<value>)
+    SlaveScan {
+        resp: oneshot::Sender<Vec<(u8, Option<u16>)>>,
+    },
 }
 
 //寄存器指令执行循环
@@ -211,6 +215,10 @@ pub async fn reg_worker_loop(
                     }
                 };
                 let _ = resp.send(out);
+            }
+            RegCmd::SlaveScan { resp } => {
+                // 服务端模式下不支持扫描，返回空结果
+                let _ = resp.send(Vec::new());
             }
         }
     }
@@ -752,6 +760,21 @@ pub async fn client_read_write_loop(
                     }
 
                     let _ = resp.send(final_out);
+                }
+                RegCmd::SlaveScan { resp } => {
+                    let mut results = Vec::new();
+                    for id in 1..=255u8 {
+                        ctx.set_slave(Slave(id));
+                        match timeout(IO_TIMEOUT, ctx.read_holding_registers(0, 1)).await {
+                            Ok(Ok(Ok(values))) => {
+                                results.push((id, Some(values[0])));
+                            }
+                            _ => {
+                                results.push((id, None));
+                            }
+                        }
+                    }
+                    let _ = resp.send(results);
                 }
                 _ => {}
             }
