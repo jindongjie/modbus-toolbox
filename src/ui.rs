@@ -123,6 +123,20 @@ pub struct Ui {
     analysis_idx: usize,
     /// 从设备扫描结果对话框
     show_scan_dialog: bool,
+    /// 寄存器变化模式配置对话框：是否打开
+    pattern_dialog_open: bool,
+    /// 正在配置的寄存器地址
+    pattern_dialog_addr: usize,
+    /// 寄存器类型 (REG_VIEW_HOLDING=0, REG_VIEW_INPUT=3)
+    pattern_dialog_reg_type: usize,
+    /// 当前选中的模式索引 (0=Random, 1=UpDown, 2=Sine, 3=Square, 4=Triangle)
+    pattern_dialog_sel: usize,
+    /// 是否正在编辑频率
+    pattern_dialog_editing_freq: bool,
+    /// 频率编辑缓存
+    pattern_dialog_freq_buf: String,
+    /// 临时存储的频率值
+    pattern_dialog_freq: f64,
 }
 
 /// 寄存器视图类型常量
@@ -184,6 +198,13 @@ impl Ui {
             show_analysis_dialog: false,
             analysis_idx: 0,
             show_scan_dialog: false,
+            pattern_dialog_open: false,
+            pattern_dialog_addr: 0,
+            pattern_dialog_reg_type: 0,
+            pattern_dialog_sel: 0,
+            pattern_dialog_editing_freq: false,
+            pattern_dialog_freq_buf: String::new(),
+            pattern_dialog_freq: 1.0,
         }
     }
 }
@@ -1803,6 +1824,11 @@ pub async fn run_ui(
                                     f.render_widget(dialog, dialog_area);
                                 }
                             }
+
+                            // --- 寄存器变化模式配置对话框 ---
+                            if ui.pattern_dialog_open {
+                                render_pattern_dialog(f, &ui, &s);
+                            }
                         })?;
                     }
 
@@ -1837,7 +1863,54 @@ pub async fn run_ui(
 
                                 let is_monitor_mode = args.main_mode == "monitor";
 
-                                if ui.value_change_warning {
+                                // --- 显式关闭各对话框 ---
+                                if ui.pattern_dialog_open {
+                                    match code {
+                                        KeyCode::Up | KeyCode::Char('k') if !ui.pattern_dialog_editing_freq => {
+                                            ui.pattern_dialog_sel = ui.pattern_dialog_sel.saturating_sub(1);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') if !ui.pattern_dialog_editing_freq => {
+                                            if ui.pattern_dialog_sel < 4 {
+                                                ui.pattern_dialog_sel += 1;
+                                            }
+                                        }
+                                        KeyCode::Enter if !ui.pattern_dialog_editing_freq => {
+                                            // 切换到频率编辑模式（仅对波形模式）
+                                            if ui.pattern_dialog_sel >= 2 {
+                                                ui.pattern_dialog_editing_freq = true;
+                                                ui.pattern_dialog_freq_buf = format!("{:.2}", ui.pattern_dialog_freq);
+                                            } else {
+                                                // Random/UpDown 无需频率，直接确认
+                                                apply_pattern_dialog(&mut ui, &mut *state.write().await);
+                                                ui.pattern_dialog_open = false;
+                                                set_status(&mut ui, "Pattern updated");
+                                            }
+                                        }
+                                        KeyCode::Enter if ui.pattern_dialog_editing_freq => {
+                                            // 确认频率编辑
+                                            if let Ok(f) = ui.pattern_dialog_freq_buf.parse::<f64>() {
+                                                let f = f.max(0.01).min(1000.0);
+                                                ui.pattern_dialog_freq = f;
+                                            }
+                                            ui.pattern_dialog_editing_freq = false;
+                                            apply_pattern_dialog(&mut ui, &mut *state.write().await);
+                                            ui.pattern_dialog_open = false;
+                                            set_status(&mut ui, "Pattern updated");
+                                        }
+                                        KeyCode::Char(c) if ui.pattern_dialog_editing_freq && c.is_ascii_digit() || c == '.' => {
+                                            ui.pattern_dialog_freq_buf.push(c);
+                                        }
+                                        KeyCode::Backspace if ui.pattern_dialog_editing_freq => {
+                                            ui.pattern_dialog_freq_buf.pop();
+                                        }
+                                        KeyCode::Esc => {
+                                            ui.pattern_dialog_open = false;
+                                            ui.pattern_dialog_editing_freq = false;
+                                            set_status(&mut ui, "Pattern config cancelled");
+                                        }
+                                        _ => {}
+                                    }
+                                } else if ui.value_change_warning {
                                     match code {
                                         KeyCode::Enter => {
                                             // 确认开启值变化模拟
@@ -2230,6 +2303,58 @@ pub async fn run_ui(
                                                         s.slave_scan_running = false;
                                                     });
                                                     set_status(&mut ui, t!("run_ui.scan_started"));
+                                                }
+                                            }
+                                        }
+                                        // p: 打开当前选中寄存器的模式配置对话框（仅 holding 和 input 视图）
+                                        KeyCode::Char('p') => {
+                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                                let s = state.read().await;
+                                                let reg_type = ui.reg_view;
+                                                let addr = ui.selected;
+                                                if reg_type == REG_VIEW_HOLDING && addr < s.holding.len() {
+                                                    let pattern = if addr < s.holding_change_patterns.len() {
+                                                        s.holding_change_patterns[addr]
+                                                    } else {
+                                                        crate::RegChangePattern::Random
+                                                    };
+                                                    let freq = if addr < s.holding_pattern_freqs.len() {
+                                                        s.holding_pattern_freqs[addr]
+                                                    } else {
+                                                        1.0
+                                                    };
+                                                    let sel = pattern_index(&pattern);
+                                                    drop(s);
+                                                    ui.pattern_dialog_open = true;
+                                                    ui.pattern_dialog_addr = addr;
+                                                    ui.pattern_dialog_reg_type = REG_VIEW_HOLDING;
+                                                    ui.pattern_dialog_sel = sel;
+                                                    ui.pattern_dialog_freq = freq;
+                                                    ui.pattern_dialog_editing_freq = false;
+                                                    set_status(&mut ui, "Pattern config: ↑↓ select Enter confirm Esc cancel");
+                                                } else if reg_type == REG_VIEW_INPUT && addr < s.input_registers.len() {
+                                                    let pattern = if addr < s.input_change_patterns.len() {
+                                                        s.input_change_patterns[addr]
+                                                    } else {
+                                                        crate::RegChangePattern::Random
+                                                    };
+                                                    let freq = if addr < s.input_pattern_freqs.len() {
+                                                        s.input_pattern_freqs[addr]
+                                                    } else {
+                                                        1.0
+                                                    };
+                                                    let sel = pattern_index(&pattern);
+                                                    drop(s);
+                                                    ui.pattern_dialog_open = true;
+                                                    ui.pattern_dialog_addr = addr;
+                                                    ui.pattern_dialog_reg_type = REG_VIEW_INPUT;
+                                                    ui.pattern_dialog_sel = sel;
+                                                    ui.pattern_dialog_freq = freq;
+                                                    ui.pattern_dialog_editing_freq = false;
+                                                    set_status(&mut ui, "Pattern config: ↑↓ select Enter confirm Esc cancel");
+                                                } else {
+                                                    drop(s);
+                                                    set_status(&mut ui, "Pattern config not available for this register type");
                                                 }
                                             }
                                         }
@@ -2763,7 +2888,114 @@ fn wrapped_lines(text: &str, width: usize) -> usize {
     lines
 }
 
-/// 计算居中矩形区域 (percent_x, percent_y 为百分比)
+/// 将 RegChangePattern 转换为模式列表索引
+fn pattern_index(p: &crate::RegChangePattern) -> usize {
+    match p {
+        crate::RegChangePattern::Random => 0,
+        crate::RegChangePattern::UpDown => 1,
+        crate::RegChangePattern::Sine => 2,
+        crate::RegChangePattern::Square => 3,
+        crate::RegChangePattern::Triangle => 4,
+    }
+}
+
+/// 将模式列表索引转换为 RegChangePattern
+fn index_to_pattern(idx: usize) -> crate::RegChangePattern {
+    match idx {
+        0 => crate::RegChangePattern::Random,
+        1 => crate::RegChangePattern::UpDown,
+        2 => crate::RegChangePattern::Sine,
+        3 => crate::RegChangePattern::Square,
+        _ => crate::RegChangePattern::Triangle,
+    }
+}
+
+/// 将对话框中的模式选择写入 AppState
+fn apply_pattern_dialog(ui: &mut Ui, s: &mut crate::AppState) {
+    let pattern = index_to_pattern(ui.pattern_dialog_sel);
+    let addr = ui.pattern_dialog_addr;
+    match ui.pattern_dialog_reg_type {
+        REG_VIEW_HOLDING => {
+            while s.holding_change_patterns.len() <= addr {
+                s.holding_change_patterns
+                    .push(crate::RegChangePattern::Random);
+                s.holding_pattern_freqs.push(1.0);
+            }
+            s.holding_change_patterns[addr] = pattern;
+            s.holding_pattern_freqs[addr] = ui.pattern_dialog_freq;
+        }
+        REG_VIEW_INPUT => {
+            while s.input_change_patterns.len() <= addr {
+                s.input_change_patterns
+                    .push(crate::RegChangePattern::Random);
+                s.input_pattern_freqs.push(1.0);
+            }
+            s.input_change_patterns[addr] = pattern;
+            s.input_pattern_freqs[addr] = ui.pattern_dialog_freq;
+        }
+        _ => {}
+    }
+}
+
+/// 渲染寄存器变化模式配置对话框
+fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppState) {
+    let patterns = ["Random", "Up/Down", "Sine", "Square", "Triangle"];
+    let addr = ui.pattern_dialog_addr;
+
+    let current_val = match ui.pattern_dialog_reg_type {
+        REG_VIEW_HOLDING if addr < s.holding.len() => format_u16(s.holding[addr], ui.base),
+        REG_VIEW_INPUT if addr < s.input_registers.len() => {
+            format_u16(s.input_registers[addr], ui.base)
+        }
+        _ => "?".to_string(),
+    };
+
+    let reg_name = if ui.pattern_dialog_reg_type == REG_VIEW_HOLDING {
+        "Holding"
+    } else {
+        "Input"
+    };
+
+    let mut text = format!(
+        "Register {} [{}]\nCurrent: {}\n\n",
+        addr, reg_name, current_val
+    );
+
+    for (i, name) in patterns.iter().enumerate() {
+        let marker = if i == ui.pattern_dialog_sel {
+            "●"
+        } else {
+            "○"
+        };
+        if i == ui.pattern_dialog_sel && ui.pattern_dialog_editing_freq {
+            text.push_str(&format!("  {} {}   ←\n", marker, name));
+        } else {
+            text.push_str(&format!("  {} {}\n", marker, name));
+        }
+    }
+    text.push('\n');
+
+    let freq_str = if ui.pattern_dialog_editing_freq {
+        format!("{} ", ui.pattern_dialog_freq_buf)
+    } else {
+        format!("{:.2} ", ui.pattern_dialog_freq)
+    };
+    text.push_str(&format!("Frequency: [{}] Hz\n", freq_str));
+    text.push_str("\n↑↓ select  Enter confirm  Esc cancel");
+
+    let dialog_area = centered_rect(50, 50, f.area());
+    let dialog = ratatui::widgets::Paragraph::new(text)
+        .block(
+            ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .title("Register Change Pattern")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .style(Style::default().fg(Color::White).bg(Color::Black));
+    f.render_widget(ratatui::widgets::Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::vertical([
         Constraint::Length((r.height * percent_y / 200).saturating_sub(1)),

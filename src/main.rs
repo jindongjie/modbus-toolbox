@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
+use rand::SeedableRng;
 mod modbus;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, RwLock};
@@ -169,10 +170,37 @@ pub struct FrameRecord {
 }
 
 /// 寄存器值变化方向
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ChangeDirection {
     Up,
     Down,
+}
+
+/// 寄存器值变化模式
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum RegChangePattern {
+    /// 随机变化（原默认行为）
+    Random,
+    /// 上下循环：0 → 65535 → 0
+    UpDown,
+    /// 正弦波
+    Sine,
+    /// 方波
+    Square,
+    /// 三角波
+    Triangle,
+}
+
+impl std::fmt::Display for RegChangePattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegChangePattern::Random => write!(f, "随机"),
+            RegChangePattern::UpDown => write!(f, "上下"),
+            RegChangePattern::Sine => write!(f, "正弦"),
+            RegChangePattern::Square => write!(f, "方波"),
+            RegChangePattern::Triangle => write!(f, "三角"),
+        }
+    }
 }
 
 impl std::fmt::Display for ChangeDirection {
@@ -243,6 +271,15 @@ pub struct AppState {
     pub reg_change_direction: Vec<ChangeDirection>,
     /// 寄存器值变化模拟开启
     pub value_change_enabled: bool,
+    /// 每个寄存器的值变化模式（索引对应 holding 和 input 寄存器）
+    pub holding_change_patterns: Vec<RegChangePattern>,
+    pub input_change_patterns: Vec<RegChangePattern>,
+    /// 波形模式频率（Hz），仅对 Sine/Square/Triangle 有效
+    pub holding_pattern_freqs: Vec<f64>,
+    pub input_pattern_freqs: Vec<f64>,
+    /// 相位累加器（用于波形/上下计数追踪）
+    pub holding_pattern_phases: Vec<f64>,
+    pub input_pattern_phases: Vec<f64>,
     /// 客户端模式下各寄存器类型的读取启用状态 [holding, coils, discrete, input]
     pub read_enabled: [bool; 4],
     /// 从设备扫描结果 (slave_id, Option<register_value>)
@@ -268,6 +305,12 @@ impl Default for AppState {
             reg_just_changed: Vec::new(),
             reg_change_direction: Vec::new(),
             value_change_enabled: false,
+            holding_change_patterns: Vec::new(),
+            input_change_patterns: Vec::new(),
+            holding_pattern_freqs: Vec::new(),
+            input_pattern_freqs: Vec::new(),
+            holding_pattern_phases: Vec::new(),
+            input_pattern_phases: Vec::new(),
             read_enabled: [true, false, false, false],
             slave_scan_result: None,
             slave_scan_running: false,
@@ -352,15 +395,86 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
     }
 }
 
-/// 模拟寄存器值随机变化（仅当 value_change_enabled 为 true 时生效）
+/// 计算单个寄存器的值（基于其变化模式）
+fn compute_pattern_value(
+    pattern: RegChangePattern,
+    freq: f64,
+    phase: &mut f64,
+    _elapsed: f64,
+    tick_secs: f64,
+    current: u16,
+    is_up: &mut bool,
+) -> u16 {
+    match pattern {
+        RegChangePattern::Random => {
+            use rand::Rng;
+            let mut rng = rand::rngs::StdRng::from_entropy();
+            let delta: u16 = rng.gen_range(1..=50);
+            if rng.gen_bool(0.5) {
+                current.saturating_add(delta)
+            } else {
+                current.saturating_sub(delta)
+            }
+        }
+        RegChangePattern::UpDown => {
+            const MAX_VAL: u16 = 65535;
+            if *is_up {
+                let next = current.saturating_add(1);
+                if next == MAX_VAL {
+                    *is_up = false;
+                    next
+                } else {
+                    next
+                }
+            } else {
+                let next = current.saturating_sub(1);
+                if next == 0 {
+                    *is_up = true;
+                    next
+                } else {
+                    next
+                }
+            }
+        }
+        RegChangePattern::Sine => {
+            *phase += 2.0 * std::f64::consts::PI * freq * tick_secs;
+            if *phase > 2.0 * std::f64::consts::PI * 1000.0 {
+                *phase -= 2.0 * std::f64::consts::PI * 1000.0;
+            }
+            let sin_val = phase.sin();
+            // Map -1..1 to 0..65535
+            ((sin_val + 1.0) * 32767.5) as u16
+        }
+        RegChangePattern::Square => {
+            *phase += 2.0 * std::f64::consts::PI * freq * tick_secs;
+            if *phase > 2.0 * std::f64::consts::PI * 1000.0 {
+                *phase -= 2.0 * std::f64::consts::PI * 1000.0;
+            }
+            if phase.sin() >= 0.0 {
+                65535
+            } else {
+                0
+            }
+        }
+        RegChangePattern::Triangle => {
+            *phase += freq * tick_secs;
+            if *phase > 1000.0 {
+                *phase -= 1000.0;
+            }
+            let t = *phase;
+            let val = 2.0 * (t - (t + 0.5).floor()).abs();
+            (val * 65535.0) as u16
+        }
+    }
+}
+
+/// 模拟寄存器值变化（使用每个寄存器独立的模式）
 pub async fn run_register_simulator(
     state: Arc<RwLock<AppState>>,
-    holding_count: usize,
+    _holding_count: usize,
     tick_ms: u64,
 ) {
-    use rand::rngs::StdRng;
-    use rand::Rng;
-    use rand::SeedableRng;
+    let tick_secs = tick_ms as f64 / 1000.0;
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
     loop {
         interval.tick().await;
@@ -370,56 +484,115 @@ pub async fn run_register_simulator(
             continue;
         }
 
-        let mut rng = StdRng::from_entropy();
         let mut s = state.write().await;
 
-        // 模拟保持寄存器变化（1~3 个）
-        let count = rng.gen_range(1..=3.min(holding_count));
-        for _ in 0..count {
-            let addr = rng.gen_range(0..holding_count);
-            let delta: u16 = rng.gen_range(1..=50);
-            let old = s.holding[addr];
-            let new = if rng.gen_bool(0.5) {
-                old.saturating_add(delta)
+        // 确保 pattern/phase/freq 向量长度 >= 寄存器数量
+        while s.holding_change_patterns.len() < s.holding.len() {
+            s.holding_change_patterns.push(RegChangePattern::Random);
+            s.holding_pattern_freqs.push(1.0);
+            s.holding_pattern_phases.push(0.0);
+        }
+        while s.input_change_patterns.len() < s.input_registers.len() {
+            s.input_change_patterns.push(RegChangePattern::Random);
+            s.input_pattern_freqs.push(1.0);
+            s.input_pattern_phases.push(0.0);
+        }
+        // 确保 reg_change_direction 向量足够长
+        while s.reg_change_direction.len() < s.holding.len() + s.input_registers.len() {
+            s.reg_change_direction.push(ChangeDirection::Up);
+        }
+        while s.reg_just_changed.len() < s.holding.len() + s.input_registers.len() {
+            s.reg_just_changed.push(false);
+        }
+
+        // --- 更新每个保持寄存器 ---
+        for addr in 0..s.holding.len() {
+            if addr >= s.holding_change_patterns.len() {
+                break;
+            }
+            let pattern = s.holding_change_patterns[addr];
+            let freq = if addr < s.holding_pattern_freqs.len() {
+                s.holding_pattern_freqs[addr]
             } else {
-                old.saturating_sub(delta)
+                1.0
             };
+            let mut phase = s.holding_pattern_phases.get(addr).copied().unwrap_or(0.0);
+            let old = s.holding[addr];
+            let mut is_up = s
+                .reg_change_direction
+                .get(addr)
+                .copied()
+                .unwrap_or(ChangeDirection::Up)
+                == ChangeDirection::Up;
+
+            // 随机模式按原设计有概率不触发
+            if pattern == RegChangePattern::Random {
+                use rand::Rng;
+                if rand::rngs::StdRng::from_entropy().gen_bool(0.67) {
+                    continue; // 67% 概率跳过（保持与原来 1~3 个变化大致相当）
+                }
+            }
+
+            let new =
+                compute_pattern_value(pattern, freq, &mut phase, 0.0, tick_secs, old, &mut is_up);
+            if addr < s.holding_pattern_phases.len() {
+                s.holding_pattern_phases[addr] = phase;
+            }
+            if addr < s.reg_change_direction.len() {
+                s.reg_change_direction[addr] = if is_up {
+                    ChangeDirection::Up
+                } else {
+                    ChangeDirection::Down
+                };
+            }
             if old != new {
                 s.holding[addr] = new;
                 record_reg_change(&mut s, addr, old, new);
             }
         }
 
-        // 模拟线圈变化（1~2 个，随机打开/关闭）
-        if !s.coils.is_empty() {
-            let coil_count = rng.gen_range(1..=2.min(s.coils.len()));
-            for _ in 0..coil_count {
-                let addr = rng.gen_range(0..s.coils.len());
-                let new = rng.gen_bool(0.5);
-                let old = s.coils[addr];
-                if old != new {
-                    s.coils[addr] = new;
-                    record_reg_change(
-                        &mut s,
-                        addr,
-                        if old { 1u16 } else { 0u16 },
-                        if new { 1u16 } else { 0u16 },
-                    );
+        // --- 更新每个输入寄存器 ---
+        for addr in 0..s.input_registers.len() {
+            if addr >= s.input_change_patterns.len() {
+                break;
+            }
+            let pattern = s.input_change_patterns[addr];
+            let freq = if addr < s.input_pattern_freqs.len() {
+                s.input_pattern_freqs[addr]
+            } else {
+                1.0
+            };
+            let mut phase = s.input_pattern_phases.get(addr).copied().unwrap_or(0.0);
+            let offset = s.holding.len();
+            let old = s.input_registers[addr];
+            let mut is_up = s
+                .reg_change_direction
+                .get(offset + addr)
+                .copied()
+                .unwrap_or(ChangeDirection::Up)
+                == ChangeDirection::Up;
+
+            if pattern == RegChangePattern::Random {
+                use rand::Rng;
+                if rand::rngs::StdRng::from_entropy().gen_bool(0.67) {
+                    continue;
                 }
             }
-        }
 
-        // 模拟输入寄存器变化（1~2 个）
-        if !s.input_registers.is_empty() {
-            let ir_count = rng.gen_range(1..=2.min(s.input_registers.len()));
-            for _ in 0..ir_count {
-                let addr = rng.gen_range(0..s.input_registers.len());
-                let delta: u16 = rng.gen_range(1..=100);
-                let old = s.input_registers[addr];
-                let new = old.saturating_add(delta);
-                if old != new {
-                    s.input_registers[addr] = new;
-                }
+            let new =
+                compute_pattern_value(pattern, freq, &mut phase, 0.0, tick_secs, old, &mut is_up);
+            if addr < s.input_pattern_phases.len() {
+                s.input_pattern_phases[addr] = phase;
+            }
+            if offset + addr < s.reg_change_direction.len() {
+                s.reg_change_direction[offset + addr] = if is_up {
+                    ChangeDirection::Up
+                } else {
+                    ChangeDirection::Down
+                };
+            }
+            if old != new {
+                s.input_registers[addr] = new;
             }
         }
     }
@@ -591,6 +764,12 @@ async fn main() -> Result<()> {
         reg_just_changed: vec![false; max_count],
         reg_change_direction: vec![ChangeDirection::Up; max_count],
         value_change_enabled: false,
+        holding_change_patterns: vec![RegChangePattern::Random; binding_count],
+        input_change_patterns: vec![RegChangePattern::Random; args.input_count],
+        holding_pattern_freqs: vec![1.0; binding_count],
+        input_pattern_freqs: vec![1.0; args.input_count],
+        holding_pattern_phases: vec![0.0; binding_count],
+        input_pattern_phases: vec![0.0; args.input_count],
         read_enabled: [true, false, false, false],
         slave_scan_result: None,
         slave_scan_running: false,

@@ -1489,7 +1489,15 @@ mod tests {
             reg_just_changed: vec![false; holding],
             reg_change_direction: vec![crate::ChangeDirection::Up; holding],
             value_change_enabled: false,
+            holding_change_patterns: vec![crate::RegChangePattern::Random; holding],
+            input_change_patterns: vec![crate::RegChangePattern::Random; input],
+            holding_pattern_freqs: vec![1.0; holding],
+            input_pattern_freqs: vec![1.0; input],
+            holding_pattern_phases: vec![0.0; holding],
+            input_pattern_phases: vec![0.0; input],
             read_enabled: [false, false, false, false],
+            slave_scan_result: None,
+            slave_scan_running: false,
         }
     }
 
