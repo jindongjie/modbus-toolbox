@@ -245,6 +245,10 @@ pub struct AppState {
     pub value_change_enabled: bool,
     /// 客户端模式下各寄存器类型的读取启用状态 [holding, coils, discrete, input]
     pub read_enabled: [bool; 4],
+    /// 从设备扫描结果 (slave_id, Option<register_value>)
+    pub slave_scan_result: Option<Vec<(u8, Option<u16>)>>,
+    /// 从设备扫描正在进行
+    pub slave_scan_running: bool,
 }
 
 impl Default for AppState {
@@ -265,6 +269,8 @@ impl Default for AppState {
             reg_change_direction: Vec::new(),
             value_change_enabled: false,
             read_enabled: [true, false, false, false],
+            slave_scan_result: None,
+            slave_scan_running: false,
         }
     }
 }
@@ -586,6 +592,8 @@ async fn main() -> Result<()> {
         reg_change_direction: vec![ChangeDirection::Up; max_count],
         value_change_enabled: false,
         read_enabled: [true, false, false, false],
+        slave_scan_result: None,
+        slave_scan_running: false,
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

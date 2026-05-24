@@ -121,6 +121,8 @@ pub struct Ui {
     show_analysis_dialog: bool,
     /// 被分析的历史记录索引
     analysis_idx: usize,
+    /// 从设备扫描结果对话框
+    show_scan_dialog: bool,
 }
 
 /// 寄存器视图类型常量
@@ -181,6 +183,7 @@ impl Ui {
 
             show_analysis_dialog: false,
             analysis_idx: 0,
+            show_scan_dialog: false,
         }
     }
 }
@@ -1773,6 +1776,33 @@ pub async fn run_ui(
                                     overlay_area,
                                 );
                             }
+
+                            // --- 从设备扫描结果对话框 ---
+                            if ui.show_scan_dialog {
+                                if let Some(ref results) = s.slave_scan_result {
+                                    let found: Vec<&(u8, Option<u16>)> = results.iter().filter(|(_, v)| v.is_some()).collect();
+                                    let mut text = format!("{}\n\n", t!("run_ui.scan_found_slaves", count = found.len()));
+                                    for (id, val) in &found {
+                                        let v = format_u16(val.unwrap(), ui.base);
+                                        text.push_str(&format!("  Slave {}:  {}\n", id, v));
+                                    }
+                                    if found.is_empty() {
+                                        text.push_str(&format!("  {}\n", t!("run_ui.scan_no_slaves")));
+                                    }
+                                    text.push_str(&format!("\n{}", t!("run_ui.scan_close_hint")));
+                                    let dialog_area = centered_rect(50, 70, f.area());
+                                    let dialog = ratatui::widgets::Paragraph::new(text)
+                                        .block(
+                                            Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.scan_title"))
+                                                .border_style(Style::default().fg(Color::Yellow)),
+                                        )
+                                        .style(Style::default().fg(Color::White).bg(Color::Black));
+                                    f.render_widget(ratatui::widgets::Clear, dialog_area);
+                                    f.render_widget(dialog, dialog_area);
+                                }
+                            }
                         })?;
                     }
 
@@ -1964,6 +1994,17 @@ pub async fn run_ui(
                                             ui.show_analysis_dialog = false;
                                             ui.monitor_focus_history = true;
                                             set_status(&mut ui, t!("run_ui.analysis_closed"));
+                                        }
+                                        _ => {}
+                                    }
+                                } else if ui.show_scan_dialog {
+                                    // 扫描结果对话框 → 按任意键关闭
+                                    match code {
+                                        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('l') => {
+                                            ui.show_scan_dialog = false;
+                                            let mut s = state.write().await;
+                                            s.slave_scan_result = None;
+                                            set_status(&mut ui, t!("run_ui.scan_closed"));
                                         }
                                         _ => {}
                                     }
@@ -2160,6 +2201,36 @@ pub async fn run_ui(
                                                 drop(s);
                                                 let names = ["Holding", "Coils", "Discrete", "Input"];
                                                 set_status(&mut ui, format!("{} {}", names[idx], state_str));
+                                            }
+                                        }
+                                        // 从设备扫描：l（小写 L）
+                                        KeyCode::Char('l') => {
+                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                                let s = state.read().await;
+                                                if s.slave_scan_running {
+                                                    drop(s);
+                                                    set_status(&mut ui, t!("run_ui.scan_running"));
+                                                } else if let Some(ref _results) = s.slave_scan_result {
+                                                    drop(s);
+                                                    ui.show_scan_dialog = true;
+                                                } else {
+                                                    drop(s);
+                                                    let mut s = state.write().await;
+                                                    s.slave_scan_running = true;
+                                                    s.slave_scan_result = None;
+                                                    drop(s);
+                                                    let tx_clone = tx.clone();
+                                                    let state_clone = state.clone();
+                                                    tokio::spawn(async move {
+                                                        let (resp_tx, resp_rx) = oneshot::channel();
+                                                        let _ = tx_clone.send(RegCmd::SlaveScan { resp: resp_tx });
+                                                        let results = resp_rx.await.unwrap_or_default();
+                                                        let mut s = state_clone.write().await;
+                                                        s.slave_scan_result = Some(results);
+                                                        s.slave_scan_running = false;
+                                                    });
+                                                    set_status(&mut ui, t!("run_ui.scan_started"));
+                                                }
                                             }
                                         }
                                         _ => {}
@@ -2604,10 +2675,7 @@ fn format_protocol_analysis(rec: &FrameRecord) -> String {
             let calc = calc_crc16(&bytes[..data_len]);
             let stored = u16::from_le_bytes([bytes[data_len], bytes[data_len + 1]]);
             let ok = calc == stored;
-            text.push_str(&format!(
-                "\n{}\n",
-                t!("byte_panel.crc_verify_title")
-            ));
+            text.push_str(&format!("\n{}\n", t!("byte_panel.crc_verify_title")));
             text.push_str(&format!(
                 "  {} {:04X}\n",
                 t!("byte_panel.crc_calculated"),
@@ -2630,15 +2698,9 @@ fn format_protocol_analysis(rec: &FrameRecord) -> String {
     } else {
         // TCP 无 CRC，显示 MBAP header 简析
         if rec.is_request {
-            text.push_str(&format!(
-                "\n  {}",
-                t!("byte_panel.tcp_req_note")
-            ));
+            text.push_str(&format!("\n  {}", t!("byte_panel.tcp_req_note")));
         } else {
-            text.push_str(&format!(
-                "\n  {}",
-                t!("byte_panel.tcp_resp_note")
-            ));
+            text.push_str(&format!("\n  {}", t!("byte_panel.tcp_resp_note")));
         }
     }
 
