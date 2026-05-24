@@ -57,6 +57,18 @@ struct Args {
     #[arg(short = 'c', long, default_value_t = 1024)]
     holding_count: usize,
 
+    /// 线圈数量（功能码 0x01/0x05/0x0F）
+    #[arg(long, default_value_t = 1024)]
+    coil_count: usize,
+
+    /// 离散输入数量（功能码 0x02，只读）
+    #[arg(long, default_value_t = 1024)]
+    discrete_count: usize,
+
+    /// 输入寄存器数量（功能码 0x04，只读）
+    #[arg(long, default_value_t = 1024)]
+    input_count: usize,
+
     /// 客户端模式 轮询间隔(ms)
     #[arg(long, default_value_t = 200)]
     client_tick_ms: u64,
@@ -113,6 +125,9 @@ impl Default for Args {
             tcp_port: 502,
             unit: 1,
             holding_count: 512,
+            coil_count: 512,
+            discrete_count: 512,
+            input_count: 512,
             client_tick_ms: 200,
             ui_tick_ms: 10,
             device: "dev/null".into(),
@@ -202,10 +217,15 @@ impl Default for MonitorStats {
     }
 }
 
-#[derive(Default)]
 pub struct AppState {
     holding: Vec<u16>,
     holding_label: Vec<String>,
+    /// 线圈状态（功能码 0x01/0x05/0x0F）
+    pub coils: Vec<bool>,
+    /// 离散输入状态（功能码 0x02，只读）
+    pub discrete: Vec<bool>,
+    /// 输入寄存器状态（功能码 0x04，只读）
+    pub input_registers: Vec<u16>,
     pub last_frame: Option<FrameInfo>,
     pub is_tcp: bool,
     /// 监听统计
@@ -220,6 +240,32 @@ pub struct AppState {
     pub reg_just_changed: Vec<bool>,
     /// 寄存器变化方向
     pub reg_change_direction: Vec<ChangeDirection>,
+    /// 寄存器值变化模拟开启
+    pub value_change_enabled: bool,
+    /// 客户端模式下各寄存器类型的读取启用状态 [holding, coils, discrete, input]
+    pub read_enabled: [bool; 4],
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            holding: Vec::new(),
+            holding_label: Vec::new(),
+            coils: Vec::new(),
+            discrete: Vec::new(),
+            input_registers: Vec::new(),
+            last_frame: None,
+            is_tcp: true,
+            monitor: MonitorStats::default(),
+            stability_test_running: false,
+            stability_stats: (0, 0, 0),
+            reg_change_history: Vec::new(),
+            reg_just_changed: Vec::new(),
+            reg_change_direction: Vec::new(),
+            value_change_enabled: false,
+            read_enabled: [true, false, false, false],
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -298,7 +344,7 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
     }
 }
 
-/// 模拟寄存器值随机变化（仅服务端模式下运行）
+/// 模拟寄存器值随机变化（仅当 value_change_enabled 为 true 时生效）
 pub async fn run_register_simulator(
     state: Arc<RwLock<AppState>>,
     holding_count: usize,
@@ -310,17 +356,20 @@ pub async fn run_register_simulator(
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(tick_ms));
     loop {
         interval.tick().await;
+
+        // 检查开关，关闭时不产生任何变化
+        if !state.read().await.value_change_enabled {
+            continue;
+        }
+
         let mut rng = StdRng::from_entropy();
-        // 随机选取 1~3 个寄存器
+        let mut s = state.write().await;
+
+        // 模拟保持寄存器变化（1~3 个）
         let count = rng.gen_range(1..=3.min(holding_count));
-        let mut changes: Vec<(usize, u16)> = Vec::new();
         for _ in 0..count {
             let addr = rng.gen_range(0..holding_count);
             let delta: u16 = rng.gen_range(1..=50);
-            changes.push((addr, delta));
-        }
-        let mut s = state.write().await;
-        for (addr, delta) in changes {
             let old = s.holding[addr];
             let new = if rng.gen_bool(0.5) {
                 old.saturating_add(delta)
@@ -330,6 +379,39 @@ pub async fn run_register_simulator(
             if old != new {
                 s.holding[addr] = new;
                 record_reg_change(&mut s, addr, old, new);
+            }
+        }
+
+        // 模拟线圈变化（1~2 个，随机打开/关闭）
+        if !s.coils.is_empty() {
+            let coil_count = rng.gen_range(1..=2.min(s.coils.len()));
+            for _ in 0..coil_count {
+                let addr = rng.gen_range(0..s.coils.len());
+                let new = rng.gen_bool(0.5);
+                let old = s.coils[addr];
+                if old != new {
+                    s.coils[addr] = new;
+                    record_reg_change(
+                        &mut s,
+                        addr,
+                        if old { 1u16 } else { 0u16 },
+                        if new { 1u16 } else { 0u16 },
+                    );
+                }
+            }
+        }
+
+        // 模拟输入寄存器变化（1~2 个）
+        if !s.input_registers.is_empty() {
+            let ir_count = rng.gen_range(1..=2.min(s.input_registers.len()));
+            for _ in 0..ir_count {
+                let addr = rng.gen_range(0..s.input_registers.len());
+                let delta: u16 = rng.gen_range(1..=100);
+                let old = s.input_registers[addr];
+                let new = old.saturating_add(delta);
+                if old != new {
+                    s.input_registers[addr] = new;
+                }
             }
         }
     }
@@ -474,6 +556,10 @@ async fn main() -> Result<()> {
     };
 
     let binding_count = args.holding_count;
+    let max_count = binding_count
+        .max(args.coil_count)
+        .max(args.discrete_count)
+        .max(args.input_count);
     let mut holding_label = vec!["".to_string(); binding_count];
     args.labels.iter().for_each(|(k, v)| {
         if let Ok(idx) = k.parse::<usize>() {
@@ -485,25 +571,26 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(AppState {
         holding: vec![0u16; binding_count],
         holding_label,
+        coils: vec![false; args.coil_count],
+        discrete: vec![false; args.discrete_count],
+        input_registers: vec![0u16; args.input_count],
         last_frame: None,
         is_tcp: matches!(main_mode, MainMode::TcpServer | MainMode::TcpClient),
         monitor: MonitorStats::default(),
         stability_test_running: false,
         stability_stats: (0, 0, 0),
         reg_change_history: Vec::new(),
-        reg_just_changed: vec![false; binding_count],
-        reg_change_direction: vec![ChangeDirection::Up; binding_count],
+        reg_just_changed: vec![false; max_count],
+        reg_change_direction: vec![ChangeDirection::Up; max_count],
+        value_change_enabled: false,
+        read_enabled: [true, false, false, false],
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
     //生产者-消费者模式的寄存器访问通道，Modbus 服务端/客户端任务通过发送命令来访问寄存器数据，UI 任务通过共享状态展示数据
     let (server_tx, server_rx) = mpsc::unbounded_channel::<RegCmd>();
-    tokio::spawn(reg_worker_loop(
-        Arc::clone(&state),
-        args.holding_count,
-        server_rx,
-    ));
+    tokio::spawn(reg_worker_loop(Arc::clone(&state), server_rx));
 
     // 服务端模式下启动寄存器值模拟器（随机变化）
     let is_server = matches!(main_mode, MainMode::TcpServer | MainMode::RTUServer);

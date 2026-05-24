@@ -1,5 +1,7 @@
 # Modbus Toolbox
 
+English | [简体中文](./README.md)
+
 <img src="art/logo-en.png" alt="logo" width="300" height="300">  
 
 Modbus Toolbox is a collection of tools created to help developers debug the Modbus communication protocol more quickly and stably. It implements both server and client for the RTU/TCP transport layers, and additionally features silent monitoring of RTU communications. The interface is presented through a terminal-based graphical interface (TUI) — streamlined, efficient, and runnable on all major operating systems via the command line. Single binary, zero runtime dependencies, an indispensable tool for debugging Modbus communications.
@@ -10,6 +12,7 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 
 1. Modbus TCP/RTU Server & Client
    - TUI table interface, single/batch read and modify
+   - Full protocol support including coils, discretes, input and holding registers
    - Multiple data radix display and editing: decimal, binary, hexadecimal
    - Timed reads and writes for stability testing
 
@@ -20,6 +23,12 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 3. Modbus RTU Silent Monitoring
    - Real-time and historical flow logs
    - Statistics for read addresses, function codes, and frequency, presented in a summary table
+
+4. Detailed Packet Analysis
+   - Parse and validate header, data content, CRC checksum, and other fields individually
+
+5. Multi-Slave Scanning
+   - Discover unknown slaves by polling a range of slave addresses
 
 ## Compatibility (detailed list below)
 

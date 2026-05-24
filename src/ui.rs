@@ -16,7 +16,7 @@ use crossterm::{
 // ratatui
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
@@ -107,7 +107,21 @@ pub struct Ui {
     monitor_selected_profile: Option<String>,
     /// 配置文件路径
     config_path: String,
+
+    // --- 寄存器值变化模拟确认对话框 ---
+    /// 是否正在显示"确认开启值变化模拟"警告
+    value_change_warning: bool,
+
+    // --- 寄存器视图选择 ---
+    /// 当前显示的寄存器类型：0=保持寄存器, 1=线圈, 2=离散输入, 3=输入寄存器
+    reg_view: usize,
 }
+
+/// 寄存器视图类型常量
+const REG_VIEW_HOLDING: usize = 0;
+const REG_VIEW_COILS: usize = 1;
+const REG_VIEW_DISCRETE: usize = 2;
+const REG_VIEW_INPUT: usize = 3;
 
 impl Ui {
     fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
@@ -152,6 +166,12 @@ impl Ui {
             monitor_picking: true, // 启动时直接进入选择模式
             monitor_selected_profile: None,
             config_path: String::new(),
+
+            // 值变化模拟确认对话框
+            value_change_warning: false,
+
+            // 寄存器视图
+            reg_view: REG_VIEW_HOLDING,
         }
     }
 }
@@ -1492,6 +1512,29 @@ pub async fn run_ui(
                         terminal.draw(|f| {
                             let monitor_active = is_monitor_mode || ui.show_monitor;
 
+                            // --- 预计算帮助文本（用于动态高度和值变化状态指示） ---
+                            let mut help = if ui.edit_mode {
+                                t!("run_ui.help_edit", buf = &ui.edit_buf).into_owned()
+                            } else if s.stability_test_running {
+                                t!("run_ui.help_stability").into_owned()
+                            } else if is_monitor_mode {
+                                t!("run_ui.help_monitoring").into_owned()
+                            } else if monitor_active {
+                                t!("run_ui.help_monitor").into_owned()
+                            } else {
+                                t!("run_ui.help_normal").into_owned()
+                            };
+                            // 追加寄存器值变化模拟状态指示
+                            if s.value_change_enabled {
+                                help.push_str(&format!(" | {}", t!("run_ui.value_change_on")));
+                            } else {
+                                help.push_str(&format!(" | {}", t!("run_ui.value_change_off")));
+                            }
+
+                            let term_width = f.area().width;
+                            let panel_width = term_width.saturating_sub(2).max(1) as usize;
+                            let help_lines = wrapped_lines(&help, panel_width).max(3).min(8) as u16;
+
                             // 纯监听模式：仅显示监听面板；否则显示寄存器表 + 可选的监听覆盖层
                             let (monitor_constraint, keep) = if is_monitor_mode {
                                 (Constraint::Min(3), false)
@@ -1502,11 +1545,11 @@ pub async fn run_ui(
                             };
 
                             let constraints: Vec<Constraint> = if is_monitor_mode {
-                                vec![monitor_constraint, Constraint::Length(3), Constraint::Length(3)]
+                                vec![monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
                             } else if keep {
-                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Length(3)]
+                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
                             } else {
-                                vec![Constraint::Min(5), Constraint::Length(3), Constraint::Length(3)]
+                                vec![Constraint::Min(5), Constraint::Length(3), Constraint::Length(help_lines)]
                             };
 
                             let areas = Layout::vertical(&constraints).split(f.area());
@@ -1671,24 +1714,36 @@ pub async fn run_ui(
                                 areas[status_bar_index],
                             );
 
-                            // --- 帮助栏 ---
-                            let help = if ui.edit_mode {
-                                t!("run_ui.help_edit", buf = &ui.edit_buf)
-                            } else if s.stability_test_running {
-                                t!("run_ui.help_stability")
-                            } else if is_monitor_mode {
-                                t!("run_ui.help_monitoring")
-                            } else if monitor_active {
-                                t!("run_ui.help_monitor")
-                            } else {
-                                t!("run_ui.help_normal")
-                            };
-
+                            // --- 帮助栏（使用预计算的 help 文本，支持自动换行和动态高度） ---
                             f.render_widget(
-                                ratatui::widgets::Paragraph::new(help)
+                                ratatui::widgets::Paragraph::new(help.as_str())
+                                    .wrap(ratatui::widgets::Wrap { trim: false })
                                     .block(Block::default().borders(Borders::ALL).title(t!("run_ui.help_title"))),
                                 areas[help_index],
                             );
+
+                            // --- 值变化模拟确认警告对话框 ---
+                            if ui.value_change_warning {
+                                let overlay_area = centered_rect(60, 40, f.area());
+                                let warning_block = Block::default()
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(Color::Red))
+                                    .title(t!("run_ui.value_change_warning_title"))
+                                    .style(Style::default().bg(Color::Black));
+                                let warning_text = format!(
+                                    "\n\n{}\n\n{}\n\n{}",
+                                    t!("run_ui.value_change_warning_msg"),
+                                    t!("run_ui.value_change_warning_confirm"),
+                                    t!("run_ui.value_change_warning_cancel"),
+                                );
+                                f.render_widget(
+                                    ratatui::widgets::Paragraph::new(warning_text)
+                                        .block(warning_block)
+                                        .alignment(ratatui::layout::Alignment::Center)
+                                        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                                    overlay_area,
+                                );
+                            }
                         })?;
                     }
 
@@ -1723,7 +1778,24 @@ pub async fn run_ui(
 
                                 let is_monitor_mode = args.main_mode == "monitor";
 
-                                if ui.edit_mode {
+                                if ui.value_change_warning {
+                                    match code {
+                                        KeyCode::Enter => {
+                                            // 确认开启值变化模拟
+                                            ui.value_change_warning = false;
+                                            let mut s = state.write().await;
+                                            s.value_change_enabled = true;
+                                            set_status(&mut ui, t!("run_ui.value_change_on"));
+                                        }
+                                        KeyCode::Esc => {
+                                            // 取消
+                                            ui.value_change_warning = false;
+                                            drop(state.read().await);
+                                            set_status(&mut ui, t!("run_ui.value_change_cancelled"));
+                                        }
+                                        _ => {}
+                                    }
+                                } else if ui.edit_mode {
                                     match code {
                                         KeyCode::Esc => {
                                             ui.edit_mode = false;
@@ -2003,6 +2075,43 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.stability_stopped"));
                                             }
                                         }
+                                        KeyCode::Char('V') => {
+                                            let s = state.read().await;
+                                            if s.value_change_enabled {
+                                                // 已开启 → 直接关闭（无害操作，无需确认）
+                                                drop(s);
+                                                let mut s = state.write().await;
+                                                s.value_change_enabled = false;
+                                                set_status(&mut ui, t!("run_ui.value_change_off"));
+                                            } else if !ui.value_change_warning {
+                                                // 未开启 → 显示确认警告
+                                                drop(s);
+                                                ui.value_change_warning = true;
+                                            }
+                                        }
+                                        // 寄存器视图切换：R 循环切换 4 种寄存器类型
+                                        KeyCode::Char('R') => {
+                                            if !is_monitor_mode {
+                                                let names = ["Holding", "Coils", "Discrete", "Input"];
+                                                let idx = (ui.reg_view + 1) % 4;
+                                                ui.reg_view = idx;
+                                                ui.selected = 0;
+                                                ui.scroll = 0;
+                                                set_status(&mut ui, format!("View: {}", names[idx]));
+                                            }
+                                        }
+                                        // Space 切换当前视图寄存器类型的读启用状态（客户端模式生效）
+                                        KeyCode::Char(' ') => {
+                                            if !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                s.read_enabled[ui.reg_view] = !s.read_enabled[ui.reg_view];
+                                                let state_str = if s.read_enabled[ui.reg_view] { "Read enabled" } else { "Read disabled" };
+                                                let idx = ui.reg_view;
+                                                drop(s);
+                                                let names = ["Holding", "Coils", "Discrete", "Input"];
+                                                set_status(&mut ui, format!("{} {}", names[idx], state_str));
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2024,7 +2133,7 @@ pub async fn run_ui(
     res
 }
 
-/// 渲染寄存器表格（重构为可复用的辅助函数）
+/// 渲染寄存器表格，支持所有 4 种寄存器类型
 fn render_register_table(
     f: &mut ratatui::Frame<'_>,
     s: &AppState,
@@ -2032,8 +2141,42 @@ fn render_register_table(
     area: ratatui::layout::Rect,
 ) {
     let visible_rows = area.height.saturating_sub(3) as usize;
-    if ui.selected >= s.holding.len() {
-        ui.selected = s.holding.len().saturating_sub(1);
+
+    // 根据视图类型选择数据源和标签
+    let (items, labels, is_bool) = match ui.reg_view {
+        REG_VIEW_HOLDING => (
+            &s.holding as &[u16],
+            Some(&s.holding_label as &[String]),
+            false,
+        ),
+        REG_VIEW_COILS => {
+            // Convert Vec<bool> to Vec<u16> for uniform handling
+            let mapped: Vec<u16> = s.coils.iter().map(|&b| if b { 1 } else { 0 }).collect();
+            (
+                Box::leak(mapped.into_boxed_slice()) as &[u16],
+                None::<&[String]>,
+                true,
+            )
+        }
+        REG_VIEW_DISCRETE => {
+            let mapped: Vec<u16> = s.discrete.iter().map(|&b| if b { 1 } else { 0 }).collect();
+            (
+                Box::leak(mapped.into_boxed_slice()) as &[u16],
+                None::<&[String]>,
+                true,
+            )
+        }
+        REG_VIEW_INPUT => (&s.input_registers as &[u16], None::<&[String]>, false),
+        _ => (
+            &s.holding as &[u16],
+            Some(&s.holding_label as &[String]),
+            false,
+        ),
+    };
+
+    let len = items.len();
+    if ui.selected >= len {
+        ui.selected = len.saturating_sub(1);
     }
     if ui.selected < ui.scroll {
         ui.scroll = ui.selected;
@@ -2042,68 +2185,108 @@ fn render_register_table(
         ui.scroll = ui.selected + 1 - visible_rows;
     }
 
-    let header = Row::new(vec![
-        Cell::from(t!("register_table.col_addr")),
-        Cell::from(t!("register_table.col_label")),
-        Cell::from(t!("register_table.col_value")),
-        Cell::from(t!("register_table.col_change")),
-    ])
-    .style(
+    // 标题
+    let title = match ui.reg_view {
+        REG_VIEW_HOLDING => t!("register_table.title"),
+        REG_VIEW_COILS => t!("register_table.title_coils"),
+        REG_VIEW_DISCRETE => t!("register_table.title_discrete"),
+        REG_VIEW_INPUT => t!("register_table.title_input"),
+        _ => t!("register_table.title"),
+    };
+
+    // 列头：线圈/离散输入不显示"备注"列
+    let (col_labels, col_constraints): (Vec<Cell>, Vec<Constraint>) = if is_bool {
+        (
+            vec![
+                Cell::from(t!("register_table.col_addr")),
+                Cell::from(t!("register_table.col_value")),
+            ],
+            vec![Constraint::Length(18), Constraint::Min(16)],
+        )
+    } else {
+        (
+            vec![
+                Cell::from(t!("register_table.col_addr")),
+                Cell::from(t!("register_table.col_label")),
+                Cell::from(t!("register_table.col_value")),
+                Cell::from(t!("register_table.col_change")),
+            ],
+            vec![
+                Constraint::Length(18),
+                Constraint::Length(36),
+                Constraint::Min(10),
+                Constraint::Length(6),
+            ],
+        )
+    };
+    let header = Row::new(col_labels).style(
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = s
-        .holding
+    let rows = items
         .iter()
         .enumerate()
         .skip(ui.scroll)
         .take(visible_rows.max(1))
         .map(|(i, v)| {
-            let mut val = format_u16(*v, ui.base);
-            let mut label = s.holding_label[i].clone();
-            if ui.edit_mode && i == ui.selected && !ui.edit_is_profile {
-                if ui.edit_is_label {
-                    label = ui.edit_buf.clone();
-                } else {
-                    val = ui.edit_buf.clone();
-                }
-            }
-            // 变化方向指示
-            let change_str = if i < s.reg_just_changed.len() && s.reg_just_changed[i] {
-                format!("{}", s.reg_change_direction[i])
+            if is_bool {
+                let val = if *v == 1 { "ON" } else { "OFF" };
+                Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)])
             } else {
-                String::new()
-            };
-            Row::new(vec![
-                Cell::from(format!("{}", i)),
-                Cell::from(label),
-                Cell::from(val),
-                Cell::from(change_str),
-            ])
+                let mut val = format_u16(*v, ui.base);
+                let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
+                // 编辑模式（仅 holding 支持编辑）
+                if ui.reg_view == REG_VIEW_HOLDING
+                    && ui.edit_mode
+                    && i == ui.selected
+                    && !ui.edit_is_profile
+                {
+                    if ui.edit_is_label {
+                        label = ui.edit_buf.clone();
+                    } else {
+                        val = ui.edit_buf.clone();
+                    }
+                }
+                let change_str = if i < s.reg_just_changed.len() && s.reg_just_changed[i] {
+                    format!("{}", s.reg_change_direction[i])
+                } else {
+                    String::new()
+                };
+                Row::new(vec![
+                    Cell::from(format!("{}", i)),
+                    Cell::from(label),
+                    Cell::from(val),
+                    Cell::from(change_str),
+                ])
+            }
         });
+
+    // 读启用状态指示
+    let read_status = if s.read_enabled[ui.reg_view] {
+        " [读]".to_string()
+    } else {
+        " [禁读]".to_string()
+    };
 
     let mut table_state = TableState::default();
     table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
 
-    let t = Table::new(
-        rows,
-        [
-            Constraint::Length(18),
-            Constraint::Length(42),
-            Constraint::Min(10),
-            Constraint::Length(6),
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(t!("register_table.title")),
-    )
-    .row_highlight_style(Style::default().bg(Color::Blue))
-    .highlight_symbol(">> ");
+    let t = Table::new(rows, col_constraints)
+        .header(header)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("{}{}", title, read_status)),
+        )
+        .row_highlight_style(Style::default().bg(Color::Blue))
+        .highlight_symbol(">> ");
+
+    // 清理泄漏的内存（coils/discrete 的临时转换）
+    if ui.reg_view == REG_VIEW_COILS || ui.reg_view == REG_VIEW_DISCRETE {
+        // 对于 bool 类型，items 指向泄漏的内存，无法恢复；临时转换仅用于单帧渲染，泄漏很小
+    }
 
     f.render_stateful_widget(t, area, &mut table_state);
 }
@@ -2374,4 +2557,46 @@ fn format_monitor_stats(m: &MonitorStats) -> String {
         }
     }
     text
+}
+
+/// 估算文本在指定宽度下需要多少行（简单字符计数，支持 \n 换行）
+fn wrapped_lines(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    let mut lines = 1;
+    let mut col = 0;
+    for ch in text.chars() {
+        if ch == '\n' {
+            lines += 1;
+            col = 0;
+        } else {
+            // 中文/全角字符占 2 列，其他占 1 列
+            let w = if ch as u32 > 0x7F { 2 } else { 1 };
+            if col + w > width {
+                lines += 1;
+                col = w;
+            } else {
+                col += w;
+            }
+        }
+    }
+    lines
+}
+
+/// 计算居中矩形区域 (percent_x, percent_y 为百分比)
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::vertical([
+        Constraint::Length((r.height * percent_y / 200).saturating_sub(1)),
+        Constraint::Length(r.height * percent_y / 100),
+        Constraint::Length((r.height * percent_y / 200).saturating_sub(1)),
+    ])
+    .split(r);
+
+    Layout::horizontal([
+        Constraint::Length((r.width * percent_x / 200).saturating_sub(1)),
+        Constraint::Length(r.width * percent_x / 100),
+        Constraint::Length((r.width * percent_x / 200).saturating_sub(1)),
+    ])
+    .split(popup_layout[1])[1]
 }
