@@ -30,6 +30,10 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 5. 多从站扫描
    - 通过对从站地址轮询找到未知从站
 
+## 安装
+1. 从官方github仓库Releases中下载，要校验值（通过SHA-256,避免文件被篡改！！！)
+2. 用cargo 自行编译安装 ```bash cargo install modbus_toolbox```
+
 ## 兼容性(后有详细列表)
 
 <img src="art/comp-cn.png" alt="兼容性图片" width="300" height="300">  

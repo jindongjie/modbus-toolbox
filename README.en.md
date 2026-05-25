@@ -30,6 +30,10 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 5. Multi-Slave Scanning
    - Discover unknown slaves by polling a range of slave addresses
 
+## Install
+1. Download from offical github repository releases(verify checksum to make sure security!!!)
+2. use cargo to install ```bash cargo install modbus_toolbox```
+
 ## Compatibility (detailed list below)
 
 <img src="art/comp-cn.png" alt="compatibility" width="300" height="300">  
