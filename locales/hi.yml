@@ -118,6 +118,8 @@ run_ui.save_fail_write: "फ़ाइल लिखने में विफल:
 run_ui.save_fail_serialize: "कॉन्फ़िग सीरियलाइज़ेशन विफल: %{err}"
 run_ui.byte_panel_shown: "बाइट पैनल दिखाया गया"
 run_ui.byte_panel_hidden: "बाइट पैनल छिपाया गया"
+run_ui.combination_set: "Register %{addr} combined as %{fmt} (%{count} regs)"
+run_ui.combination_removed: "Register %{addr} combination removed (back to u16)"
 run_ui.modbus_exception: "Modbus अपवाद प्रतिक्रिया: %{ex}"
 run_ui.worker_disconnected: "कार्यकर्ता डिस्कनेक्ट हुआ"
 run_ui.write_timeout: "लिखने का समय समाप्त, कोई डिवाइस प्रतिक्रिया नहीं"
