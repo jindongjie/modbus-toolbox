@@ -33,7 +33,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross
 
       - name: Build
         run: cross build --target ${{ matrix.target }} --release
@@ -54,11 +54,19 @@ jobs:
           cd dist
           zip ../modbus_toolbox-${{ matrix.target }}.zip modbus_toolbox.exe
 
-      - name: Upload artifact
+      - name: Upload artifact (Linux)
+        if: "!contains(matrix.target, 'windows')"
         uses: actions/upload-artifact@v4
         with:
-          name: modbus_toolbox-${{ matrix.target }}
-          path: modbus_toolbox-${{ matrix.target }}.*
+          name: modbus_toolbox-${{ matrix.target }}.tar.gz
+          path: modbus_toolbox-${{ matrix.target }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: contains(matrix.target, 'windows')
+        uses: actions/upload-artifact@v4
+        with:
+          name: modbus_toolbox-${{ matrix.target }}.zip
+          path: modbus_toolbox-${{ matrix.target }}.zip
 
   release:
     needs: build
