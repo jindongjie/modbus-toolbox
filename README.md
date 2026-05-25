@@ -1,4 +1,4 @@
-# Modbus 工具箱[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=jindongjie_modbus-toolbox)
+# Modbus 工具箱[![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=jindongjie_modbus-toolbox)[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=jindongjie_modbus-toolbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=jindongjie_modbus-toolbox)[![CI](https://github.com/jindongjie/modbus-toolbox/actions/workflows/ci.yml/badge.svg)](https://github.com/jindongjie/modbus-toolbox/actions/workflows/ci.yml)
 #(WIP, not stable yet!!!)
 [English](./README.en.md) | 简体中文
 
