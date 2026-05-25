@@ -3079,7 +3079,7 @@ pub async fn run_ui(
                                                     if !dir.exists() {
                                                         let _ = std::fs::create_dir_all(dir);
                                                     }
-                                                    let path = csv_log_path();
+                                                    let path = csv_log_path(&args.main_mode, args.tcp_port, &args.device);
                                                     if let Err(e) = csv_log_header(&path) {
                                                         set_status(&mut ui, format!("CSV log error: {}", e));
                                                         ui.monitor_logging = false;

@@ -515,8 +515,10 @@ pub fn csv_log_append(path: &std::path::Path, rec: &FrameRecord) -> std::io::Res
     )
 }
 
-/// Generate a CSV log file path based on the current time
-pub fn csv_log_path() -> std::path::PathBuf {
+/// Generate a CSV log file path based on mode, port/device, and current time.
+/// For TCP mode: `tcp-{port}-{time}.csv`
+/// For RTU mode: `rtu-{device}-{time}.csv`
+pub fn csv_log_path(main_mode: &str, tcp_port: u16, device: &str) -> std::path::PathBuf {
     let now = std::time::SystemTime::now();
     let timestamp = match now.duration_since(std::time::UNIX_EPOCH) {
         Ok(d) => {
@@ -528,13 +530,19 @@ pub fn csv_log_path() -> std::path::PathBuf {
             let s = secs_in_day % 60;
             // Days since epoch for date calculation
             let days = total_secs / 86400;
-            // Simple days-to-date (adequate for filenames, no leap-second precision needed)
             let (year, month, day) = days_to_date(days);
             format!("{:04}{:02}{:02}_{:02}{:02}{:02}", year, month, day, h, m, s)
         }
         Err(_) => "unknown".to_string(),
     };
-    std::path::PathBuf::from(MONITOR_LOG_DIR).join(format!("{}.csv", timestamp))
+    let prefix = if main_mode.contains("rtu") {
+        // Sanitize device name for use in filename (replace path separators)
+        let dev_name = device.replace(['/', '\\'], "_");
+        format!("rtu-{}-{}", dev_name, timestamp)
+    } else {
+        format!("tcp-{}-{}", tcp_port, timestamp)
+    };
+    std::path::PathBuf::from(MONITOR_LOG_DIR).join(format!("{}.csv", prefix))
 }
 
 /// Convert days since Unix epoch to (year, month, day)
