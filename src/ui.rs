@@ -25,9 +25,27 @@ use ratatui::{
 
 // crate
 use crate::{
-    format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str, AppState, Args,
-    DisplayBase, FrameInfo, FrameRecord, MainMode, MonitorStats, BAR_HISTORY_SLOTS,
+    format_register_value, format_u16, modbus::frame_bytes_from_info, modbus::RegCmd,
+    parse_u16_str, export_registers_to_json, AppState, Args, DisplayBase, FrameInfo,
+    FrameRecord, MainMode, MonitorStats, RegDataFormat, BAR_HISTORY_SLOTS,
 };
+/// 从字符串解析寄存器数据格式
+fn parse_reg_format(s: &str) -> RegDataFormat {
+    match s.trim().to_lowercase().as_str() {
+        "i16" => RegDataFormat::I16,
+        "u32" | "uint32" => RegDataFormat::U32,
+        "i32" | "int32" => RegDataFormat::I32,
+        "u64" | "uint64" => RegDataFormat::U64,
+        "i64" | "int64" => RegDataFormat::I64,
+        "f16" | "half" => RegDataFormat::F16,
+        "f32" | "float" => RegDataFormat::F32,
+        "f64" | "double" => RegDataFormat::F64,
+        "bin" | "binary" => RegDataFormat::Binary,
+        "ascii" => RegDataFormat::Ascii,
+        _ => RegDataFormat::U16,
+    }
+}
+
 const UI_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 菜单屏幕状态
@@ -155,6 +173,12 @@ pub struct Ui {
     search_mode: bool,
     /// 搜索缓冲
     search_buf: String,
+    /// 当前寄存器数据解释格式（UI 本地副本，与 AppState 同步）
+    reg_format: RegDataFormat,
+    /// 字节序交换
+    swap_bytes: bool,
+    /// 字序交换
+    swap_words: bool,
 }
 
 /// 寄存器视图类型常量
@@ -164,7 +188,7 @@ const REG_VIEW_DISCRETE: usize = 2;
 const REG_VIEW_INPUT: usize = 3;
 
 impl Ui {
-    fn new(base: DisplayBase, profiles: Vec<String>) -> Self {
+    fn new(base: DisplayBase, reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, profiles: Vec<String>) -> Self {
         let logo_raw = include_str!("logo.txt");
         let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
         logo_lines.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
@@ -235,6 +259,9 @@ impl Ui {
             goto_buf: String::new(),
             search_mode: false,
             search_buf: String::new(),
+            reg_format,
+            swap_bytes,
+            swap_words,
         }
     }
 }
@@ -1936,7 +1963,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(DisplayBase::Dec, profiles);
+    let mut ui = Ui::new(DisplayBase::Dec, RegDataFormat::U16, false, false, profiles);
     ui.config_path = config_path.to_string();
     // 尝试读取默认配置
     if let Some(def) = load_default_profile(config_path) {
@@ -2027,7 +2054,10 @@ pub async fn run_ui(
     let mut terminal = Terminal::new(backend).context(t!("run_ui.create_terminal"))?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(args.base, profiles);
+    let reg_format = parse_reg_format(&args.reg_format);
+    let swap_bytes = args.swap_bytes;
+    let swap_words = args.swap_words;
+    let mut ui = Ui::new(args.base, reg_format, swap_bytes, swap_words, profiles);
     ui.config_path = config_path;
 
     // Monitor 模式默认开启监听面板
@@ -2042,6 +2072,10 @@ pub async fn run_ui(
         tokio::select! {
                     _ = interval.tick() => {
                         let s = state.read().await;
+                        // 从 AppState 同步格式/交换设置到 UI（允许程序化修改）
+                        ui.reg_format = s.reg_format;
+                        ui.swap_bytes = s.swap_bytes;
+                        ui.swap_words = s.swap_words;
                         let server_err = server_status.read().await.clone();
                         let is_monitor_mode = args.main_mode == "monitor";
                         terminal.draw(|f| {
@@ -2251,12 +2285,30 @@ pub async fn run_ui(
                                 t!("run_ui.status_reg_change", count = changes, addr = last.addr, dir = format!("{}", last.direction))
                             } else if let Some(ref fi) = s.last_frame {
                                 if fi.is_tcp {
-                                    t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base))
+                                    let fmt = ui.reg_format.short_label();
+                                let sw = if ui.swap_bytes || ui.swap_words {
+                                    format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
                                 } else {
-                                    t!("run_ui.status_rtu", func = &fi.func_name, base = format!("{:?}", ui.base))
+                                    String::new()
+                                };
+                                t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
+                                } else {
+                                    let fmt = ui.reg_format.short_label();
+                                    let sw = if ui.swap_bytes || ui.swap_words {
+                                        format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
+                                    } else {
+                                        String::new()
+                                    };
+                                    t!("run_ui.status_rtu", func = &fi.func_name, base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
                                 }
                             } else {
-                                t!("run_ui.status_waiting", base = format!("{:?}", ui.base))
+                                let fmt = ui.reg_format.short_label();
+                                let sw = if ui.swap_bytes || ui.swap_words {
+                                    format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
+                                } else {
+                                    String::new()
+                                };
+                                t!("run_ui.status_waiting", base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
                             };
 
                             f.render_widget(
@@ -2737,6 +2789,78 @@ pub async fn run_ui(
                                             ui.status_msg = None;
                                         }
 
+                                        // f: 循环切换寄存器数据解释格式（向前）
+                                        KeyCode::Char('f') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let all = RegDataFormat::all();
+                                                let cur = ui.reg_format;
+                                                let next = all.iter().position(|&f| f == cur)
+                                                    .map(|i| all[(i + 1) % all.len()])
+                                                    .unwrap_or(RegDataFormat::U16);
+                                                let mut s = state.write().await;
+                                                s.reg_format = next;
+                                                ui.reg_format = next;
+                                                drop(s);
+                                                set_status(&mut ui, format!("Format: {}", next.short_label()));
+                                            }
+                                        }
+                                        // F (Shift+F): 循环切换寄存器数据解释格式（向后）
+                                        KeyCode::Char('F') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let all = RegDataFormat::all();
+                                                let cur = ui.reg_format;
+                                                let prev = all.iter().position(|&f| f == cur)
+                                                    .map(|i| all[(i + all.len() - 1) % all.len()])
+                                                    .unwrap_or(RegDataFormat::U64);
+                                                let mut s = state.write().await;
+                                                s.reg_format = prev;
+                                                ui.reg_format = prev;
+                                                drop(s);
+                                                set_status(&mut ui, format!("Format: {}", prev.short_label()));
+                                            }
+                                        }
+                                        // w: 切换字节序交换
+                                        KeyCode::Char('w') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let mut s = state.write().await;
+                                                s.swap_bytes = !s.swap_bytes;
+                                                ui.swap_bytes = s.swap_bytes;
+                                                drop(s);
+                                                if ui.swap_bytes { set_status(&mut ui, "Byte swap: ON"); }
+                                                else { set_status(&mut ui, "Byte swap: OFF"); }
+                                            }
+                                        }
+                                        // W (Shift+W): 切换字序交换
+                                        KeyCode::Char('W') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let mut s = state.write().await;
+                                                s.swap_words = !s.swap_words;
+                                                ui.swap_words = s.swap_words;
+                                                drop(s);
+                                                if ui.swap_words { set_status(&mut ui, "Word swap: ON"); }
+                                                else { set_status(&mut ui, "Word swap: OFF"); }
+                                            }
+                                        }
+                                        // E (Shift+E): 导出当前寄存器到 JSON 文件
+                                        KeyCode::Char('E') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let s = state.read().await;
+                                                match export_registers_to_json(ui.reg_format, ui.swap_bytes, ui.swap_words, ui.base, &s) {
+                                                    Ok((filename, json)) => {
+                                                        drop(s);
+                                                        match std::fs::write(&filename, &json) {
+                                                            Ok(_) => set_status(&mut ui, format!("Exported: {}", filename)),
+                                                            Err(e) => set_status(&mut ui, format!("Export error: {}", e)),
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        drop(s);
+                                                        set_status(&mut ui, format!("Export error: {}", e));
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         KeyCode::Char('t') => {
                                             let s = state.read().await;
                                             if ui.selected < s.holding.len() {
@@ -3197,7 +3321,7 @@ fn render_register_table(
                 let val = if *v == 1 { "ON" } else { "OFF" };
                 Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)])
             } else {
-                let mut val = format_u16(*v, ui.base);
+                let mut val = format_register_value(items, i, ui.reg_format, ui.base, ui.swap_bytes, ui.swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
                 // 编辑模式（仅 holding 支持编辑）
                 if ui.reg_view == REG_VIEW_HOLDING

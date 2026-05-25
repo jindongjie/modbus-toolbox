@@ -25,6 +25,69 @@ enum DisplayBase {
     Bin,
 }
 
+/// 寄存器数据解释格式
+#[derive(Copy, Clone, Debug, PartialEq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegDataFormat {
+    #[default]
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F16,
+    F32,
+    F64,
+    Binary,
+    Ascii,
+}
+
+impl RegDataFormat {
+    /// 此格式需要的连续 16 位寄存器数量
+    pub fn regs_needed(self) -> usize {
+        match self {
+            RegDataFormat::U16 | RegDataFormat::I16 | RegDataFormat::F16
+            | RegDataFormat::Binary | RegDataFormat::Ascii => 1,
+            RegDataFormat::U32 | RegDataFormat::I32 | RegDataFormat::F32 => 2,
+            RegDataFormat::U64 | RegDataFormat::I64 | RegDataFormat::F64 => 4,
+        }
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            RegDataFormat::U16 => "u16",
+            RegDataFormat::I16 => "i16",
+            RegDataFormat::U32 => "u32",
+            RegDataFormat::I32 => "i32",
+            RegDataFormat::U64 => "u64",
+            RegDataFormat::I64 => "i64",
+            RegDataFormat::F16 => "f16",
+            RegDataFormat::F32 => "f32",
+            RegDataFormat::F64 => "f64",
+            RegDataFormat::Binary => "bin",
+            RegDataFormat::Ascii => "ascii",
+        }
+    }
+
+    /// 可迭代所有格式，用于循环切换
+    pub fn all() -> &'static [RegDataFormat] {
+        &[
+            RegDataFormat::U16,
+            RegDataFormat::I16,
+            RegDataFormat::U32,
+            RegDataFormat::I32,
+            RegDataFormat::U64,
+            RegDataFormat::I64,
+            RegDataFormat::F16,
+            RegDataFormat::F32,
+            RegDataFormat::F64,
+            RegDataFormat::Binary,
+            RegDataFormat::Ascii,
+        ]
+    }
+}
+
 #[derive(Parser, Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[command(
     name = "modbus 工具箱",
@@ -106,6 +169,21 @@ struct Args {
     #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
     base: DisplayBase,
 
+    /// 寄存器数据格式 (u16, i16, u32, i32, u64, i64, f16, f32, f64, bin, ascii)
+    #[arg(long, default_value = "u16")]
+    #[serde(default)]
+    reg_format: String,
+
+    /// 交换字节序
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    swap_bytes: bool,
+
+    /// 交换字序（多寄存器格式时有效）
+    #[arg(long, default_value_t = false)]
+    #[serde(default)]
+    swap_words: bool,
+
     /// 寄存器备注标签
     #[arg(skip)]
     #[serde(default)]
@@ -138,6 +216,9 @@ impl Default for Args {
             stopbits: 1,
             flow: "none".into(),
             base: DisplayBase::Dec,
+            reg_format: "u16".into(),
+            swap_bytes: false,
+            swap_words: false,
             labels: HashMap::new(),
             lang: "zh-CN".into(),
         }
@@ -289,6 +370,12 @@ pub struct AppState {
     pub slave_scan_running: bool,
     /// 每个寄存器的值变化条形图历史（每地址最多 20 个采样值）
     pub reg_bar_history: Vec<Vec<u16>>,
+    /// 当前寄存器数据解释格式
+    pub reg_format: RegDataFormat,
+    /// 是否交换字节序
+    pub swap_bytes: bool,
+    /// 是否交换字序
+    pub swap_words: bool,
 }
 
 impl Default for AppState {
@@ -319,6 +406,9 @@ impl Default for AppState {
             slave_scan_result: None,
             slave_scan_running: false,
             reg_bar_history: Vec::new(),
+            reg_format: RegDataFormat::U16,
+            swap_bytes: false,
+            swap_words: false,
         }
     }
 }
@@ -700,6 +790,221 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     }
 }
 
+/// 将 u32 值按指定进制格式化
+fn format_u32(v: u32, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:08X}"),
+        DisplayBase::Bin => format!("0b{v:032b}"),
+    }
+}
+
+/// 将 u64 值按指定进制格式化
+fn format_u64(v: u64, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:016X}"),
+        DisplayBase::Bin => format!("0b{v:064b}"),
+    }
+}
+
+/// 将 i16 值按指定进制格式化
+fn format_i16(v: i16, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:04X}"),
+        DisplayBase::Bin => format!("0b{v:016b}"),
+    }
+}
+
+/// 将 i32 值按指定进制格式化
+fn format_i32(v: i32, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:08X}"),
+        DisplayBase::Bin => format!("0b{v:032b}"),
+    }
+}
+
+/// 将 i64 值按指定进制格式化
+fn format_i64(v: i64, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:016X}"),
+        DisplayBase::Bin => format!("0b{v:064b}"),
+    }
+}
+
+/// 半精度浮点 (f16) 转字符串
+fn format_f16(h: u16) -> String {
+    let sign = if (h & 0x8000) != 0 { -1.0 } else { 1.0 };
+    let exp = (h >> 10) & 0x1f;
+    let mant = (h & 0x3ff) as f32;
+    let v = match exp {
+        0 => {
+            if mant == 0.0 { 0.0 } else { sign * mant / 1024.0 * 2.0_f32.powi(-14) }
+        }
+        31 => {
+            if mant == 0.0 {
+                if sign > 0.0 { f32::INFINITY } else { f32::NEG_INFINITY }
+            } else {
+                f32::NAN
+            }
+        }
+        _ => {
+            let exp_val = (exp as i32) - 15;
+            sign * (1.0 + mant / 1024.0) * 2.0_f32.powi(exp_val)
+        }
+    };
+    format!("{:.6}", v)
+}
+
+/// 根据寄存器数据解释格式格式化一个地址的值
+pub(crate) fn format_register_value(
+    regs: &[u16],
+    addr: usize,
+    format: RegDataFormat,
+    base: DisplayBase,
+    swap_bytes: bool,
+    swap_words: bool,
+) -> String {
+    let needed = format.regs_needed();
+    if addr + needed > regs.len() {
+        return format!("-- (need {})", needed);
+    }
+
+    let mut words: Vec<u16> = regs[addr..addr + needed].to_vec();
+
+    // 字节交换
+    if swap_bytes {
+        for w in &mut words {
+            *w = w.swap_bytes();
+        }
+    }
+    // 字序交换（多寄存器格式）
+    if swap_words && words.len() > 1 {
+        words.reverse();
+    }
+
+    match format {
+        RegDataFormat::U16 => format_u16(words[0], base),
+        RegDataFormat::I16 => format_i16(words[0] as i16, base),
+        RegDataFormat::U32 => {
+            let v = (words[0] as u32) << 16 | words[1] as u32;
+            format_u32(v, base)
+        }
+        RegDataFormat::I32 => {
+            let v = ((words[0] as u32) << 16 | words[1] as u32) as i32;
+            format_i32(v, base)
+        }
+        RegDataFormat::U64 => {
+            let v = (words[0] as u64) << 48
+                | (words[1] as u64) << 32
+                | (words[2] as u64) << 16
+                | words[3] as u64;
+            format_u64(v, base)
+        }
+        RegDataFormat::I64 => {
+            let v = ((words[0] as u64) << 48
+                | (words[1] as u64) << 32
+                | (words[2] as u64) << 16
+                | words[3] as u64) as i64;
+            format_i64(v, base)
+        }
+        RegDataFormat::F16 => format_f16(words[0]),
+        RegDataFormat::F32 => {
+            let bits = ((words[0] as u32) << 16) | words[1] as u32;
+            let v = f32::from_bits(bits);
+            format!("{:.6}", v)
+        }
+        RegDataFormat::F64 => {
+            let bits = (words[0] as u64) << 48
+                | (words[1] as u64) << 32
+                | (words[2] as u64) << 16
+                | words[3] as u64;
+            let v = f64::from_bits(bits);
+            format!("{:.10}", v)
+        }
+        RegDataFormat::Binary => format!("{:016b}", words[0]),
+        RegDataFormat::Ascii => {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
+            let s: String = bytes
+                .iter()
+                .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+                .collect();
+            s
+        }
+    }
+}
+
+/// 导出当前所有寄存器值为 JSON
+pub(crate) fn export_registers_to_json(reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, base: DisplayBase, state: &AppState) -> Result<(String, String)> {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct ExportData {
+        export_time: String,
+        reg_format: String,
+        swap_bytes: bool,
+        swap_words: bool,
+        base: String,
+        holding: Vec<ExportReg>,
+        coils: Vec<bool>,
+        discrete: Vec<bool>,
+        input_registers: Vec<ExportReg>,
+    }
+
+    #[derive(Serialize)]
+    struct ExportReg {
+        addr: usize,
+        raw: u16,
+        label: String,
+        value: String,
+    }
+
+    fn make_regs(regs: &[u16], labels: &[String], reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, base: DisplayBase) -> Vec<ExportReg> {
+        regs.iter().enumerate().map(|(i, &raw)| {
+            let value = format_register_value(regs, i, reg_format, base, swap_bytes, swap_words);
+            let label = labels.get(i).cloned().unwrap_or_default();
+            ExportReg { addr: i, raw, label, value }
+        }).collect()
+    }
+
+    let now = chrono_now();
+
+    let data = ExportData {
+        export_time: now.clone(),
+        reg_format: reg_format.short_label().to_string(),
+        swap_bytes,
+        swap_words,
+        base: format!("{:?}", base),
+        holding: make_regs(&state.holding, &state.holding_label, reg_format, swap_bytes, swap_words, base),
+        coils: state.coils.clone(),
+        discrete: state.discrete.clone(),
+        input_registers: make_regs(&state.input_registers, &[], reg_format, swap_bytes, swap_words, base),
+    };
+
+    let json = serde_json::to_string_pretty(&data)
+        .context("Failed to serialize registers to JSON")?;
+    let filename = format!("modbus_export_{}.json", now.replace(' ', "_").replace(':', "-"));
+    Ok((filename, json))
+}
+
+fn chrono_now() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    // Simple local time formatting
+    let days = secs / 86400;
+    let time_secs = secs % 86400;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", 1970 + (days / 365) as u32, 1, 1, hours, minutes, seconds)
+}
+
 /// 根据 MenuSelection 加载对应配置并解包为 (MainMode, Args)
 fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode, Args)> {
     let main_mode = sel.main_mode;
@@ -810,6 +1115,9 @@ async fn main() -> Result<()> {
         slave_scan_result: None,
         slave_scan_running: false,
         reg_bar_history: vec![vec![]; max_count],
+        reg_format: RegDataFormat::U16,
+        swap_bytes: false,
+        swap_words: false,
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

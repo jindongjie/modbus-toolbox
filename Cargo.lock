@@ -1379,6 +1379,7 @@ dependencies = [
  "ratatui",
  "rust-i18n",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-modbus",
  "tokio-serial",

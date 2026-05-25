@@ -1503,6 +1503,9 @@ mod tests {
             slave_scan_result: None,
             slave_scan_running: false,
             reg_bar_history: vec![Vec::new(); holding],
+            reg_format: crate::RegDataFormat::U16,
+            swap_bytes: false,
+            swap_words: false,
         }
     }
 
