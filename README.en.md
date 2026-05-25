@@ -8,7 +8,7 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 
 ## Key Features
 
-<img src="art/breif-en.png" alt="features overview" width="300" height="300">  
+<img src="art/breif-cn.png" alt="features overview" width="300" height="300">  
 
 1. Modbus TCP/RTU Server & Client
    - TUI table interface, single/batch read and modify
@@ -55,6 +55,13 @@ Modbus Toolbox is a collection of tools created to help developers debug the Mod
 'j,k': Move up/down through the register list  
 For other keybindings, check the in-app help.
 
+## Screen Shot
+**Main Menu**
+<img src="art/main-menu-en.png" alt="main menu" width="600" height="650">  
+**Register List**
+<img src="art/registerlist-en.png" alt="register list" width="600" height="650">  
+
+
 ## Configuration
 
 Settings are persisted via `config.toml`. You can customize configuration names and store multiple profiles.
@@ -64,8 +71,6 @@ Settings are persisted via `config.toml`. You can customize configuration names 
 Know Rust and Tokio.
 
 ### TODO
-
-- [ ] After a serial port error triggers `ui.status_msg` update, the UI freezes — not yet resolved.
 
 ## Dependencies
 

@@ -55,6 +55,12 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 'j,k': 上下移动寄存器列表
 其余请在程序中自行查看
 
+## 截图
+**主界面**
+<img src="art/main-menu-cn.png" alt="主界面" width="600" height="650">  
+**寄存器列表界面**
+<img src="art/registerlist-cn.png" alt="寄存器列表界面" width="600" height="650">  
+
 ## 配置文件
 
 通过config.toml 持久化保存，可自定义配置名称，存储多个配置
@@ -64,9 +70,6 @@ Modbus 工具箱是为了方便广大朋友更加快捷，稳定的调试 Modbus
 懂得rust async tokio.
 
 ### TODOLIST
-
-串口错误后触发 ui.status_msg 更新后会卡死
-还未解决：（
 
 ## 依赖项目
 
