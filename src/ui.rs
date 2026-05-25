@@ -81,6 +81,8 @@ pub struct Ui {
     default_profile: Option<String>,
     /// 主菜单渲染用的 Logo ASCII ART 行
     logo_lines: Vec<String>,
+    /// Logo 动画帧计数器（递增到 30 后停止）
+    logo_frame: u8,
 
     // --- 配置编辑相关字段 ---
     /// 正在编辑的配置名
@@ -193,6 +195,7 @@ impl Ui {
             pending_mode: None,
             default_profile: default,
             logo_lines,
+            logo_frame: 0,
             serial_ports,
 
             // 配置编辑
@@ -429,10 +432,21 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     ])
     .split(area);
 
-    // --- Logo 区 ---
+    // --- Logo 区（渐显动画） ---
     let logo_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+        .fg(match ui.logo_frame {
+            0..=2 => Color::DarkGray,
+            3..=5 => Color::Gray,
+            6..=8 => Color::White,
+            9..=11 => Color::LightCyan,
+            12..=14 => Color::Cyan,
+            _ => Color::Cyan,
+        })
+        .add_modifier(if ui.logo_frame >= 12 {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
     let logo_text: Vec<Line> = ui
         .logo_lines
         .iter()
@@ -1938,6 +1952,10 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => break Err(anyhow!(e).context("read event")),
             _ => {
+                // Logo 动画（约 3 秒完成，30 frames × 100ms）
+                if ui.logo_frame < 30 {
+                    ui.logo_frame += 1;
+                }
                 // 刷新界面
                 let _ = terminal.draw(|f| match ui.menu_screen {
                     MenuScreen::Main => render_main_menu(f, &ui),
