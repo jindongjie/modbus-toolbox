@@ -19,7 +19,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
     Frame, Terminal,
 };
 
@@ -1511,7 +1511,12 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .borders(Borders::ALL)
         .title(t!("profile_edit.fields_title"))
         .border_style(Style::default().fg(Color::Cyan));
-    f.render_widget(Paragraph::new(lines).block(list_block), main[0]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(list_block)
+            .wrap(Wrap { trim: false }),
+        main[0],
+    );
 
     // 右：编辑面板或提示
     let right_content = if ui.field_edit_mode {
@@ -1596,7 +1601,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             t!("profile_edit.edit_help"),
             Style::default().fg(Color::DarkGray),
         )));
-        Paragraph::new(edit_lines)
+        Paragraph::new(edit_lines).wrap(Wrap { trim: false })
     } else {
         // 导航模式显示提示
         let help_text = if ui.edit_args.is_some() {
@@ -1632,7 +1637,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             help_text,
             Style::default().fg(Color::DarkGray),
         )));
-        Paragraph::new(right_lines)
+        Paragraph::new(right_lines).wrap(Wrap { trim: false })
     };
 
     let edit_block = Block::default()
@@ -1648,6 +1653,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             help,
             Style::default().fg(Color::DarkGray),
         )))
+        .wrap(Wrap { trim: false })
         .alignment(ratatui::layout::Alignment::Center),
         vert[2],
     );
