@@ -1794,6 +1794,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
 
     let mut events = EventStream::new();
     let mut ui = Ui::new(DisplayBase::Dec, profiles);
+    ui.config_path = config_path.to_string();
     // 尝试读取默认配置
     if let Some(def) = load_default_profile(config_path) {
         if ui.profiles.contains(&def) {
