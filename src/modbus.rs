@@ -231,6 +231,7 @@ struct HoldingService {
     holding_len: usize,
     unit: u8,
     state: Arc<RwLock<AppState>>,
+    is_tcp: bool,
 }
 
 //Modbus 保持型寄存器服务
@@ -260,7 +261,7 @@ impl tokio_modbus::server::Service for HoldingService {
             return boxed(async { Err(ExceptionCode::IllegalFunction) });
         }
 
-        let is_tcp = self.state.blocking_read().is_tcp;
+        let is_tcp = self.is_tcp;
 
         match req.request {
             Request::ReadHoldingRegisters(addr, cnt) => {
@@ -1043,6 +1044,7 @@ pub async fn run_modbus_tcp_server(
         holding_len: args.holding_count,
         unit: args.unit,
         state,
+        is_tcp: true,
     };
 
     let server = server::tcp::Server::new(listener);
@@ -1120,6 +1122,7 @@ pub async fn run_modbus_rtu_server(
         holding_len: args.holding_count,
         unit: args.unit,
         state,
+        is_tcp: false,
     };
 
     let server = server::rtu::Server::new(port);
@@ -1499,6 +1502,7 @@ mod tests {
             read_enabled: [false, false, false, false],
             slave_scan_result: None,
             slave_scan_running: false,
+            reg_bar_history: vec![Vec::new(); holding],
         }
     }
 
