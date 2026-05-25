@@ -1,44 +1,4 @@
-[__default__]
-main_mode = "1"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-[__default__.labels]
-
-[tcp-master]
-main_mode = "ts"
-tcp_port = 10688
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-[tcp-master.labels]
-
-[1]
+[test]
 main_mode = "tcp-client"
 tcp_port = 502
 unit = 1
@@ -56,8 +16,7 @@ stopbits = 1
 flow = "none"
 base = "dec"
 
-[1.labels]
-0 = "???"
+[test.labels]
 
 [tcp-client]
 main_mode = "tcp-client"
@@ -100,8 +59,8 @@ base = "dec"
 
 [hello.labels]
 
-[test]
-main_mode = "tcp-client"
+[1]
+main_mode = "rtu-monitor"
 tcp_port = 502
 unit = 1
 holding_count = 512
@@ -118,10 +77,51 @@ stopbits = 1
 flow = "none"
 base = "dec"
 
-[test.labels]
+[1.labels]
+0 = "???"
+
+[__default__]
+main_mode = "tcp-server"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"
+
+[__default__.labels]
+
+[tcp-master]
+main_mode = "ts"
+tcp_port = 10688
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+base = "dec"
+
+[tcp-master.labels]
 
 ["hahaha 你是谁啊"]
-main_mode = "tcp-client"
+main_mode = "rtu-client"
 tcp_port = 502
 unit = 1
 holding_count = 512

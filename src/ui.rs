@@ -2049,7 +2049,7 @@ pub async fn run_ui(
 
                             let term_width = f.area().width;
                             let panel_width = term_width.saturating_sub(2).max(1) as usize;
-                            let help_lines = wrapped_lines(&help, panel_width).max(3) as u16;
+                            let help_lines = (wrapped_lines(&help, panel_width) + 1).max(3) as u16;
 
                             // 纯监听模式：仅显示监听面板；否则显示寄存器表 + 可选的监听覆盖层
                             let (monitor_constraint, keep) = if is_monitor_mode {
@@ -2061,11 +2061,11 @@ pub async fn run_ui(
                             };
 
                             let constraints: Vec<Constraint> = if is_monitor_mode {
-                                vec![monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
+                                vec![monitor_constraint, Constraint::Length(3), Constraint::Min(help_lines)]
                             } else if keep {
-                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
+                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Min(help_lines)]
                             } else {
-                                vec![Constraint::Min(5), Constraint::Length(3), Constraint::Length(help_lines)]
+                                vec![Constraint::Min(5), Constraint::Length(3), Constraint::Min(help_lines)]
                             };
 
                             let areas = Layout::vertical(&constraints).split(f.area());
