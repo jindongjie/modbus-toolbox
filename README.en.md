@@ -1,4 +1,4 @@
-# Modbus Toolbox
+# Modbus Toolbox [![SonarQube Cloud](https://sonarcloud.io/images/project_badges/sonarcloud-light.svg)](https://sonarcloud.io/summary/new_code?id=jindongjie_modbus-toolbox)
 # WIP (not stable yet!)
 English | [简体中文](./README.md)
 
