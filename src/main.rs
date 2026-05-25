@@ -329,7 +329,8 @@ enum MainMode {
     TcpClient,
     RTUServer,
     RTUClient,
-    Monitor,
+    TcpMonitor,
+    RtuMonitor,
 }
 
 /// 向监听统计中添加一条帧记录
@@ -631,9 +632,10 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
     match s.to_ascii_lowercase().as_str() {
         "ts" | "tcp-server" => Ok(MainMode::TcpServer),
         "tc" | "tcp-client" => Ok(MainMode::TcpClient),
+        "tm" | "tcp-monitor" => Ok(MainMode::TcpMonitor),
         "rs" | "rtu-server" => Ok(MainMode::RTUServer),
         "rc" | "rtu-client" => Ok(MainMode::RTUClient),
-        "mo" | "monitor" => Ok(MainMode::Monitor),
+        "rm" | "rtu-monitor" => Ok(MainMode::RtuMonitor),
         _ => Err(anyhow!(t!("main.invalid_main_mode", mode = s))),
     }
 }
@@ -722,7 +724,8 @@ fn resolve_selection(config_path: &str, sel: &MenuSelection) -> Result<(MainMode
         MainMode::TcpClient => "tcp-client".into(),
         MainMode::RTUServer => "rtu-server".into(),
         MainMode::RTUClient => "rtu-client".into(),
-        MainMode::Monitor => "monitor".into(),
+        MainMode::TcpMonitor => "tcp-monitor".into(),
+        MainMode::RtuMonitor => "rtu-monitor".into(),
     };
 
     Ok((main_mode, args))
@@ -785,7 +788,10 @@ async fn main() -> Result<()> {
         discrete: vec![false; args.discrete_count],
         input_registers: vec![0u16; args.input_count],
         last_frame: None,
-        is_tcp: matches!(main_mode, MainMode::TcpServer | MainMode::TcpClient),
+        is_tcp: matches!(
+            main_mode,
+            MainMode::TcpServer | MainMode::TcpClient | MainMode::TcpMonitor
+        ),
         monitor: MonitorStats::default(),
         stability_test_running: false,
         stability_stats: (0, 0, 0),
@@ -834,8 +840,8 @@ async fn main() -> Result<()> {
             MainMode::RTUClient => run_modbus_rtu_client(inner_args, inner_state, inner_rx).await,
             MainMode::TcpServer => run_modbus_tcp_server(inner_args, inner_state, inner_tx).await,
             MainMode::TcpClient => run_modbus_tcp_client(inner_args, inner_state, inner_rx).await,
-            MainMode::Monitor => {
-                // Monitor 模式不需要 modbus 后端，仅保持运行
+            MainMode::TcpMonitor | MainMode::RtuMonitor => {
+                // 监听模式不需要 modbus 后端，仅保持运行
                 futures::future::pending::<Result<()>>().await
             }
         };
@@ -850,7 +856,11 @@ async fn main() -> Result<()> {
     // 加载配置列表（供监听模式使用）
     let config_path = cli_args.config.clone();
     let profiles = load_profile_list(&config_path);
-    if main_mode == MainMode::TcpClient || main_mode == MainMode::RTUClient {
+    if main_mode == MainMode::TcpClient
+        || main_mode == MainMode::RTUClient
+        || main_mode == MainMode::TcpMonitor
+        || main_mode == MainMode::RtuMonitor
+    {
         ui_res = run_ui(
             Arc::clone(&state),
             client_tx,

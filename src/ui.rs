@@ -345,7 +345,6 @@ fn profile_pick_brief(args: &Args) -> String {
         "tcp-client" => "TCP-C",
         "rtu-server" => "RTU-S",
         "rtu-client" => "RTU-C",
-        "monitor" => "mon",
         _ => &args.main_mode,
     };
     let unit = format!("slv {}", args.unit);
@@ -380,12 +379,13 @@ fn load_pick_list(config_path: &str, pending_mode: Option<MainMode>) -> (Vec<Str
         MainMode::TcpClient => "tcp-client",
         MainMode::RTUServer => "rtu-server",
         MainMode::RTUClient => "rtu-client",
-        MainMode::Monitor => "__all__", // 不过滤
+        MainMode::TcpMonitor => "tcp-",
+        MainMode::RtuMonitor => "rtu-",
     });
     let mut entries: Vec<(String, String)> = configs
         .into_iter()
         .filter(|(name, _)| name != "__default__")
-        .filter(|(_, args)| mode_filter.map_or(true, |f| f == "__all__" || args.main_mode == f))
+        .filter(|(_, args)| mode_filter.map_or(true, |f| args.main_mode.starts_with(f)))
         .map(|(name, args)| {
             let brief = profile_pick_brief(&args);
             (name, brief)
@@ -398,10 +398,10 @@ fn load_pick_list(config_path: &str, pending_mode: Option<MainMode>) -> (Vec<Str
 }
 
 /// 统计各模式下的配置数量（供主菜单显示）
-fn count_profiles_by_mode(config_path: &str) -> [usize; 5] {
+fn count_profiles_by_mode(config_path: &str) -> [usize; 6] {
     let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
     let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
-    let mut counts = [0usize; 5];
+    let mut counts = [0usize; 6];
     for (name, args) in &configs {
         if name == "__default__" {
             continue;
@@ -411,7 +411,8 @@ fn count_profiles_by_mode(config_path: &str) -> [usize; 5] {
             "tcp-client" => counts[1] += 1,
             "rtu-server" => counts[2] += 1,
             "rtu-client" => counts[3] += 1,
-            "monitor" => counts[4] += 1,
+            _ if args.main_mode.to_ascii_lowercase().contains("tcp") => counts[4] += 1,
+            _ if args.main_mode.to_ascii_lowercase().contains("rtu") => counts[5] += 1,
             _ => {}
         }
     }
@@ -443,12 +444,13 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     );
 
     // --- 主菜单区：垂直排列 ---
-    let menu_items: [(&str, MainMode); 5] = [
+    let menu_items: [(&str, MainMode); 6] = [
         ("main_menu.tcp_server", MainMode::TcpServer),
         ("main_menu.tcp_client", MainMode::TcpClient),
         ("main_menu.rtu_server", MainMode::RTUServer),
         ("main_menu.rtu_client", MainMode::RTUClient),
-        ("main_menu.monitor", MainMode::Monitor),
+        ("main_menu.tcp_monitor", MainMode::TcpMonitor),
+        ("main_menu.rtu_monitor", MainMode::RtuMonitor),
     ];
     // 拉取配置列表统计各模式配置数
     let counts = count_profiles_by_mode(&ui.config_path);
@@ -497,7 +499,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     };
     let prefix = if is_selected { " ▸ " } else { "   " };
     lines.push(Line::from(Span::styled(
-        format!("{}[6] {}", prefix, t!("main_menu.profile_settings")),
+        format!("{}[7] {}", prefix, t!("main_menu.profile_settings")),
         p_style,
     )));
 
@@ -549,7 +551,8 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             MainMode::TcpClient => "TCP Client",
             MainMode::RTUServer => "RTU Server",
             MainMode::RTUClient => "RTU Client",
-            MainMode::Monitor => "Monitor",
+            MainMode::TcpMonitor => "TCP Monitor",
+            MainMode::RtuMonitor => "RTU Monitor",
         })
         .unwrap_or("?");
     let title = format!(
@@ -659,14 +662,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
-                    t!(
-                        "profile_pick.preview_mode",
-                        mode = if ui.pending_mode == Some(MainMode::Monitor) {
-                            profile_monitor_mode_label(args)
-                        } else {
-                            &args.main_mode
-                        }
-                    )
+                    t!("profile_pick.preview_mode", mode = &args.main_mode)
                 ),
                 Style::default(),
             )));
@@ -766,12 +762,28 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         vert[0],
     );
 
-    // 加载所有非系统配置并生成简介
+    // 过滤配置列表：只显示与当前监听模式传输层匹配的配置
     let config_str = std::fs::read_to_string(_config_path).unwrap_or_default();
     let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
     let all_names: Vec<&String> = configs.keys().filter(|k| *k != "__default__").collect();
     let mut entries: Vec<(String, String)> = all_names
         .iter()
+        .filter(|n| {
+            // 根据 pending_mode 过滤传输层
+            if let Some(args) = configs.get(n.as_str()) {
+                match ui.pending_mode {
+                    Some(MainMode::TcpMonitor) => {
+                        args.main_mode.to_ascii_lowercase().contains("tcp")
+                    }
+                    Some(MainMode::RtuMonitor) => {
+                        args.main_mode.to_ascii_lowercase().contains("rtu")
+                    }
+                    _ => true, // 未知模式不过滤
+                }
+            } else {
+                true
+            }
+        })
         .map(|n| {
             let brief = configs
                 .get(*n)
@@ -1017,7 +1029,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 
 /// 处理主菜单的按键事件（垂直导航）
 fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
-    const ITEM_COUNT: usize = 6; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), Monitor(4), Profile Settings(5)
+    const ITEM_COUNT: usize = 7; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), TCP Monitor(4), RTU Monitor(5), Profile Settings(6)
 
     fn enter_pick(ui: &mut Ui, config_path: &str, mode: MainMode) {
         ui.pending_mode = Some(mode);
@@ -1044,14 +1056,9 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
                 1 => enter_pick(ui, config_path, MainMode::TcpClient),
                 2 => enter_pick(ui, config_path, MainMode::RTUServer),
                 3 => enter_pick(ui, config_path, MainMode::RTUClient),
-                4 => {
-                    return Some(MenuSelection {
-                        main_mode: MainMode::Monitor,
-                        profile_name: None,
-                        quit: false,
-                    });
-                }
-                5 => {
+                4 => enter_pick(ui, config_path, MainMode::TcpMonitor),
+                5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
+                6 => {
                     ui.menu_screen = MenuScreen::ProfileSet;
                     ui.menu_list_idx = 0;
                 }
@@ -1063,15 +1070,9 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
             1 => enter_pick(ui, config_path, MainMode::TcpClient),
             2 => enter_pick(ui, config_path, MainMode::RTUServer),
             3 => enter_pick(ui, config_path, MainMode::RTUClient),
-            4 => {
-                // Monitor 模式直接返回 Selection（不需要配置）
-                return Some(MenuSelection {
-                    main_mode: MainMode::Monitor,
-                    profile_name: None,
-                    quit: false,
-                });
-            }
-            5 => {
+            4 => enter_pick(ui, config_path, MainMode::TcpMonitor),
+            5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
+            6 => {
                 // Profile Settings
                 ui.menu_screen = MenuScreen::ProfileSet;
                 ui.menu_list_idx = 0;
@@ -2004,7 +2005,7 @@ pub async fn run_ui(
     ui.config_path = config_path;
 
     // Monitor 模式默认开启监听面板
-    if args.main_mode == "monitor" {
+    if args.main_mode.contains("monitor") {
         ui.show_monitor = true;
     }
 
@@ -2598,7 +2599,7 @@ pub async fn run_ui(
                                                         let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
                                                         if let Some(profile_args) = configs.get(&pname) {
                                                             let mut args = profile_args.clone();
-                                                            args.main_mode = "monitor".to_string();
+        args.main_mode = "tcp-monitor".to_string();
                                                             if let Err(e) = crate::modbus::run_modbus_monitor_tcp(args, mon_state).await {
                                                                 eprintln!("监听任务失败: {}", e);
                                                             }
