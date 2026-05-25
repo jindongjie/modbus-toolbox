@@ -34,6 +34,8 @@ pub enum RegDataFormat {
     I32,
     U64,
     I64,
+    U128,
+    I128,
     F16,
     F32,
     F64,
@@ -49,6 +51,7 @@ impl RegDataFormat {
             | RegDataFormat::Binary | RegDataFormat::Ascii => 1,
             RegDataFormat::U32 | RegDataFormat::I32 | RegDataFormat::F32 => 2,
             RegDataFormat::U64 | RegDataFormat::I64 | RegDataFormat::F64 => 4,
+            RegDataFormat::U128 | RegDataFormat::I128 => 8,
         }
     }
 
@@ -60,6 +63,8 @@ impl RegDataFormat {
             RegDataFormat::I32 => "i32",
             RegDataFormat::U64 => "u64",
             RegDataFormat::I64 => "i64",
+            RegDataFormat::U128 => "u128",
+            RegDataFormat::I128 => "i128",
             RegDataFormat::F16 => "f16",
             RegDataFormat::F32 => "f32",
             RegDataFormat::F64 => "f64",
@@ -77,12 +82,25 @@ impl RegDataFormat {
             RegDataFormat::I32,
             RegDataFormat::U64,
             RegDataFormat::I64,
+            RegDataFormat::U128,
+            RegDataFormat::I128,
             RegDataFormat::F16,
             RegDataFormat::F32,
             RegDataFormat::F64,
             RegDataFormat::Binary,
             RegDataFormat::Ascii,
         ]
+    }
+
+    /// Cycle combination formats: u16 → i32 → u64 → i128 → u16 (based on register count)
+    pub fn next_combination(self) -> RegDataFormat {
+        match self {
+            RegDataFormat::U16 => RegDataFormat::I32,
+            RegDataFormat::I32 => RegDataFormat::U64,
+            RegDataFormat::U64 => RegDataFormat::I128,
+            RegDataFormat::I128 => RegDataFormat::U16,
+            _ => RegDataFormat::I32,
+        }
     }
 }
 
@@ -187,6 +205,11 @@ struct Args {
     #[serde(default)]
     labels: HashMap<String, String>,
 
+    /// 寄存器组合配置 (地址 → 数据格式，如 "0" → "i32" 表示地址0开始2个寄存器组合为i32)
+    #[arg(skip)]
+    #[serde(default)]
+    reg_combinations: HashMap<String, String>,
+
     /// 界面语言 (zh-CN 或 en)
     #[arg(long, default_value = "zh-CN")]
     #[serde(skip)]
@@ -218,6 +241,7 @@ impl Default for Args {
             swap_bytes: false,
             swap_words: false,
             labels: HashMap::new(),
+            reg_combinations: HashMap::new(),
             lang: "zh-CN".into(),
         }
     }
@@ -374,6 +398,10 @@ pub struct AppState {
     pub swap_bytes: bool,
     /// 是否交换字序
     pub swap_words: bool,
+    /// Holding 寄存器组合配置 (primary address → format)
+    pub holding_combinations: HashMap<usize, RegDataFormat>,
+    /// Input 寄存器组合配置 (primary address → format)
+    pub input_combinations: HashMap<usize, RegDataFormat>,
 }
 
 impl Default for AppState {
@@ -407,6 +435,8 @@ impl Default for AppState {
             reg_format: RegDataFormat::U16,
             swap_bytes: false,
             swap_words: false,
+            holding_combinations: HashMap::new(),
+            input_combinations: HashMap::new(),
         }
     }
 }
@@ -719,6 +749,21 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
     }
 }
 
+/// Parse combination format string to RegDataFormat
+fn parse_combination_format(s: &str) -> RegDataFormat {
+    match s.trim().to_lowercase().as_str() {
+        "i32" | "int32" => RegDataFormat::I32,
+        "u32" | "uint32" => RegDataFormat::U32,
+        "u64" | "uint64" => RegDataFormat::U64,
+        "i64" | "int64" => RegDataFormat::I64,
+        "u128" | "uint128" => RegDataFormat::U128,
+        "i128" | "int128" => RegDataFormat::I128,
+        "f32" | "float" => RegDataFormat::F32,
+        "f64" | "double" => RegDataFormat::F64,
+        _ => RegDataFormat::U16,
+    }
+}
+
 fn parse_parity(s: &str) -> Result<Parity> {
     match s.to_ascii_lowercase().as_str() {
         "n" | "none" => Ok(Parity::None),
@@ -824,6 +869,24 @@ fn format_i64(v: i64, base: DisplayBase) -> String {
     }
 }
 
+/// 将 u128 值按指定进制格式化
+fn format_u128(v: u128, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:032X}"),
+        DisplayBase::Bin => format!("0b{v:0128b}"),
+    }
+}
+
+/// 将 i128 值按指定进制格式化
+fn format_i128(v: i128, base: DisplayBase) -> String {
+    match base {
+        DisplayBase::Dec => format!("{v}"),
+        DisplayBase::Hex => format!("0x{v:032X}"),
+        DisplayBase::Bin => format!("0b{v:0128b}"),
+    }
+}
+
 /// 半精度浮点 (f16) 转字符串
 fn format_f16(h: u16) -> String {
     let sign = if (h & 0x8000) != 0 { -1.0 } else { 1.0 };
@@ -899,6 +962,28 @@ pub(crate) fn format_register_value(
                 | (words[2] as u64) << 16
                 | words[3] as u64) as i64;
             format_i64(v, base)
+        }
+        RegDataFormat::U128 => {
+            let v = (words[0] as u128) << 112
+                | (words[1] as u128) << 96
+                | (words[2] as u128) << 80
+                | (words[3] as u128) << 64
+                | (words[4] as u128) << 48
+                | (words[5] as u128) << 32
+                | (words[6] as u128) << 16
+                | words[7] as u128;
+            format_u128(v, base)
+        }
+        RegDataFormat::I128 => {
+            let v = ((words[0] as u128) << 112
+                | (words[1] as u128) << 96
+                | (words[2] as u128) << 80
+                | (words[3] as u128) << 64
+                | (words[4] as u128) << 48
+                | (words[5] as u128) << 32
+                | (words[6] as u128) << 16
+                | words[7] as u128) as i128;
+            format_i128(v, base)
         }
         RegDataFormat::F16 => format_f16(words[0]),
         RegDataFormat::F32 => {
@@ -1075,6 +1160,25 @@ async fn main() -> Result<()> {
             }
         }
     });
+    // Parse reg_combinations from profile into HashMap<usize, RegDataFormat>
+    let mut holding_combinations: HashMap<usize, RegDataFormat> = HashMap::new();
+    let mut input_combinations: HashMap<usize, RegDataFormat> = HashMap::new();
+    for (k, v) in &args.reg_combinations {
+        // Keys prefixed with "i:" are input register combinations, otherwise holding
+        if let Some(addr_str) = k.strip_prefix("i:") {
+            if let Ok(idx) = addr_str.parse::<usize>() {
+                let fmt = parse_combination_format(v);
+                if fmt != RegDataFormat::U16 {
+                    input_combinations.insert(idx, fmt);
+                }
+            }
+        } else if let Ok(idx) = k.parse::<usize>() {
+            let fmt = parse_combination_format(v);
+            if fmt != RegDataFormat::U16 {
+                holding_combinations.insert(idx, fmt);
+            }
+        }
+    }
     let state = Arc::new(RwLock::new(AppState {
         holding: vec![0u16; binding_count],
         holding_label,
@@ -1107,6 +1211,8 @@ async fn main() -> Result<()> {
         reg_format: RegDataFormat::U16,
         swap_bytes: false,
         swap_words: false,
+        holding_combinations,
+        input_combinations,
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

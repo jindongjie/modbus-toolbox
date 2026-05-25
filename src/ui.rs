@@ -37,6 +37,8 @@ fn parse_reg_format(s: &str) -> RegDataFormat {
         "i32" | "int32" => RegDataFormat::I32,
         "u64" | "uint64" => RegDataFormat::U64,
         "i64" | "int64" => RegDataFormat::I64,
+        "u128" | "uint128" => RegDataFormat::U128,
+        "i128" | "int128" => RegDataFormat::I128,
         "f16" | "half" => RegDataFormat::F16,
         "f32" | "float" => RegDataFormat::F32,
         "f64" | "double" => RegDataFormat::F64,
@@ -2470,12 +2472,21 @@ pub async fn run_ui(
                 // 提取现有的非空备注到用于保存的配置槽位中
                 let mut profile_args = args.clone();
                 profile_args.labels.clear();
+                profile_args.reg_combinations.clear();
                 {
                     let s = state.read().await;
                     for (i, label) in s.holding_label.iter().enumerate() {
                         if !label.is_empty() {
                             profile_args.labels.insert(i.to_string(), label.clone());
                         }
+                    }
+                    // Save holding combinations
+                    for (&addr, &fmt) in &s.holding_combinations {
+                        profile_args.reg_combinations.insert(addr.to_string(), fmt.short_label().to_string());
+                    }
+                    // Save input combinations with "i:" prefix
+                    for (&addr, &fmt) in &s.input_combinations {
+                        profile_args.reg_combinations.insert(format!("i:{}", addr), fmt.short_label().to_string());
                     }
                 }
 
@@ -2790,34 +2801,57 @@ pub async fn run_ui(
                                             ui.status_msg = None;
                                         }
 
-                                        // f: 循环切换寄存器数据解释格式（向前）
+                                        // f: 循环切换当前寄存器的组合格式 (u16 → i32 → u64 → i128 → u16)
                                         KeyCode::Char('f') => {
                                             if !is_monitor_mode && !ui.edit_mode {
-                                                let all = RegDataFormat::all();
-                                                let cur = ui.reg_format;
-                                                let next = all.iter().position(|&f| f == cur)
-                                                    .map(|i| all[(i + 1) % all.len()])
-                                                    .unwrap_or(RegDataFormat::U16);
+                                                let addr = ui.selected;
                                                 let mut s = state.write().await;
-                                                s.reg_format = next;
-                                                ui.reg_format = next;
-                                                drop(s);
-                                                set_status(&mut ui, format!("Format: {}", next.short_label()));
+                                                let combinations = match ui.reg_view {
+                                                    REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                    REG_VIEW_INPUT => &mut s.input_combinations,
+                                                    _ => &mut s.holding_combinations,
+                                                };
+                                                let cur_fmt = combinations.get(&addr).copied().unwrap_or(RegDataFormat::U16);
+                                                let next_fmt = cur_fmt.next_combination();
+                                                if next_fmt == RegDataFormat::U16 {
+                                                    combinations.remove(&addr);
+                                                    drop(s);
+                                                    set_status(&mut ui, t!("run_ui.combination_removed", addr = addr));
+                                                } else {
+                                                    combinations.insert(addr, next_fmt);
+                                                    drop(s);
+                                                    set_status(&mut ui, t!("run_ui.combination_set", addr = addr, fmt = next_fmt.short_label(), count = next_fmt.regs_needed()));
+                                                }
                                             }
                                         }
-                                        // F (Shift+F): 循环切换寄存器数据解释格式（向后）
+                                        // F (Shift+F): 循环切换当前寄存器的组合格式（向后: u16 → i128 → u64 → i32 → u16）
                                         KeyCode::Char('F') => {
                                             if !is_monitor_mode && !ui.edit_mode {
-                                                let all = RegDataFormat::all();
-                                                let cur = ui.reg_format;
-                                                let prev = all.iter().position(|&f| f == cur)
-                                                    .map(|i| all[(i + all.len() - 1) % all.len()])
-                                                    .unwrap_or(RegDataFormat::U64);
+                                                let addr = ui.selected;
                                                 let mut s = state.write().await;
-                                                s.reg_format = prev;
-                                                ui.reg_format = prev;
-                                                drop(s);
-                                                set_status(&mut ui, format!("Format: {}", prev.short_label()));
+                                                let combinations = match ui.reg_view {
+                                                    REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                    REG_VIEW_INPUT => &mut s.input_combinations,
+                                                    _ => &mut s.holding_combinations,
+                                                };
+                                                let cur_fmt = combinations.get(&addr).copied().unwrap_or(RegDataFormat::U16);
+                                                // Reverse cycle: u16 → i128, i128 → u64, u64 → i32, i32 → u16
+                                                let prev_fmt = match cur_fmt {
+                                                    RegDataFormat::U16 => RegDataFormat::I128,
+                                                    RegDataFormat::I32 => RegDataFormat::U16,
+                                                    RegDataFormat::U64 => RegDataFormat::I32,
+                                                    RegDataFormat::I128 => RegDataFormat::U64,
+                                                    _ => RegDataFormat::I128,
+                                                };
+                                                if prev_fmt == RegDataFormat::U16 {
+                                                    combinations.remove(&addr);
+                                                    drop(s);
+                                                    set_status(&mut ui, t!("run_ui.combination_removed", addr = addr));
+                                                } else {
+                                                    combinations.insert(addr, prev_fmt);
+                                                    drop(s);
+                                                    set_status(&mut ui, t!("run_ui.combination_set", addr = addr, fmt = prev_fmt.short_label(), count = prev_fmt.regs_needed()));
+                                                }
                                             }
                                         }
                                         // w: 切换字节序交换
@@ -3161,6 +3195,17 @@ pub async fn run_ui(
     res
 }
 
+/// Check if a register address is a secondary (non-primary) register in a combination
+fn is_secondary_register(addr: usize, combinations: &HashMap<usize, crate::RegDataFormat>) -> bool {
+    for (&primary_addr, &fmt) in combinations {
+        let count = fmt.regs_needed();
+        if addr > primary_addr && addr < primary_addr + count {
+            return true;
+        }
+    }
+    false
+}
+
 /// 渲染寄存器表格，支持所有 4 种寄存器类型
 fn render_register_table(
     f: &mut ratatui::Frame<'_>,
@@ -3314,14 +3359,35 @@ fn render_register_table(
         .iter()
         .skip(ui.scroll)
         .take(visible_rows.max(1))
-        .map(|&i| {
+        .filter_map(|&i| {
             let v = &items[i];
             if is_bool {
                 let val = if *v == 1 { "ON" } else { "OFF" };
-                Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)])
+                Some(Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)]))
             } else {
-                let mut val = format_register_value(items, i, ui.reg_format, ui.base, ui.swap_bytes, ui.swap_words);
+                // Check if this register is a secondary (disabled) register in a combination
+                let combinations = match ui.reg_view {
+                    REG_VIEW_HOLDING => &s.holding_combinations,
+                    REG_VIEW_INPUT => &s.input_combinations,
+                    _ => &s.holding_combinations,
+                };
+                if is_secondary_register(i, combinations) {
+                    return None; // Skip secondary registers
+                }
+
+                // Determine the format for this register
+                let reg_fmt = combinations.get(&i).copied().unwrap_or(ui.reg_format);
+                let mut val = format_register_value(items, i, reg_fmt, ui.base, ui.swap_bytes, ui.swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
+                // Show combination info in label if combined
+                if let Some(&combo_fmt) = combinations.get(&i) {
+                    let combo_label = format!("[{}×{}]", combo_fmt.regs_needed(), combo_fmt.short_label());
+                    if label.is_empty() {
+                        label = combo_label;
+                    } else {
+                        label = format!("{} {}", combo_label, label);
+                    }
+                }
                 // 编辑模式（仅 holding 支持编辑）
                 if ui.reg_view == REG_VIEW_HOLDING
                     && ui.edit_mode
@@ -3348,20 +3414,20 @@ fn render_register_table(
                 };
                 if ui.show_change_bar {
                     let bar_spans = render_change_bar(s, i);
-                    Row::new(vec![
+                    Some(Row::new(vec![
                         Cell::from(format!("{}", i)),
                         Cell::from(label),
                         Cell::from(val),
                         Cell::from(change_str),
                         Cell::from(Line::from(bar_spans)),
-                    ])
+                    ]))
                 } else {
-                    Row::new(vec![
+                    Some(Row::new(vec![
                         Cell::from(format!("{}", i)),
                         Cell::from(label),
                         Cell::from(val),
                         Cell::from(change_str),
-                    ])
+                    ]))
                 }
             }
         });
