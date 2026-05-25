@@ -3093,7 +3093,7 @@ pub async fn run_ui(
                                                 }
                                             }
                                         }
-                                        // Ctrl+L: Open CSV file picker for replay
+                                        // O: Open CSV file picker for replay
                                         KeyCode::Char('O') => {
                                             if is_monitor_mode {
                                                 ui.csv_files = list_csv_logs();
