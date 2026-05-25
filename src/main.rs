@@ -287,6 +287,8 @@ pub struct AppState {
     pub slave_scan_result: Option<Vec<(u8, Option<u16>)>>,
     /// 从设备扫描正在进行
     pub slave_scan_running: bool,
+    /// 每个寄存器的值变化条形图历史（每地址最多 20 个采样值）
+    pub reg_bar_history: Vec<Vec<u16>>,
 }
 
 impl Default for AppState {
@@ -316,6 +318,7 @@ impl Default for AppState {
             read_enabled: [true, false, false, false],
             slave_scan_result: None,
             slave_scan_running: false,
+            reg_bar_history: Vec::new(),
         }
     }
 }
@@ -368,6 +371,8 @@ fn format_system_time(t: std::time::SystemTime) -> String {
     }
 }
 
+pub const BAR_HISTORY_SLOTS: usize = 20;
+
 /// 记录寄存器值变化
 pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_value: u16) {
     const MAX_CHANGES: usize = 500;
@@ -395,6 +400,15 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
         state.reg_just_changed[addr] = true;
         state.reg_change_direction[addr] = direction;
     }
+    // 更新条形图历史
+    while state.reg_bar_history.len() <= addr {
+        state.reg_bar_history.push(Vec::with_capacity(BAR_HISTORY_SLOTS));
+    }
+    let bar = &mut state.reg_bar_history[addr];
+    if bar.len() >= BAR_HISTORY_SLOTS {
+        bar.remove(0);
+    }
+    bar.push(new_value);
 }
 
 /// 计算单个寄存器的值（基于其变化模式）
@@ -506,6 +520,9 @@ pub async fn run_register_simulator(
         }
         while s.reg_just_changed.len() < s.holding.len() + s.input_registers.len() {
             s.reg_just_changed.push(false);
+        }
+        while s.reg_bar_history.len() < s.holding.len() + s.input_registers.len() {
+            s.reg_bar_history.push(Vec::with_capacity(BAR_HISTORY_SLOTS));
         }
 
         // --- 更新每个保持寄存器 ---
@@ -783,6 +800,7 @@ async fn main() -> Result<()> {
         read_enabled: [true, false, false, false],
         slave_scan_result: None,
         slave_scan_running: false,
+        reg_bar_history: vec![vec![]; max_count],
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

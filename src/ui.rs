@@ -26,7 +26,7 @@ use ratatui::{
 // crate
 use crate::{
     format_u16, modbus::frame_bytes_from_info, modbus::RegCmd, parse_u16_str, AppState, Args,
-    DisplayBase, FrameInfo, FrameRecord, MainMode, MonitorStats,
+    DisplayBase, FrameInfo, FrameRecord, MainMode, MonitorStats, BAR_HISTORY_SLOTS,
 };
 const UI_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -91,6 +91,10 @@ pub struct Ui {
     field_edit_buf: String,
     /// 是否正在编辑字段值（true=编辑模式，false=导航模式）
     field_edit_mode: bool,
+    /// 可用串口列表（启动时预检测并缓存）
+    serial_ports: Vec<String>,
+    /// 串口端口索引（用于设备字段编辑时循环选择）
+    serial_port_idx: usize,
 
     // --- 新增/克隆配置相关字段 ---
     /// 新增/克隆时的名称输入缓冲
@@ -133,6 +137,8 @@ pub struct Ui {
     pattern_dialog_freq_buf: String,
     /// 临时存储的频率值
     pattern_dialog_freq: f64,
+    /// 是否显示值变化历史条形图
+    show_change_bar: bool,
 }
 
 /// 寄存器视图类型常量
@@ -147,6 +153,11 @@ impl Ui {
         let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
         logo_lines.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
         let default = profiles.first().cloned();
+        // 检测可用串口列表
+        let serial_ports = tokio_serial::available_ports()
+            .ok()
+            .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
+            .unwrap_or_default();
         Self {
             base,
             selected: 0,
@@ -168,12 +179,14 @@ impl Ui {
             pending_mode: None,
             default_profile: default,
             logo_lines,
+            serial_ports,
 
             // 配置编辑
             edit_profile_name: None,
             edit_args: None,
             field_edit_buf: String::new(),
             field_edit_mode: false,
+            serial_port_idx: 0,
 
             // 新增/克隆
             name_prompt_buf: String::new(),
@@ -198,6 +211,7 @@ impl Ui {
             pattern_dialog_editing_freq: false,
             pattern_dialog_freq_buf: String::new(),
             pattern_dialog_freq: 1.0,
+            show_change_bar: false,
         }
     }
 }
@@ -776,6 +790,42 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                 }
             }
         }
+        KeyCode::Char('d') => {
+            // 删除选中配置（需两次确认）
+            if ui.menu_list_idx < ui.profiles.len() {
+                let name = ui.profiles[ui.menu_list_idx].clone();
+                let confirm_key = t!("profile_settings.delete_confirm", name = &name);
+                let is_confirming = ui.status_msg.as_deref() == Some(confirm_key.as_ref());
+                if is_confirming {
+                    // 第二次按 d：执行删除
+                    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+                    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+                    configs.remove(&name);
+                    if let Ok(s) = toml::to_string_pretty(&configs) {
+                        if std::fs::write(config_path, s).is_ok() {
+                            // 重新加载列表
+                            let mut reloaded = load_profile_list(config_path);
+                            reloaded.sort();
+                            ui.profiles = reloaded;
+                            ui.menu_list_idx = ui.menu_list_idx.min(ui.profiles.len().saturating_sub(1));
+                            // 如果删除的是默认配置，清除默认
+                            if ui.default_profile.as_deref() == Some(&name) {
+                                ui.default_profile = None;
+                                let _ = save_default_profile(config_path, "");
+                            }
+                            set_status(ui, t!("profile_settings.delete_success", name = &name));
+                        } else {
+                            set_status(ui, t!("profile_settings.delete_fail"));
+                        }
+                    } else {
+                        set_status(ui, t!("profile_settings.delete_fail"));
+                    }
+                } else {
+                    // 第一次按 d：显示确认提示
+                    set_status(ui, confirm_key);
+                }
+            }
+        }
         KeyCode::Esc => {
             ui.menu_screen = MenuScreen::Main;
         }
@@ -799,6 +849,8 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 struct ProfileField {
     /// 字段名（i18n key 后缀）
     name_key: &'static str,
+    /// 字段适用模式: "tcp", "rtu", "all"
+    mode: &'static str,
     /// 从 Args 中提取当前值的显示字符串
     display: Box<dyn Fn(&Args) -> String>,
     /// 将字符串解析为新值并设置到 Args 中
@@ -846,41 +898,49 @@ fn profile_fields() -> Vec<ProfileField> {
     vec![
         ProfileField {
             name_key: "main_mode",
+            mode: "all",
             display: Box::new(main_mode_display),
             apply: Box::new(main_mode_apply),
         },
         ProfileField {
             name_key: "tcp_port",
+            mode: "tcp",
             display: num_display(|a: &Args| a.tcp_port),
             apply: num_apply(|a: &mut Args, v| a.tcp_port = v, "TCP端口"),
         },
         ProfileField {
             name_key: "unit",
+            mode: "all",
             display: num_display(|a: &Args| a.unit),
             apply: num_apply(|a: &mut Args, v| a.unit = v, "从站地址"),
         },
         ProfileField {
             name_key: "holding_count",
+            mode: "all",
             display: num_display(|a: &Args| a.holding_count),
             apply: num_apply(|a: &mut Args, v| a.holding_count = v, "寄存器数"),
         },
         ProfileField {
             name_key: "client_tick_ms",
+            mode: "all",
             display: num_display(|a: &Args| a.client_tick_ms),
             apply: num_apply(|a: &mut Args, v| a.client_tick_ms = v, "轮询间隔"),
         },
         ProfileField {
             name_key: "device",
+            mode: "rtu",
             display: Box::new(|a: &Args| a.device.clone()),
             apply: str_apply(|a: &mut Args, v| a.device = v),
         },
         ProfileField {
             name_key: "baudrate",
+            mode: "rtu",
             display: num_display(|a: &Args| a.baudrate),
             apply: num_apply(|a: &mut Args, v| a.baudrate = v, "波特率"),
         },
         ProfileField {
             name_key: "parity",
+            mode: "rtu",
             display: Box::new(|a: &Args| a.parity.clone()),
             apply: Box::new(|a: &mut Args, v: &str| {
                 let v = v.trim().to_lowercase();
@@ -895,6 +955,7 @@ fn profile_fields() -> Vec<ProfileField> {
         },
         ProfileField {
             name_key: "flow",
+            mode: "rtu",
             display: Box::new(|a: &Args| a.flow.clone()),
             apply: Box::new(|a: &mut Args, v: &str| {
                 let v = v.trim().to_lowercase();
@@ -909,6 +970,7 @@ fn profile_fields() -> Vec<ProfileField> {
         },
         ProfileField {
             name_key: "databits",
+            mode: "rtu",
             display: num_display(|a: &Args| a.databits),
             apply: Box::new(|a: &mut Args, v: &str| {
                 let val: u8 = v
@@ -924,6 +986,7 @@ fn profile_fields() -> Vec<ProfileField> {
         },
         ProfileField {
             name_key: "stopbits",
+            mode: "rtu",
             display: num_display(|a: &Args| a.stopbits),
             apply: Box::new(|a: &mut Args, v: &str| {
                 let val: u8 = v
@@ -977,7 +1040,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     let main =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(vert[1]);
 
-    // 左：字段列表
+    // 左：字段列表（含模式标签）
     let mut lines: Vec<Line> = Vec::new();
     for (i, field) in fields.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
@@ -985,6 +1048,11 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         let val = (field.display)(args);
         let label_key = format!("profile_edit.{}", field.name_key);
         let label = t!(&label_key);
+        let mode_tag = match field.mode {
+            "tcp" => t!("profile_edit.field_mode_tcp"),
+            "rtu" => t!("profile_edit.field_mode_rtu"),
+            _ => t!("profile_edit.field_mode_all"),
+        };
 
         let line = if is_selected {
             Line::from(vec![
@@ -994,12 +1062,22 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(val, Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::styled(
+                    mode_tag,
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                ),
             ])
         } else {
             Line::from(vec![
                 Span::raw("   "),
                 Span::styled(format!("{}: ", label), Style::default()),
                 Span::styled(val, Style::default().fg(Color::Green)),
+                Span::raw(" "),
+                Span::styled(
+                    mode_tag,
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                ),
             ])
         };
         lines.push(line);
@@ -1031,6 +1109,40 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             )),
             Line::from(Span::raw("")),
         ];
+
+        // 如果是 device 字段编辑，显示可用串口列表
+        if field.name_key == "device" && !ui.serial_ports.is_empty() {
+            edit_lines.push(Line::from(Span::styled(
+                t!("profile_edit.device_port_list"),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            for (_pi, port) in ui.serial_ports.iter().enumerate() {
+                let selected_port = &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
+                if port == selected_port {
+                    edit_lines.push(Line::from(vec![
+                        Span::styled(" ● ", Style::default().fg(Color::Cyan)),
+                        Span::styled(port.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    ]));
+                } else {
+                    edit_lines.push(Line::from(vec![
+                        Span::raw(" ○ "),
+                        Span::styled(port.clone(), Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
+            edit_lines.push(Line::from(Span::raw("")));
+            edit_lines.push(Line::from(Span::styled(
+                t!("profile_edit.serial_hint"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else if field.name_key == "device" && ui.serial_ports.is_empty() {
+            edit_lines.push(Line::from(Span::styled(
+                t!("profile_edit.device_no_ports"),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+            )));
+            edit_lines.push(Line::from(Span::raw("")));
+        }
+
         // 如有校验提示，添加提示信息
         let hint = match field.name_key {
             "main_mode" => "ts/tc/rs/rc 或 tcp-client/tcp-server/rtu-client/rtu-server",
@@ -1139,6 +1251,24 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
             }
             KeyCode::Backspace => {
                 ui.field_edit_buf.pop();
+            }
+            KeyCode::Tab | KeyCode::Down => {
+                // 在 device 字段编辑时，Tab/↓ 切换到下一个可用串口
+                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
+                if fields[idx].name_key == "device" && !ui.serial_ports.is_empty() {
+                    let len = ui.serial_ports.len();
+                    ui.serial_port_idx = (ui.serial_port_idx + 1) % len;
+                    ui.field_edit_buf = ui.serial_ports[ui.serial_port_idx].clone();
+                }
+            }
+            KeyCode::Up => {
+                // 在 device 字段编辑时，↑ 切换到上一个可用串口
+                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
+                if fields[idx].name_key == "device" && !ui.serial_ports.is_empty() {
+                    let len = ui.serial_ports.len();
+                    ui.serial_port_idx = (ui.serial_port_idx + len - 1) % len;
+                    ui.field_edit_buf = ui.serial_ports[ui.serial_port_idx].clone();
+                }
             }
             KeyCode::Char(ch) => {
                 ui.field_edit_buf.push(ch);
@@ -1741,6 +1871,12 @@ pub async fn run_ui(
                                 {
                                     *server_status.write().await = None;
                                     ui.status_msg = None;
+                                    ui.show_change_bar = !ui.show_change_bar;
+                                    if ui.show_change_bar {
+                                        set_status(&mut ui, t!("run_ui.change_bar_on"));
+                                    } else {
+                                        set_status(&mut ui, t!("run_ui.change_bar_off"));
+                                    }
                                 }
 
                                 if !ui.edit_mode
@@ -2345,6 +2481,23 @@ fn render_register_table(
             ],
             vec![Constraint::Length(18), Constraint::Min(16)],
         )
+    } else if ui.show_change_bar {
+        (
+            vec![
+                Cell::from(t!("register_table.col_addr")),
+                Cell::from(t!("register_table.col_label")),
+                Cell::from(t!("register_table.col_value")),
+                Cell::from(t!("register_table.col_change")),
+                Cell::from(t!("register_table.col_bar")),
+            ],
+            vec![
+                Constraint::Length(18),
+                Constraint::Length(36),
+                Constraint::Min(10),
+                Constraint::Length(6),
+                Constraint::Length(BAR_HISTORY_SLOTS as u16),
+            ],
+        )
     } else {
         (
             vec![
@@ -2403,12 +2556,23 @@ fn render_register_table(
                 } else {
                     String::new()
                 };
-                Row::new(vec![
-                    Cell::from(format!("{}", i)),
-                    Cell::from(label),
-                    Cell::from(val),
-                    Cell::from(change_str),
-                ])
+                if ui.show_change_bar {
+                    let bar_spans = render_change_bar(s, i);
+                    Row::new(vec![
+                        Cell::from(format!("{}", i)),
+                        Cell::from(label),
+                        Cell::from(val),
+                        Cell::from(change_str),
+                        Cell::from(Line::from(bar_spans)),
+                    ])
+                } else {
+                    Row::new(vec![
+                        Cell::from(format!("{}", i)),
+                        Cell::from(label),
+                        Cell::from(val),
+                        Cell::from(change_str),
+                    ])
+                }
             }
         });
 
@@ -2438,6 +2602,46 @@ fn render_register_table(
     }
 
     f.render_stateful_widget(t, area, &mut table_state);
+}
+
+/// 渲染值变化历史条形图
+fn render_change_bar(s: &AppState, addr: usize) -> Vec<Span<'static>> {
+    let history = if addr < s.reg_bar_history.len() {
+        &s.reg_bar_history[addr]
+    } else {
+        return vec![Span::styled(
+            "·".repeat(BAR_HISTORY_SLOTS),
+            Style::default().fg(Color::DarkGray),
+        )];
+    };
+    if history.is_empty() {
+        return vec![Span::styled(
+            "·".repeat(BAR_HISTORY_SLOTS),
+            Style::default().fg(Color::DarkGray),
+        )];
+    }
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(BAR_HISTORY_SLOTS);
+    // 第一个值无前驱，用暗色方块
+    spans.push(Span::styled("·", Style::default().fg(Color::DarkGray)));
+    for i in 1..history.len() {
+        let prev = history[i - 1];
+        let curr = history[i];
+        if curr < prev {
+            // 值变小 → 绿色
+            spans.push(Span::styled("▃", Style::default().fg(Color::Green)));
+        } else if curr > prev {
+            // 值变大 → 红色
+            spans.push(Span::styled("▇", Style::default().fg(Color::Red)));
+        } else {
+            // 无变化 → 暗色
+            spans.push(Span::styled("·", Style::default().fg(Color::DarkGray)));
+        }
+    }
+    // 填充剩余空位至 BAR_HISTORY_SLOTS
+    while spans.len() < BAR_HISTORY_SLOTS {
+        spans.push(Span::styled("·", Style::default().fg(Color::DarkGray)));
+    }
+    spans
 }
 
 /// 构建字节流面板的显示文本
