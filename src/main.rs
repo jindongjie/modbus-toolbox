@@ -8,7 +8,6 @@ use tokio_serial::{DataBits, FlowControl, Parity, StopBits};
 mod ui;
 use crate::ui::MenuSelection;
 use modbus::*;
-use serde;
 use ui::*;
 
 #[macro_use]
@@ -480,7 +479,7 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
         addr,
         old_value,
         new_value,
-        direction: direction.clone(),
+        direction,
         human_time,
     };
     if state.reg_change_history.len() >= MAX_CHANGES {
@@ -1160,16 +1159,15 @@ async fn main() -> Result<()> {
 
         r
     });
-    let ui_res;
     // 加载配置列表（供监听模式使用）
     let config_path = cli_args.config.clone();
     let profiles = load_profile_list(&config_path);
-    if main_mode == MainMode::TcpClient
+    let ui_res = if main_mode == MainMode::TcpClient
         || main_mode == MainMode::RTUClient
         || main_mode == MainMode::TcpMonitor
         || main_mode == MainMode::RtuMonitor
     {
-        ui_res = run_ui(
+        run_ui(
             Arc::clone(&state),
             client_tx,
             args,
@@ -1177,9 +1175,9 @@ async fn main() -> Result<()> {
             config_path,
             profiles,
         )
-        .await;
+        .await
     } else {
-        ui_res = run_ui(
+        run_ui(
             Arc::clone(&state),
             server_tx,
             args,
@@ -1187,8 +1185,8 @@ async fn main() -> Result<()> {
             config_path,
             profiles,
         )
-        .await;
-    }
+        .await
+    };
 
     inner_task.abort();
     let _ = inner_task.await;

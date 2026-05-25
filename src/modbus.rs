@@ -295,7 +295,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x03,
-                                func_name: format!("读保持寄存器"),
+                                func_name: "读保持寄存器".to_string(),
                                 addr: addr as u16,
                                 values: values.clone(),
                                 is_request: false,
@@ -340,7 +340,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x06,
-                                func_name: format!("写单寄存器"),
+                                func_name: "写单寄存器".to_string(),
                                 addr: addr as u16,
                                 values: vec![value],
                                 is_request: false,
@@ -387,8 +387,8 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x10,
-                                func_name: format!("写多寄存器"),
-                                addr: addr as u16,
+                                func_name: "写多寄存器".to_string(),
+                                addr,
                                 values: values.to_vec(),
                                 is_request: false,
                             };
@@ -433,7 +433,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x01,
-                                func_name: format!("读线圈"),
+                                func_name: "读线圈".to_string(),
                                 addr: addr as u16,
                                 values: values
                                     .iter()
@@ -481,7 +481,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x05,
-                                func_name: format!("写单线圈"),
+                                func_name: "写单线圈".to_string(),
                                 addr: addr as u16,
                                 values: vec![if value { 0xFF00u16 } else { 0x0000u16 }],
                                 is_request: false,
@@ -528,7 +528,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x0F,
-                                func_name: format!("写多线圈"),
+                                func_name: "写多线圈".to_string(),
                                 addr: addr as u16,
                                 values: values
                                     .to_vec()
@@ -578,7 +578,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x02,
-                                func_name: format!("读离散输入"),
+                                func_name: "读离散输入".to_string(),
                                 addr: addr as u16,
                                 values: values
                                     .iter()
@@ -627,7 +627,7 @@ impl tokio_modbus::server::Service for HoldingService {
                                 is_tcp,
                                 unit,
                                 func_code: 0x04,
-                                func_name: format!("读输入寄存器"),
+                                func_name: "读输入寄存器".to_string(),
                                 addr: addr as u16,
                                 values: values.clone(),
                                 is_request: false,
@@ -796,10 +796,9 @@ pub async fn client_read_write_loop(
                             let end = (offset + values.len()).min(s.holding.len());
                             let write_len = end.saturating_sub(offset);
                             if write_len > 0 {
-                                for i in 0..write_len {
+                                for (i, &new) in values.iter().enumerate().take(write_len) {
                                     let idx = offset + i;
                                     let old = s.holding[idx];
-                                    let new = values[i];
                                     if old != new {
                                         s.holding[idx] = new;
                                         crate::record_reg_change(&mut s, idx, old, new);
@@ -852,10 +851,9 @@ pub async fn client_read_write_loop(
                             let end = (offset + values.len()).min(s.coils.len());
                             let write_len = end.saturating_sub(offset);
                             if write_len > 0 {
-                                for i in 0..write_len {
+                                for (i, &new) in values.iter().enumerate().take(write_len) {
                                     let idx = offset + i;
                                     let old = s.coils[idx];
-                                    let new = values[i];
                                     if old != new {
                                         s.coils[idx] = new;
                                         crate::record_reg_change(
@@ -916,9 +914,9 @@ pub async fn client_read_write_loop(
                             let end = (offset + values.len()).min(s.discrete.len());
                             let write_len = end.saturating_sub(offset);
                             if write_len > 0 {
-                                for i in 0..write_len {
+                                for (i, &new) in values.iter().enumerate().take(write_len) {
                                     let idx = offset + i;
-                                    s.discrete[idx] = values[i];
+                                    s.discrete[idx] = new;
                                 }
                             }
                             if write_len > 0 {
@@ -970,9 +968,9 @@ pub async fn client_read_write_loop(
                             let end = (offset + values.len()).min(s.input_registers.len());
                             let write_len = end.saturating_sub(offset);
                             if write_len > 0 {
-                                for i in 0..write_len {
+                                for (i, &new) in values.iter().enumerate().take(write_len) {
                                     let idx = offset + i;
-                                    s.input_registers[idx] = values[i];
+                                    s.input_registers[idx] = new;
                                 }
                             }
                             if write_len > 0 {
@@ -1189,10 +1187,9 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
                         let end = (offset + values.len()).min(s.holding.len());
                         let write_len = end.saturating_sub(offset);
                         if write_len > 0 {
-                            for i in 0..write_len {
+                            for (i, &new) in values.iter().enumerate().take(write_len) {
                                 let idx = offset + i;
                                 let old = s.holding[idx];
-                                let new = values[i];
                                 if old != new {
                                     s.holding[idx] = new;
                                     crate::record_reg_change(&mut s, idx, old, new);
@@ -1276,7 +1273,7 @@ pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
             let mut raw = Vec::new();
             raw.push(fi.func_code);
             let bit_count = fi.values.len();
-            let byte_count = (bit_count + 7) / 8;
+            let byte_count = bit_count.div_ceil(8);
             raw.push(byte_count as u8);
             // 将 bool 值打包为字节
             let mut packed = vec![0u8; byte_count];
@@ -1417,12 +1414,13 @@ pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
             let mut bytes: Vec<u8> = Vec::new();
             let addr = fi.addr;
             let qty = fi.values.len() as u16;
-            let mut raw = Vec::new();
-            raw.push(fi.func_code);
-            raw.push((addr >> 8) as u8);
-            raw.push((addr & 0xFF) as u8);
-            raw.push((qty >> 8) as u8);
-            raw.push((qty & 0xFF) as u8);
+            let raw = vec![
+                fi.func_code,
+                (addr >> 8) as u8,
+                (addr & 0xFF) as u8,
+                (qty >> 8) as u8,
+                (qty & 0xFF) as u8,
+            ];
             if is_tcp {
                 bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
                 bytes.push(0x00);
@@ -1443,12 +1441,7 @@ pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
             let mut bytes: Vec<u8> = Vec::new();
             let addr = fi.addr;
             let qty = fi.values.len() as u16;
-            let mut raw = Vec::new();
-            raw.push(fi.func_code);
-            raw.push((addr >> 8) as u8);
-            raw.push((addr & 0xFF) as u8);
-            raw.push((qty >> 8) as u8);
-            raw.push((qty & 0xFF) as u8);
+            let raw = vec![fi.func_code, (addr >> 8) as u8, (addr & 0xFF) as u8, (qty >> 8) as u8, (qty & 0xFF) as u8];
             if is_tcp {
                 bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
                 bytes.push(0x00);

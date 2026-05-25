@@ -267,7 +267,7 @@ impl Ui {
 }
 
 /// 获取当前寄存器视图的数据和可选标签
-fn reg_view_data<'a>(s: &'a AppState, reg_view: usize) -> (&'a [u16], Option<&'a [String]>) {
+fn reg_view_data(s: &AppState, reg_view: usize) -> (&[u16], Option<&[String]>) {
     match reg_view {
         REG_VIEW_HOLDING => (&s.holding, Some(&s.holding_label)),
         REG_VIEW_COILS => {
@@ -340,8 +340,10 @@ fn save_default_profile(config_path: &str, name: &str) -> Result<()> {
     let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
     let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
     // 把默认配置名存为 key "default" 的特殊配置，只存一个 name 字段
-    let mut default_args = Args::default();
-    default_args.main_mode = name.to_string(); // 借用 main_mode 字段存储默认配置名
+    let default_args = Args {
+        main_mode: name.to_string(),
+        ..Default::default()
+    };
     configs.insert("__default__".to_string(), default_args);
     let s = toml::to_string_pretty(&configs)?;
     std::fs::write(config_path, s)?;
@@ -415,7 +417,7 @@ fn load_pick_list(config_path: &str, pending_mode: Option<MainMode>) -> (Vec<Str
     let mut entries: Vec<(String, String)> = configs
         .into_iter()
         .filter(|(name, _)| name != "__default__")
-        .filter(|(_, args)| mode_filter.map_or(true, |f| args.main_mode.starts_with(f)))
+        .filter(|(_, args)| mode_filter.is_none_or(|f| args.main_mode.starts_with(f)))
         .map(|(name, args)| {
             let brief = profile_pick_brief(&args);
             (name, brief)
@@ -828,7 +830,7 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .map(|n| {
             let brief = configs
                 .get(*n)
-                .map(|a| profile_pick_brief(a))
+                .map(profile_pick_brief)
                 .unwrap_or_default();
             ((*n).clone(), brief)
         })
@@ -1304,7 +1306,11 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 // 配置字段编辑：字段定义、渲染、按键处理
 // ─────────────────────────────────────────
 
+type FieldApply = Box<dyn Fn(&mut Args, &str) -> Result<(), String>>;
+type FieldDisplay = Box<dyn Fn(&Args) -> String>;
+
 /// 可编辑的配置字段描述
+#[allow(clippy::type_complexity)]
 struct ProfileField {
     /// 字段名（i18n key 后缀）
     name_key: &'static str,
@@ -1334,14 +1340,13 @@ fn profile_fields() -> Vec<ProfileField> {
         }
         Ok(())
     }
-    fn num_display<T: ToString + 'static>(f: fn(&Args) -> T) -> Box<dyn Fn(&Args) -> String> {
+    fn num_display<T: ToString + 'static>(f: fn(&Args) -> T) -> FieldDisplay {
         Box::new(move |a| f(a).to_string())
     }
     fn num_apply<T: std::str::FromStr + 'static>(
         set: fn(&mut Args, T),
         name: &'static str,
-    ) -> Box<dyn Fn(&mut Args, &str) -> Result<(), String>> {
-        let name = name;
+    ) -> FieldApply {
         Box::new(move |a, v| {
             let v = v.trim();
             v.parse::<T>()
@@ -1349,7 +1354,7 @@ fn profile_fields() -> Vec<ProfileField> {
                 .map_err(|_| format!("{name} 必须是有效数字"))
         })
     }
-    fn str_apply(set: fn(&mut Args, String)) -> Box<dyn Fn(&mut Args, &str) -> Result<(), String>> {
+    fn str_apply(set: fn(&mut Args, String)) -> FieldApply {
         Box::new(move |a, v| {
             set(a, v.to_string());
             Ok(())
@@ -1588,7 +1593,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )));
-            for (_pi, port) in ui.serial_ports.iter().enumerate() {
+            for port in ui.serial_ports.iter() {
                 let selected_port = &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
                 if port == selected_port {
                     edit_lines.push(Line::from(vec![
@@ -2371,8 +2376,7 @@ pub async fn run_ui(
                             None => continue,
                         };
 
-                        match ev {
-                            Event::Key(KeyEvent { code, modifiers, kind, .. }) => {
+                        if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = ev {
                                 if kind != crossterm::event::KeyEventKind::Press {
                                     continue;
                                 }
@@ -2427,7 +2431,7 @@ pub async fn run_ui(
                                         KeyCode::Enter if ui.pattern_dialog_editing_freq => {
                                             // 确认频率编辑
                                             if let Ok(f) = ui.pattern_dialog_freq_buf.parse::<f64>() {
-                                                let f = f.max(0.01).min(1000.0);
+                                                let f = f.clamp(0.01, 1000.0);
                                                 ui.pattern_dialog_freq = f;
                                             }
                                             ui.pattern_dialog_editing_freq = false;
@@ -2565,12 +2569,9 @@ pub async fn run_ui(
                                         }
 
                                         KeyCode::Char(ch) => {
-                                            if ui.edit_is_label || ui.edit_is_profile {
+                                            ui.status_msg = None;
+                                            if ui.edit_is_label || ui.edit_is_profile || edit_accepts_char(&ui.edit_buf, ch, ui.base) {
                                                 ui.edit_buf.push(ch);
-                                                ui.status_msg = None;
-                                            } else if edit_accepts_char(&ui.edit_buf, ch, ui.base) {
-                                                ui.edit_buf.push(ch);
-                                                ui.status_msg = None;
                                             } else {
                                                 set_status(
                                                     &mut ui,
@@ -2672,7 +2673,7 @@ pub async fn run_ui(
                                                     let cfg_path = ui.config_path.clone();
                                                     let pname = name.clone();
                                                     let mon_state = Arc::clone(&state);
-                                                    let _ = tokio::spawn(async move {
+                                                    tokio::spawn(async move {
                                                         let config_str = std::fs::read_to_string(&cfg_path).unwrap_or_default();
                                                         let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
                                                         if let Some(profile_args) = configs.get(&pname) {
@@ -3145,8 +3146,6 @@ pub async fn run_ui(
                                     }
                                 }
                             }
-                            _ => {}
-                        }
                     }
 
                     _ = tokio::signal::ctrl_c() => {
