@@ -329,6 +329,15 @@ fn load_default_profile(config_path: &str) -> Option<String> {
 // 菜单渲染与事件处理
 // ─────────────────────────────────────────
 
+/// 根据 Args 中的传输层类型返回监视模式标签
+fn profile_monitor_mode_label(args: &Args) -> &'static str {
+    if args.main_mode.to_ascii_lowercase().contains("tcp") {
+        "tcp-monitor"
+    } else {
+        "rtu-monitor"
+    }
+}
+
 /// 生成配置的单行简介文本
 fn profile_pick_brief(args: &Args) -> String {
     let mode_short = match args.main_mode.to_ascii_lowercase().as_str() {
@@ -650,7 +659,14 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
-                    t!("profile_pick.preview_mode", mode = args.main_mode)
+                    t!(
+                        "profile_pick.preview_mode",
+                        mode = if ui.pending_mode == Some(MainMode::Monitor) {
+                            profile_monitor_mode_label(args)
+                        } else {
+                            &args.main_mode
+                        }
+                    )
                 ),
                 Style::default(),
             )));
@@ -831,7 +847,10 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
-                    t!("profile_pick.preview_mode", mode = args.main_mode)
+                    t!(
+                        "profile_pick.preview_mode",
+                        mode = profile_monitor_mode_label(args)
+                    )
                 ),
                 Style::default(),
             )));
