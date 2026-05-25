@@ -2,8 +2,11 @@ name: Build and Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+  release:
+    types: [created]
 
 permissions:
   contents: write
