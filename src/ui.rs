@@ -644,37 +644,48 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             )));
             lines.push(Line::from(Span::raw("")));
             lines.push(Line::from(Span::styled(
-                format!("  {}: {}", t!("profile_pick.preview_name"), sel_name),
+                format!("  {}", t!("profile_pick.preview_name", name = sel_name)),
                 Style::default().fg(Color::Green),
             )));
             lines.push(Line::from(Span::styled(
-                format!("  {}: {}", t!("profile_pick.preview_mode"), args.main_mode),
+                format!(
+                    "  {}",
+                    t!("profile_pick.preview_mode", mode = args.main_mode)
+                ),
                 Style::default(),
             )));
             lines.push(Line::from(Span::styled(
-                format!("  {}: {}", t!("profile_pick.preview_unit"), args.unit),
+                format!("  {}", t!("profile_pick.preview_unit", unit = args.unit)),
                 Style::default(),
             )));
             lines.push(Line::from(Span::styled(
                 format!(
-                    "  {}: {}",
-                    t!("profile_pick.preview_count"),
-                    args.holding_count
+                    "  {}",
+                    t!("profile_pick.preview_count", count = args.holding_count)
                 ),
                 Style::default(),
             )));
             if args.main_mode.to_ascii_lowercase().contains("tcp") {
                 lines.push(Line::from(Span::styled(
-                    format!("  {}: {}", t!("profile_pick.preview_port"), args.tcp_port),
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_port", port = args.tcp_port)
+                    ),
                     Style::default(),
                 )));
             } else {
                 lines.push(Line::from(Span::styled(
-                    format!("  {}: {}", t!("profile_pick.preview_device"), args.device),
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_device", device = args.device)
+                    ),
                     Style::default(),
                 )));
                 lines.push(Line::from(Span::styled(
-                    format!("  {}: {}", t!("profile_pick.preview_baud"), args.baudrate),
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_baud", baud = args.baudrate)
+                    ),
                     Style::default(),
                 )));
             }
@@ -791,11 +802,101 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             Style::default().fg(Color::DarkGray),
         )));
     }
+    // 左侧列表 + 右侧预览
+    let main =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(vert[1]);
+
     let list_block = Block::default()
         .borders(Borders::ALL)
         .title(t!("run_ui.monitor_profile_pick_list_title"))
         .border_style(Style::default().fg(Color::Cyan));
-    f.render_widget(Paragraph::new(items).block(list_block), vert[1]);
+    f.render_widget(Paragraph::new(items).block(list_block), main[0]);
+
+    // 右侧：选中配置预览
+    let right_content = if !entries.is_empty() && ui.menu_list_idx < entries.len() {
+        let sel_name = &entries[ui.menu_list_idx].0;
+        let mut lines = Vec::new();
+        if let Some(args) = configs.get(sel_name.as_str()) {
+            lines.push(Line::from(Span::styled(
+                t!("profile_pick.preview_title"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", t!("profile_pick.preview_name", name = sel_name)),
+                Style::default().fg(Color::Green),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    t!("profile_pick.preview_mode", mode = args.main_mode)
+                ),
+                Style::default(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", t!("profile_pick.preview_unit", unit = args.unit)),
+                Style::default(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}",
+                    t!("profile_pick.preview_count", count = args.holding_count)
+                ),
+                Style::default(),
+            )));
+            if args.main_mode.to_ascii_lowercase().contains("tcp") {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_port", port = args.tcp_port)
+                    ),
+                    Style::default(),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_device", device = args.device)
+                    ),
+                    Style::default(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_baud", baud = args.baudrate)
+                    ),
+                    Style::default(),
+                )));
+            }
+            // coils / discrete / input
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  coils:{} disc:{} input:{}",
+                    args.coil_count, args.discrete_count, args.input_count
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                t!("profile_pick.load_fail"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        Paragraph::new(lines)
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            t!("profile_pick.select_hint"),
+            Style::default().fg(Color::DarkGray),
+        )))
+    };
+
+    let prev_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_pick.preview_title"))
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(right_content.block(prev_block), main[1]);
 
     let help = t!("run_ui.monitor_profile_pick_help");
     f.render_widget(
