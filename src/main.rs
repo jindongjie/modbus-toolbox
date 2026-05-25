@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, ValueEnum};
-use rand::SeedableRng;
 mod modbus;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, RwLock};
@@ -515,10 +514,8 @@ fn compute_pattern_value(
 ) -> u16 {
     match pattern {
         RegChangePattern::Random => {
-            use rand::Rng;
-            let mut rng = rand::rngs::StdRng::from_entropy();
-            let delta: u16 = rng.gen_range(1..=50);
-            if rng.gen_bool(0.5) {
+            let delta: u16 = rand::random_range(1..=50);
+            if rand::random_bool(0.5) {
                 current.saturating_add(delta)
             } else {
                 current.saturating_sub(delta)
@@ -641,12 +638,8 @@ pub async fn run_register_simulator(
                 .unwrap_or(ChangeDirection::Up)
                 == ChangeDirection::Up;
 
-            // 随机模式按原设计有概率不触发
-            if pattern == RegChangePattern::Random {
-                use rand::Rng;
-                if rand::rngs::StdRng::from_entropy().gen_bool(0.67) {
-                    continue; // 67% 概率跳过（保持与原来 1~3 个变化大致相当）
-                }
+            if pattern == RegChangePattern::Random && rand::random_bool(0.67) {
+                continue; // 67% 概率跳过（保持与原来 1~3 个变化大致相当）
             }
 
             let new =
@@ -691,11 +684,8 @@ pub async fn run_register_simulator(
                 .unwrap_or(ChangeDirection::Up)
                 == ChangeDirection::Up;
 
-            if pattern == RegChangePattern::Random {
-                use rand::Rng;
-                if rand::rngs::StdRng::from_entropy().gen_bool(0.67) {
-                    continue;
-                }
+            if pattern == RegChangePattern::Random && rand::random_bool(0.67) {
+                continue;
             }
 
             let new =
