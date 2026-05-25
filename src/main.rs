@@ -402,7 +402,9 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
     }
     // 更新条形图历史
     while state.reg_bar_history.len() <= addr {
-        state.reg_bar_history.push(Vec::with_capacity(BAR_HISTORY_SLOTS));
+        state
+            .reg_bar_history
+            .push(Vec::with_capacity(BAR_HISTORY_SLOTS));
     }
     let bar = &mut state.reg_bar_history[addr];
     if bar.len() >= BAR_HISTORY_SLOTS {
@@ -522,7 +524,8 @@ pub async fn run_register_simulator(
             s.reg_just_changed.push(false);
         }
         while s.reg_bar_history.len() < s.holding.len() + s.input_registers.len() {
-            s.reg_bar_history.push(Vec::with_capacity(BAR_HISTORY_SLOTS));
+            s.reg_bar_history
+                .push(Vec::with_capacity(BAR_HISTORY_SLOTS));
         }
 
         // --- 更新每个保持寄存器 ---

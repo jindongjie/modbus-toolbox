@@ -109,6 +109,10 @@ pub struct Ui {
     monitor_picking: bool,
     /// 监听模式下已选中的配置名
     monitor_selected_profile: Option<String>,
+    /// 筛选后的配置名列表（按 pending_mode 过滤）
+    pick_names: Vec<String>,
+    /// 筛选后的配置简介列表（与 pick_names 一一对应）
+    pick_briefs: Vec<String>,
     /// 配置文件路径
     config_path: String,
 
@@ -139,6 +143,16 @@ pub struct Ui {
     pattern_dialog_freq: f64,
     /// 是否显示值变化历史条形图
     show_change_bar: bool,
+
+    // --- 跳转寄存器地址 ---
+    /// 是否正在输入目标寄存器地址
+    goto_mode: bool,
+    /// 地址输入缓存
+    goto_buf: String,
+    /// 搜索模式
+    search_mode: bool,
+    /// 搜索缓冲
+    search_buf: String,
 }
 
 /// 寄存器视图类型常量
@@ -196,6 +210,8 @@ impl Ui {
             // 监听模式配置选择
             monitor_picking: true, // 启动时直接进入选择模式
             monitor_selected_profile: None,
+            pick_names: Vec::new(),
+            pick_briefs: Vec::new(),
             config_path: String::new(),
 
             // 寄存器视图
@@ -212,8 +228,44 @@ impl Ui {
             pattern_dialog_freq_buf: String::new(),
             pattern_dialog_freq: 1.0,
             show_change_bar: false,
+            goto_mode: false,
+            goto_buf: String::new(),
+            search_mode: false,
+            search_buf: String::new(),
         }
     }
+}
+
+/// 获取当前寄存器视图的数据和可选标签
+fn reg_view_data<'a>(s: &'a AppState, reg_view: usize) -> (&'a [u16], Option<&'a [String]>) {
+    match reg_view {
+        REG_VIEW_HOLDING => (&s.holding, Some(&s.holding_label)),
+        REG_VIEW_COILS => {
+            // 对 bool 类型返回引用标记
+            let mapped: Vec<u16> = s.coils.iter().map(|&b| if b { 1 } else { 0 }).collect();
+            (Box::leak(mapped.into_boxed_slice()), None)
+        }
+        REG_VIEW_DISCRETE => {
+            let mapped: Vec<u16> = s.discrete.iter().map(|&b| if b { 1 } else { 0 }).collect();
+            (Box::leak(mapped.into_boxed_slice()), None)
+        }
+        REG_VIEW_INPUT => (&s.input_registers, None),
+        _ => (&s.holding, Some(&s.holding_label)),
+    }
+}
+
+/// 检查 register 是否匹配搜索词（按地址或标签）
+fn search_match(idx: usize, search_lower: &str, _items: &[u16], labels: Option<&[String]>) -> bool {
+    let idx_str = format!("{}", idx);
+    if idx_str.contains(search_lower) {
+        return true;
+    }
+    if let Some(lbl) = labels.and_then(|l| l.get(idx)) {
+        if lbl.to_lowercase().contains(search_lower) {
+            return true;
+        }
+    }
+    false
 }
 
 fn edit_accepts_char(current: &str, ch: char, base: DisplayBase) -> bool {
@@ -277,6 +329,86 @@ fn load_default_profile(config_path: &str) -> Option<String> {
 // 菜单渲染与事件处理
 // ─────────────────────────────────────────
 
+/// 生成配置的单行简介文本
+fn profile_pick_brief(args: &Args) -> String {
+    let mode_short = match args.main_mode.to_ascii_lowercase().as_str() {
+        "tcp-server" => "TCP-S",
+        "tcp-client" => "TCP-C",
+        "rtu-server" => "RTU-S",
+        "rtu-client" => "RTU-C",
+        "monitor" => "mon",
+        _ => &args.main_mode,
+    };
+    let unit = format!("slv {}", args.unit);
+    if args.main_mode.to_ascii_lowercase().contains("tcp") {
+        format!(
+            "{} | port {} | {} | hld {}",
+            mode_short, args.tcp_port, unit, args.holding_count
+        )
+    } else {
+        let parity = args.parity.to_uppercase();
+        let baud = args.baudrate;
+        format!(
+            "{} | {} | {}-{}{}{} | {} | hld {}",
+            mode_short,
+            args.device,
+            baud,
+            parity,
+            args.databits,
+            args.stopbits,
+            unit,
+            args.holding_count
+        )
+    }
+}
+
+/// 读取配置文件，筛选出与 pending_mode 匹配的配置并生成简介
+fn load_pick_list(config_path: &str, pending_mode: Option<MainMode>) -> (Vec<String>, Vec<String>) {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    let mode_filter = pending_mode.map(|m| match m {
+        MainMode::TcpServer => "tcp-server",
+        MainMode::TcpClient => "tcp-client",
+        MainMode::RTUServer => "rtu-server",
+        MainMode::RTUClient => "rtu-client",
+        MainMode::Monitor => "__all__", // 不过滤
+    });
+    let mut entries: Vec<(String, String)> = configs
+        .into_iter()
+        .filter(|(name, _)| name != "__default__")
+        .filter(|(_, args)| mode_filter.map_or(true, |f| f == "__all__" || args.main_mode == f))
+        .map(|(name, args)| {
+            let brief = profile_pick_brief(&args);
+            (name, brief)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let names: Vec<String> = entries.iter().map(|(n, _)| n.clone()).collect();
+    let briefs: Vec<String> = entries.into_iter().map(|(_, b)| b).collect();
+    (names, briefs)
+}
+
+/// 统计各模式下的配置数量（供主菜单显示）
+fn count_profiles_by_mode(config_path: &str) -> [usize; 5] {
+    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+    let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    let mut counts = [0usize; 5];
+    for (name, args) in &configs {
+        if name == "__default__" {
+            continue;
+        }
+        match args.main_mode.to_ascii_lowercase().as_str() {
+            "tcp-server" => counts[0] += 1,
+            "tcp-client" => counts[1] += 1,
+            "rtu-server" => counts[2] += 1,
+            "rtu-client" => counts[3] += 1,
+            "monitor" => counts[4] += 1,
+            _ => {}
+        }
+    }
+    counts
+}
+
 /// 主菜单：垂直排列，每个模式作为一个独立菜单项
 fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     let area = f.area();
@@ -309,6 +441,8 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
         ("main_menu.rtu_client", MainMode::RTUClient),
         ("main_menu.monitor", MainMode::Monitor),
     ];
+    // 拉取配置列表统计各模式配置数
+    let counts = count_profiles_by_mode(&ui.config_path);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -323,6 +457,8 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     // 渲染 5 个模式菜单项
     for (i, &(key, _mode)) in menu_items.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
+        let count = counts.get(i).copied().unwrap_or(0);
+        let label = format!("[{}] {} ({})", i + 1, t!(key), count);
         let item_style = if is_selected {
             Style::default()
                 .fg(Color::Black)
@@ -332,9 +468,8 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
             Style::default()
         };
         let prefix = if is_selected { " ▸ " } else { "   " };
-        let label = t!(key);
         lines.push(Line::from(Span::styled(
-            format!("{}[ {} ]", prefix, label),
+            format!("{}{}", prefix, label),
             item_style,
         )));
         lines.push(Line::from(Span::raw(""))); // spacer
@@ -353,7 +488,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     };
     let prefix = if is_selected { " ▸ " } else { "   " };
     lines.push(Line::from(Span::styled(
-        format!("{}[ {} ]", prefix, t!("main_menu.profile_settings")),
+        format!("{}[6] {}", prefix, t!("main_menu.profile_settings")),
         p_style,
     )));
 
@@ -408,7 +543,10 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             MainMode::Monitor => "Monitor",
         })
         .unwrap_or("?");
-    let title = format!("Select Profile — {mode_name}");
+    let title = format!(
+        "Select Profile — {mode_name} ({} profiles)",
+        ui.pick_names.len()
+    );
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             title,
@@ -420,33 +558,68 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         vert[0],
     );
 
+    let main =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(vert[1]);
+
+    // 左：筛选后的配置列表（含简介）
     let mut items: Vec<Line> = Vec::new();
-    for (i, name) in ui.profiles.iter().enumerate() {
+    for (i, name) in ui.pick_names.iter().enumerate() {
         let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
         let icon = if is_default { "●" } else { "○" };
-        let line = if i == ui.menu_list_idx {
-            Line::from(Span::styled(
-                format!(" {icon} {name}"),
+        let brief = ui.pick_briefs.get(i).map(|s| s.as_str()).unwrap_or("");
+        if i == ui.menu_list_idx {
+            items.push(Line::from(Span::styled(
+                format!(" {} {}", icon, name),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            ))
+            )));
+            items.push(Line::from(Span::styled(
+                format!("   {}", brief),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::DIM),
+            )));
         } else if is_default {
-            Line::from(Span::styled(
-                format!(" {icon} {name}"),
+            items.push(Line::from(Span::styled(
+                format!(" {} {}", icon, name),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-            ))
+            )));
+            items.push(Line::from(Span::styled(
+                format!("   {}", brief),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )));
         } else {
-            Line::from(Span::styled(format!(" {icon} {name}"), Style::default()))
-        };
-        items.push(line);
+            items.push(Line::from(Span::styled(
+                format!(" {} {}", icon, name),
+                Style::default(),
+            )));
+            items.push(Line::from(Span::styled(
+                format!("   {}", brief),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
     }
-    if ui.profiles.is_empty() {
+    if ui.pick_names.is_empty() {
         items.push(Line::from(Span::styled(
             t!("profile_settings.empty_list"),
+            Style::default().fg(Color::DarkGray),
+        )));
+        let empty_msg = if ui.profiles.is_empty() {
+            t!("profile_pick.no_profiles_hint")
+        } else {
+            t!("profile_pick.no_match_hint")
+        };
+        items.push(Line::from(Span::styled(
+            empty_msg,
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -454,7 +627,84 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .borders(Borders::ALL)
         .title(t!("profile_settings.list_title"))
         .border_style(Style::default().fg(Color::Cyan));
-    f.render_widget(Paragraph::new(items).block(list_block), vert[1]);
+    f.render_widget(Paragraph::new(items).block(list_block), main[0]);
+
+    // 右：选中配置预览
+    let right_content = if !ui.pick_names.is_empty() && ui.menu_list_idx < ui.pick_names.len() {
+        let sel_name = &ui.pick_names[ui.menu_list_idx];
+        let config_str = std::fs::read_to_string(_config_path).unwrap_or_default();
+        let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+        let mut lines = Vec::new();
+        if let Some(args) = configs.get(sel_name.as_str()) {
+            lines.push(Line::from(Span::styled(
+                t!("profile_pick.preview_title"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_pick.preview_name"), sel_name),
+                Style::default().fg(Color::Green),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_pick.preview_mode"), args.main_mode),
+                Style::default(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_pick.preview_unit"), args.unit),
+                Style::default(),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {}: {}",
+                    t!("profile_pick.preview_count"),
+                    args.holding_count
+                ),
+                Style::default(),
+            )));
+            if args.main_mode.to_ascii_lowercase().contains("tcp") {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}: {}", t!("profile_pick.preview_port"), args.tcp_port),
+                    Style::default(),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}: {}", t!("profile_pick.preview_device"), args.device),
+                    Style::default(),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("  {}: {}", t!("profile_pick.preview_baud"), args.baudrate),
+                    Style::default(),
+                )));
+            }
+            // coils / discrete / input
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  coils:{} disc:{} input:{}",
+                    args.coil_count, args.discrete_count, args.input_count
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                t!("profile_pick.load_fail"),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        Paragraph::new(lines)
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            t!("profile_pick.select_hint"),
+            Style::default().fg(Color::DarkGray),
+        )))
+    };
+
+    let prev_block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("profile_pick.preview_title"))
+        .border_style(Style::default().fg(Color::Green));
+    f.render_widget(right_content.block(prev_block), main[1]);
 
     let help = t!("profile_pick.help");
     f.render_widget(
@@ -489,22 +739,53 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         vert[0],
     );
 
+    // 加载所有非系统配置并生成简介
+    let config_str = std::fs::read_to_string(_config_path).unwrap_or_default();
+    let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+    let all_names: Vec<&String> = configs.keys().filter(|k| *k != "__default__").collect();
+    let mut entries: Vec<(String, String)> = all_names
+        .iter()
+        .map(|n| {
+            let brief = configs
+                .get(*n)
+                .map(|a| profile_pick_brief(a))
+                .unwrap_or_default();
+            ((*n).clone(), brief)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
     let mut items: Vec<Line> = Vec::new();
-    for (i, name) in ui.profiles.iter().enumerate() {
-        let line = if i == ui.menu_list_idx {
-            Line::from(Span::styled(
+    for (i, (name, brief)) in entries.iter().enumerate() {
+        if i == ui.menu_list_idx {
+            items.push(Line::from(Span::styled(
                 format!(" ○ {name}"),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
-            ))
+            )));
+            items.push(Line::from(Span::styled(
+                format!("   {brief}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::DIM),
+            )));
         } else {
-            Line::from(Span::styled(format!(" ○ {name}"), Style::default()))
-        };
-        items.push(line);
+            items.push(Line::from(Span::styled(
+                format!(" ○ {name}"),
+                Style::default(),
+            )));
+            items.push(Line::from(Span::styled(
+                format!("   {brief}"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
     }
-    if ui.profiles.is_empty() {
+    if entries.is_empty() {
         items.push(Line::from(Span::styled(
             t!("profile_settings.empty_list"),
             Style::default().fg(Color::DarkGray),
@@ -615,8 +896,17 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 }
 
 /// 处理主菜单的按键事件（垂直导航）
-fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
+fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
     const ITEM_COUNT: usize = 6; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), Monitor(4), Profile Settings(5)
+
+    fn enter_pick(ui: &mut Ui, config_path: &str, mode: MainMode) {
+        ui.pending_mode = Some(mode);
+        let (names, briefs) = load_pick_list(config_path, ui.pending_mode);
+        ui.pick_names = names;
+        ui.pick_briefs = briefs;
+        ui.menu_screen = MenuScreen::ProfilePick;
+        ui.menu_list_idx = 0;
+    }
 
     match code {
         KeyCode::Up => {
@@ -627,27 +917,32 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
                 ui.menu_list_idx += 1;
             }
         }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            let n = (c as u8 - b'1') as usize;
+            match n {
+                0 => enter_pick(ui, config_path, MainMode::TcpServer),
+                1 => enter_pick(ui, config_path, MainMode::TcpClient),
+                2 => enter_pick(ui, config_path, MainMode::RTUServer),
+                3 => enter_pick(ui, config_path, MainMode::RTUClient),
+                4 => {
+                    return Some(MenuSelection {
+                        main_mode: MainMode::Monitor,
+                        profile_name: None,
+                        quit: false,
+                    });
+                }
+                5 => {
+                    ui.menu_screen = MenuScreen::ProfileSet;
+                    ui.menu_list_idx = 0;
+                }
+                _ => {}
+            }
+        }
         KeyCode::Enter => match ui.menu_list_idx {
-            0 => {
-                ui.pending_mode = Some(MainMode::TcpServer);
-                ui.menu_screen = MenuScreen::ProfilePick;
-                ui.menu_list_idx = 0;
-            }
-            1 => {
-                ui.pending_mode = Some(MainMode::TcpClient);
-                ui.menu_screen = MenuScreen::ProfilePick;
-                ui.menu_list_idx = 0;
-            }
-            2 => {
-                ui.pending_mode = Some(MainMode::RTUServer);
-                ui.menu_screen = MenuScreen::ProfilePick;
-                ui.menu_list_idx = 0;
-            }
-            3 => {
-                ui.pending_mode = Some(MainMode::RTUClient);
-                ui.menu_screen = MenuScreen::ProfilePick;
-                ui.menu_list_idx = 0;
-            }
+            0 => enter_pick(ui, config_path, MainMode::TcpServer),
+            1 => enter_pick(ui, config_path, MainMode::TcpClient),
+            2 => enter_pick(ui, config_path, MainMode::RTUServer),
+            3 => enter_pick(ui, config_path, MainMode::RTUClient),
             4 => {
                 // Monitor 模式直接返回 Selection（不需要配置）
                 return Some(MenuSelection {
@@ -684,19 +979,19 @@ fn handle_profile_pick_key(
 ) -> Option<MenuSelection> {
     match code {
         KeyCode::Up => {
-            if !ui.profiles.is_empty() {
+            if !ui.pick_names.is_empty() {
                 ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
             }
         }
         KeyCode::Down => {
-            if ui.menu_list_idx + 1 < ui.profiles.len() {
+            if ui.menu_list_idx + 1 < ui.pick_names.len() {
                 ui.menu_list_idx += 1;
             }
         }
         KeyCode::Enter => {
             let mode = ui.pending_mode.unwrap_or(MainMode::TcpClient);
-            let profile = if ui.menu_list_idx < ui.profiles.len() {
-                Some(ui.profiles[ui.menu_list_idx].clone())
+            let profile = if ui.menu_list_idx < ui.pick_names.len() {
+                Some(ui.pick_names[ui.menu_list_idx].clone())
             } else {
                 None
             };
@@ -799,7 +1094,8 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                 if is_confirming {
                     // 第二次按 d：执行删除
                     let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
-                    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+                    let mut configs: HashMap<String, Args> =
+                        toml::from_str(&config_str).unwrap_or_default();
                     configs.remove(&name);
                     if let Ok(s) = toml::to_string_pretty(&configs) {
                         if std::fs::write(config_path, s).is_ok() {
@@ -807,7 +1103,8 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                             let mut reloaded = load_profile_list(config_path);
                             reloaded.sort();
                             ui.profiles = reloaded;
-                            ui.menu_list_idx = ui.menu_list_idx.min(ui.profiles.len().saturating_sub(1));
+                            ui.menu_list_idx =
+                                ui.menu_list_idx.min(ui.profiles.len().saturating_sub(1));
                             // 如果删除的是默认配置，清除默认
                             if ui.default_profile.as_deref() == Some(&name) {
                                 ui.default_profile = None;
@@ -1065,7 +1362,9 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                 Span::raw(" "),
                 Span::styled(
                     mode_tag,
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
                 ),
             ])
         } else {
@@ -1076,7 +1375,9 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                 Span::raw(" "),
                 Span::styled(
                     mode_tag,
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
                 ),
             ])
         };
@@ -1114,14 +1415,21 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         if field.name_key == "device" && !ui.serial_ports.is_empty() {
             edit_lines.push(Line::from(Span::styled(
                 t!("profile_edit.device_port_list"),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )));
             for (_pi, port) in ui.serial_ports.iter().enumerate() {
                 let selected_port = &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
                 if port == selected_port {
                     edit_lines.push(Line::from(vec![
                         Span::styled(" ● ", Style::default().fg(Color::Cyan)),
-                        Span::styled(port.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            port.clone(),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                     ]));
                 } else {
                     edit_lines.push(Line::from(vec![
@@ -1138,7 +1446,9 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         } else if field.name_key == "device" && ui.serial_ports.is_empty() {
             edit_lines.push(Line::from(Span::styled(
                 t!("profile_edit.device_no_ports"),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
             )));
             edit_lines.push(Line::from(Span::raw("")));
         }
@@ -1516,7 +1826,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     continue;
                 }
                 let sel = match ui.menu_screen {
-                    MenuScreen::Main => handle_main_menu_key(&mut ui, code),
+                    MenuScreen::Main => handle_main_menu_key(&mut ui, code, config_path),
                     MenuScreen::ProfilePick => handle_profile_pick_key(&mut ui, code, config_path),
                     MenuScreen::ProfileSet => handle_profile_set_key(&mut ui, code, config_path),
                     MenuScreen::ProfileEdit => handle_profile_edit_key(&mut ui, code, config_path),
@@ -1768,6 +2078,8 @@ pub async fn run_ui(
                             // --- 状态栏 ---
                             let status_line = if let Some(m) = server_err.as_deref() {
                                 t!("run_ui.error_prefix", msg = m)
+                            } else if ui.search_mode {
+                                std::borrow::Cow::Owned(format!("/{}", ui.search_buf))
                             } else if let Some(m) = ui.status_msg.as_deref() {
                                 std::borrow::Cow::Owned(m.to_string())
                             } else if ui.edit_mode {
@@ -2090,6 +2402,62 @@ pub async fn run_ui(
                                         }
                                         _ => {}
                                     }
+                                } else if ui.goto_mode {
+                                    // 跳转地址输入模式
+                                    match code {
+                                        KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                                            ui.goto_buf.push(ch);
+                                        }
+                                        KeyCode::Enter => {
+                                            let addr: usize = ui.goto_buf.parse().unwrap_or(0);
+                                            let view = ui.reg_view;
+                                            let max = if view == REG_VIEW_HOLDING {
+                                                state.read().await.holding.len()
+                                            } else if view == REG_VIEW_COILS {
+                                                state.read().await.coils.len()
+                                            } else if view == REG_VIEW_DISCRETE {
+                                                state.read().await.discrete.len()
+                                            } else {
+                                                state.read().await.input_registers.len()
+                                            };
+                                            if addr < max {
+                                                ui.selected = addr;
+                                                ui.status_msg = Some(format!("跳转到地址 {}", addr));
+                                            } else {
+                                                set_status(&mut ui, format!("地址 {} 超出范围 (0-{})", addr, max.saturating_sub(1)));
+                                            }
+                                            ui.goto_mode = false;
+                                            ui.goto_buf.clear();
+                                        }
+                                        KeyCode::Backspace => {
+                                            ui.goto_buf.pop();
+                                        }
+                                        KeyCode::Esc => {
+                                            ui.goto_mode = false;
+                                            ui.goto_buf.clear();
+                                            ui.status_msg = None;
+                                        }
+                                        _ => {}
+                                    }
+                                } else if ui.search_mode {
+                                    match code {
+                                        KeyCode::Char(ch) if ch.is_ascii_graphic() || ch == ' ' => {
+                                            ui.search_buf.push(ch);
+                                        }
+                                        KeyCode::Backspace => {
+                                            ui.search_buf.pop();
+                                        }
+                                        KeyCode::Enter | KeyCode::Esc => {
+                                            ui.search_mode = false;
+                                            if ui.search_buf.is_empty() {
+                                                ui.status_msg = None;
+                                            } else {
+                                                let msg = format!("搜索: {}", ui.search_buf);
+                                                set_status(&mut ui, msg);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                 } else {
                                     match code {
                                         KeyCode::Enter => {
@@ -2136,12 +2504,46 @@ pub async fn run_ui(
                                         KeyCode::PageUp => {
                                             ui.selected = 0;
                                         }
+                                        KeyCode::Home => {
+                                            ui.selected = 0;
+                                            ui.scroll = 0;
+                                            set_status(&mut ui, t!("run_ui.home"));
+                                        }
+                                        KeyCode::End => {
+                                            let len = if ui.reg_view == REG_VIEW_HOLDING {
+                                                state.read().await.holding.len()
+                                            } else if ui.reg_view == REG_VIEW_COILS {
+                                                state.read().await.coils.len()
+                                            } else if ui.reg_view == REG_VIEW_DISCRETE {
+                                                state.read().await.discrete.len()
+                                            } else {
+                                                state.read().await.input_registers.len()
+                                            };
+                                            if len > 0 {
+                                                ui.selected = len - 1;
+                                                set_status(&mut ui, t!("run_ui.end"));
+                                            }
+                                        }
 
                                         KeyCode::Char('k') | KeyCode::Up => {
                                             if is_monitor_mode && ui.monitor_picking {
                                                 ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
                                             } else if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
                                                 ui.monitor_scroll = ui.monitor_scroll.saturating_sub(1);
+                                            } else if ui.search_mode && !ui.search_buf.is_empty() {
+                                                // 搜索模式下：跳到上一个匹配的地址
+                                                let s = state.read().await;
+                                                let search_lower = ui.search_buf.to_lowercase();
+                                                let (items, labels) = reg_view_data(&s, ui.reg_view);
+                                                if ui.selected > 0 {
+                                                    let found = (0..ui.selected).rev().find(|&i| {
+                                                        search_match(i, &search_lower, items, labels)
+                                                    });
+                                                    if let Some(idx) = found {
+                                                        ui.selected = idx;
+                                                    }
+                                                }
+                                                drop(s);
                                             } else {
                                                 ui.selected = ui.selected.saturating_sub(1);
                                             }
@@ -2155,6 +2557,19 @@ pub async fn run_ui(
                                                 if ui.monitor_scroll + 1 < len.saturating_sub(8) {
                                                     ui.monitor_scroll += 1;
                                                 }
+                                            } else if ui.search_mode && !ui.search_buf.is_empty() {
+                                                // 搜索模式下：跳到下一个匹配的地址
+                                                let s = state.read().await;
+                                                let search_lower = ui.search_buf.to_lowercase();
+                                                let (items, labels) = reg_view_data(&s, ui.reg_view);
+                                                let max = items.len();
+                                                let found = (ui.selected + 1..max).find(|&i| {
+                                                    search_match(i, &search_lower, items, labels)
+                                                });
+                                                if let Some(idx) = found {
+                                                    ui.selected = idx;
+                                                }
+                                                drop(s);
                                             } else {
                                                 let len = state.read().await.holding.len();
                                                 ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
@@ -2246,6 +2661,14 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.stability_started"));
                                             } else {
                                                 set_status(&mut ui, t!("run_ui.stability_stopped"));
+                                            }
+                                        }
+                                        // G: 跳转寄存器地址
+                                        KeyCode::Char('G') => {
+                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                                ui.goto_mode = true;
+                                                ui.goto_buf.clear();
+                                                ui.status_msg = Some("Go to address: ".to_string());
                                             }
                                         }
                                         KeyCode::Char('v') => {
@@ -2390,6 +2813,62 @@ pub async fn run_ui(
                                                 }
                                             }
                                         }
+                                        // V: 批量切换当前视图所有寄存器的值变化模拟
+                                        KeyCode::Char('V') => {
+                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                                let reg_type = ui.reg_view;
+                                                if reg_type != REG_VIEW_HOLDING && reg_type != REG_VIEW_INPUT {
+                                                    set_status(&mut ui, t!("run_ui.value_change_unsupported"));
+                                                    continue;
+                                                }
+                                                let mut s = state.write().await;
+                                                let reg_len = if reg_type == REG_VIEW_HOLDING {
+                                                    s.holding.len()
+                                                } else {
+                                                    s.input_registers.len()
+                                                };
+                                                let enabled = if reg_type == REG_VIEW_HOLDING {
+                                                    &mut s.holding_change_enabled
+                                                } else {
+                                                    &mut s.input_change_enabled
+                                                };
+                                                let current_on = enabled.iter().filter(|&&e| e).count();
+                                                let total = reg_len;
+                                                let new_state = current_on <= total / 2;
+                                                enabled.resize(reg_len, false);
+                                                for e in enabled.iter_mut() {
+                                                    *e = new_state;
+                                                }
+                                                let reg_name = if reg_type == REG_VIEW_HOLDING { "Holding" } else { "Input" };
+                                                drop(s);
+                                                if new_state {
+                                                    set_status(&mut ui, format!("{}: 全部开启变化 ({}/{})", reg_name, total, total));
+                                                } else {
+                                                    set_status(&mut ui, format!("{}: 全部关闭变化 (0/{})", reg_name, total));
+                                                }
+                                            }
+                                        }
+                                        // C: 清除值变化历史记录
+                                        KeyCode::Char('C') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                let mut s = state.write().await;
+                                                let cleared = s.reg_change_history.len();
+                                                s.reg_change_history.clear();
+                                                s.reg_just_changed.clear();
+                                                s.reg_change_direction.clear();
+                                                s.reg_bar_history.clear();
+                                                drop(s);
+                                                set_status(&mut ui, format!("已清除 {} 条变化记录", cleared));
+                                            }
+                                        }
+                                        // /: 搜索过滤寄存器
+                                        KeyCode::Char('/') => {
+                                            if !is_monitor_mode && !ui.edit_mode {
+                                                ui.search_mode = true;
+                                                ui.search_buf.clear();
+                                                ui.status_msg = Some("/_ 搜索地址或标签".to_string());
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -2520,12 +2999,52 @@ fn render_register_table(
             .add_modifier(Modifier::BOLD),
     );
 
-    let rows = items
+    // 搜索过滤：构建匹配索引列表
+    let filtered_indices: Vec<usize> = if ui.search_buf.is_empty() {
+        (0..len).collect()
+    } else {
+        let search_lower = ui.search_buf.to_lowercase();
+        items
+            .iter()
+            .enumerate()
+            .filter(|(i, _v)| {
+                let idx_str = format!("{}", i);
+                if idx_str.contains(&search_lower) {
+                    return true;
+                }
+                if !is_bool {
+                    if let Some(lbl) = labels.and_then(|l| l.get(*i)) {
+                        if lbl.to_lowercase().contains(&search_lower) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let filtered_len = filtered_indices.len();
+
+    // 调整 selected 到过滤列表中
+    if !filtered_indices.is_empty() && !filtered_indices.contains(&ui.selected) {
+        ui.selected = filtered_indices[0];
+        if ui.selected < ui.scroll {
+            ui.scroll = ui.selected;
+        }
+    }
+
+    // 由过滤列表驱动滚动
+    if visible_rows > 0 && ui.scroll + visible_rows > filtered_len {
+        ui.scroll = filtered_len.saturating_sub(visible_rows);
+    }
+
+    let rows = filtered_indices
         .iter()
-        .enumerate()
         .skip(ui.scroll)
         .take(visible_rows.max(1))
-        .map(|(i, v)| {
+        .map(|&i| {
+            let v = &items[i];
             if is_bool {
                 let val = if *v == 1 { "ON" } else { "OFF" };
                 Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)])
@@ -2584,7 +3103,12 @@ fn render_register_table(
     };
 
     let mut table_state = TableState::default();
-    table_state.select(Some(ui.selected.saturating_sub(ui.scroll)));
+    // 在过滤列表中查找当前选中项的行索引
+    let filtered_sel_pos = filtered_indices
+        .iter()
+        .position(|&x| x == ui.selected)
+        .unwrap_or(0);
+    table_state.select(Some(filtered_sel_pos.saturating_sub(ui.scroll)));
 
     let t = Table::new(rows, col_constraints)
         .header(header)
