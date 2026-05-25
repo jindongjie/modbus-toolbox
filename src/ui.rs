@@ -1285,9 +1285,11 @@ fn profile_fields() -> Vec<ProfileField> {
         match v.as_str() {
             "tcp-server" | "ts" => a.main_mode = "tcp-server".into(),
             "tcp-client" | "tc" => a.main_mode = "tcp-client".into(),
+            "tcp-monitor" | "tm" => a.main_mode = "tcp-monitor".into(),
             "rtu-server" | "rs" => a.main_mode = "rtu-server".into(),
             "rtu-client" | "rc" => a.main_mode = "rtu-client".into(),
-            _ => return Err(format!("无效模式: {v} (ts/tc/rs/rc)")),
+            "rtu-monitor" | "rm" => a.main_mode = "rtu-monitor".into(),
+            _ => return Err(format!("无效模式: {v} (ts/tc/tm/rs/rc/rm)")),
         }
         Ok(())
     }
@@ -1576,7 +1578,7 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 
         // 如有校验提示，添加提示信息
         let hint = match field.name_key {
-            "main_mode" => "ts/tc/rs/rc 或 tcp-client/tcp-server/rtu-client/rtu-server",
+            "main_mode" => "ts/tc/tm/rs/rc/rm 或 tcp-client/tcp-server/tcp-monitor/rtu-client/rtu-server/rtu-monitor",
             "parity" => "n(even) / e(ven) / o(dd)",
             "flow" => "none / hard(ware) / soft(ware)",
             "databits" => "5 / 6 / 7 / 8",
