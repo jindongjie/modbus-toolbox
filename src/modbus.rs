@@ -1262,6 +1262,143 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
     }
 }
 
+/// Modbus 监听模式（RTU）：通过串口连接目标设备并轮询寄存器，记录所有帧
+pub async fn run_modbus_monitor_rtu(args: Args, state: Arc<RwLock<AppState>>) -> Result<()> {
+    let parity = parse_parity(&args.parity)?;
+    let flow = parse_flow(&args.flow)?;
+    let databits = parse_databits(args.databits)?;
+    let stopbits = parse_stopbits(args.stopbits)?;
+
+    let builder = tokio_serial::new(args.device.clone(), args.baudrate)
+        .parity(parity)
+        .flow_control(flow)
+        .data_bits(databits)
+        .stop_bits(stopbits);
+
+    let port = builder
+        .open_native_async()
+        .context(t!("modbus.open_rtu_port"))?;
+
+    let slave = Slave(args.unit);
+    let mut ctx = tokio_modbus::client::rtu::attach_slave(port, slave);
+
+    let tick = Duration::from_millis(args.client_tick_ms);
+    let mut interval = tokio::time::interval(tick);
+    let once_max_reg_cnt: usize = 120;
+
+    // 记录连接事件
+    {
+        let fi = FrameInfo {
+            is_tcp: false,
+            unit: args.unit,
+            func_code: 0x03,
+            func_name: "已连接监听 (RTU)".to_string(),
+            addr: 0,
+            values: vec![0; args.holding_count.min(once_max_reg_cnt)],
+            is_request: false,
+        };
+        let mut s = state.write().await;
+        s.is_tcp = false;
+        record_frame(&mut s.monitor, &fi);
+        s.last_frame = Some(fi);
+    }
+
+    loop {
+        interval.tick().await;
+
+        // 轮询读取
+        let mut offset: usize = 0;
+        while offset < args.holding_count {
+            let cnt = (args.holding_count - offset).min(once_max_reg_cnt);
+            let read_addr = offset as u16;
+
+            match timeout(
+                IO_TIMEOUT,
+                ctx.read_holding_registers(read_addr, cnt as u16),
+            )
+            .await
+            {
+                Ok(Ok(rsp)) => match rsp {
+                    Ok(values) => {
+                        let mut s = state.write().await;
+                        let end = (offset + values.len()).min(s.holding.len());
+                        let write_len = end.saturating_sub(offset);
+                        if write_len > 0 {
+                            for (i, &new) in values.iter().enumerate().take(write_len) {
+                                let idx = offset + i;
+                                let old = s.holding[idx];
+                                if old != new {
+                                    s.holding[idx] = new;
+                                    crate::record_reg_change(&mut s, idx, old, new);
+                                }
+                            }
+                        }
+                        if write_len > 0 {
+                            let fi = FrameInfo {
+                                is_tcp: false,
+                                unit: args.unit,
+                                func_code: 0x03,
+                                func_name: "读保持寄存器".to_string(),
+                                addr: read_addr,
+                                values: values[..write_len].to_vec(),
+                                is_request: false,
+                            };
+                            record_frame(&mut s.monitor, &fi);
+                            s.last_frame = Some(fi);
+                        }
+                        offset += cnt;
+                    }
+                    Err(e) => {
+                        let fi = FrameInfo {
+                            is_tcp: false,
+                            unit: args.unit,
+                            func_code: 0x03,
+                            func_name: format!("异常: {:?}", e),
+                            addr: read_addr,
+                            values: vec![],
+                            is_request: false,
+                        };
+                        let mut s = state.write().await;
+                        record_frame(&mut s.monitor, &fi);
+                        s.last_frame = Some(fi);
+                        break;
+                    }
+                },
+                Ok(Err(e)) => {
+                    let fi = FrameInfo {
+                        is_tcp: false,
+                        unit: args.unit,
+                        func_code: 0x03,
+                        func_name: format!("读取失败: {}", e),
+                        addr: read_addr,
+                        values: vec![],
+                        is_request: false,
+                    };
+                    let mut s = state.write().await;
+                    record_frame(&mut s.monitor, &fi);
+                    s.last_frame = Some(fi);
+                    break;
+                }
+                Err(_) => {
+                    let fi = FrameInfo {
+                        is_tcp: false,
+                        unit: args.unit,
+                        func_code: 0x03,
+                        func_name: "读取超时 (Timeout)".to_string(),
+                        addr: read_addr,
+                        values: vec![],
+                        is_request: false,
+                    };
+                    let mut s = state.write().await;
+                    record_frame(&mut s.monitor, &fi);
+                    s.last_frame = Some(fi);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// 根据 FrameInfo 构造原始的 Modbus 帧字节（用于 UI 展示）
 pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
     let is_tcp = fi.is_tcp;
@@ -1441,7 +1578,13 @@ pub fn frame_bytes_from_info(fi: &FrameInfo) -> Vec<u8> {
             let mut bytes: Vec<u8> = Vec::new();
             let addr = fi.addr;
             let qty = fi.values.len() as u16;
-            let raw = vec![fi.func_code, (addr >> 8) as u8, (addr & 0xFF) as u8, (qty >> 8) as u8, (qty & 0xFF) as u8];
+            let raw = vec![
+                fi.func_code,
+                (addr >> 8) as u8,
+                (addr & 0xFF) as u8,
+                (qty >> 8) as u8,
+                (qty & 0xFF) as u8,
+            ];
             if is_tcp {
                 bytes.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]);
                 bytes.push(0x00);

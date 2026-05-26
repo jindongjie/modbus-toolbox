@@ -47,8 +47,11 @@ impl RegDataFormat {
     /// 此格式需要的连续 16 位寄存器数量
     pub fn regs_needed(self) -> usize {
         match self {
-            RegDataFormat::U16 | RegDataFormat::I16 | RegDataFormat::F16
-            | RegDataFormat::Binary | RegDataFormat::Ascii => 1,
+            RegDataFormat::U16
+            | RegDataFormat::I16
+            | RegDataFormat::F16
+            | RegDataFormat::Binary
+            | RegDataFormat::Ascii => 1,
             RegDataFormat::U32 | RegDataFormat::I32 | RegDataFormat::F32 => 2,
             RegDataFormat::U64 | RegDataFormat::I64 | RegDataFormat::F64 => 4,
             RegDataFormat::U128 | RegDataFormat::I128 => 8,
@@ -496,21 +499,37 @@ pub const MONITOR_LOG_DIR: &str = "./monitor";
 /// Write CSV header to a new log file
 pub fn csv_log_header(path: &std::path::Path) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
-    writeln!(f, "time,direction,protocol,unit,func_code,func_name,addr,values")
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    writeln!(
+        f,
+        "time,direction,protocol,unit,func_code,func_name,addr,values"
+    )
 }
 
 /// Append a frame record as a CSV row to the log file
 pub fn csv_log_append(path: &std::path::Path, rec: &FrameRecord) -> std::io::Result<()> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     let dir = if rec.is_request { "REQ" } else { "RSP" };
     let proto = if rec.is_tcp { "TCP" } else { "RTU" };
     let values_str: Vec<String> = rec.values.iter().map(|v| v.to_string()).collect();
     writeln!(
         f,
         "{},{},{},{},0x{:02X},{},0x{:04X},\"[{}]\"",
-        rec.human_time, dir, proto, rec.unit, rec.func_code, rec.func_name, rec.addr,
+        rec.human_time,
+        dir,
+        proto,
+        rec.unit,
+        rec.func_code,
+        rec.func_name,
+        rec.addr,
         values_str.join(";")
     )
 }
@@ -1053,11 +1072,19 @@ fn format_f16(h: u16) -> String {
     let mant = (h & 0x3ff) as f32;
     let v = match exp {
         0 => {
-            if mant == 0.0 { 0.0 } else { sign * mant / 1024.0 * 2.0_f32.powi(-14) }
+            if mant == 0.0 {
+                0.0
+            } else {
+                sign * mant / 1024.0 * 2.0_f32.powi(-14)
+            }
         }
         31 => {
             if mant == 0.0 {
-                if sign > 0.0 { f32::INFINITY } else { f32::NEG_INFINITY }
+                if sign > 0.0 {
+                    f32::INFINITY
+                } else {
+                    f32::NEG_INFINITY
+                }
             } else {
                 f32::NAN
             }
@@ -1163,7 +1190,13 @@ pub(crate) fn format_register_value(
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
             let s: String = bytes
                 .iter()
-                .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+                .map(|&b| {
+                    if b.is_ascii_graphic() || b == b' ' {
+                        b as char
+                    } else {
+                        '.'
+                    }
+                })
                 .collect();
             s
         }
@@ -1171,7 +1204,13 @@ pub(crate) fn format_register_value(
 }
 
 /// 导出当前所有寄存器值为 JSON
-pub(crate) fn export_registers_to_json(reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, base: DisplayBase, state: &AppState) -> Result<(String, String)> {
+pub(crate) fn export_registers_to_json(
+    reg_format: RegDataFormat,
+    swap_bytes: bool,
+    swap_words: bool,
+    base: DisplayBase,
+    state: &AppState,
+) -> Result<(String, String)> {
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -1195,12 +1234,28 @@ pub(crate) fn export_registers_to_json(reg_format: RegDataFormat, swap_bytes: bo
         value: String,
     }
 
-    fn make_regs(regs: &[u16], labels: &[String], reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, base: DisplayBase) -> Vec<ExportReg> {
-        regs.iter().enumerate().map(|(i, &raw)| {
-            let value = format_register_value(regs, i, reg_format, base, swap_bytes, swap_words);
-            let label = labels.get(i).cloned().unwrap_or_default();
-            ExportReg { addr: i, raw, label, value }
-        }).collect()
+    fn make_regs(
+        regs: &[u16],
+        labels: &[String],
+        reg_format: RegDataFormat,
+        swap_bytes: bool,
+        swap_words: bool,
+        base: DisplayBase,
+    ) -> Vec<ExportReg> {
+        regs.iter()
+            .enumerate()
+            .map(|(i, &raw)| {
+                let value =
+                    format_register_value(regs, i, reg_format, base, swap_bytes, swap_words);
+                let label = labels.get(i).cloned().unwrap_or_default();
+                ExportReg {
+                    addr: i,
+                    raw,
+                    label,
+                    value,
+                }
+            })
+            .collect()
     }
 
     let now = chrono_now();
@@ -1211,15 +1266,32 @@ pub(crate) fn export_registers_to_json(reg_format: RegDataFormat, swap_bytes: bo
         swap_bytes,
         swap_words,
         base: format!("{:?}", base),
-        holding: make_regs(&state.holding, &state.holding_label, reg_format, swap_bytes, swap_words, base),
+        holding: make_regs(
+            &state.holding,
+            &state.holding_label,
+            reg_format,
+            swap_bytes,
+            swap_words,
+            base,
+        ),
         coils: state.coils.clone(),
         discrete: state.discrete.clone(),
-        input_registers: make_regs(&state.input_registers, &[], reg_format, swap_bytes, swap_words, base),
+        input_registers: make_regs(
+            &state.input_registers,
+            &[],
+            reg_format,
+            swap_bytes,
+            swap_words,
+            base,
+        ),
     };
 
-    let json = serde_json::to_string_pretty(&data)
-        .context("Failed to serialize registers to JSON")?;
-    let filename = format!("modbus_export_{}.json", now.replace(' ', "_").replace(':', "-"));
+    let json =
+        serde_json::to_string_pretty(&data).context("Failed to serialize registers to JSON")?;
+    let filename = format!(
+        "modbus_export_{}.json",
+        now.replace(' ', "_").replace(':', "-")
+    );
     Ok((filename, json))
 }
 
@@ -1235,7 +1307,15 @@ fn chrono_now() -> String {
     let hours = time_secs / 3600;
     let minutes = (time_secs % 3600) / 60;
     let seconds = time_secs % 60;
-    format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", 1970 + (days / 365) as u32, 1, 1, hours, minutes, seconds)
+    format!(
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
+        1970 + (days / 365) as u32,
+        1,
+        1,
+        hours,
+        minutes,
+        seconds
+    )
 }
 
 /// 根据 MenuSelection 加载对应配置并解包为 (MainMode, Args)

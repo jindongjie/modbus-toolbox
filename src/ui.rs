@@ -25,11 +25,10 @@ use ratatui::{
 
 // crate
 use crate::{
-    format_register_value, format_u16, modbus::frame_bytes_from_info, modbus::RegCmd,
-    parse_u16_str, export_registers_to_json, AppState, Args, DisplayBase, FrameInfo,
-    FrameRecord, MainMode, MonitorStats, RegDataFormat, BAR_HISTORY_SLOTS,
-    csv_log_header, csv_log_append, csv_log_path, list_csv_logs, load_csv_into_monitor,
-    MONITOR_LOG_DIR,
+    csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,
+    format_u16, list_csv_logs, load_csv_into_monitor, modbus::frame_bytes_from_info,
+    modbus::RegCmd, parse_u16_str, AppState, Args, DisplayBase, FrameInfo, FrameRecord, MainMode,
+    MonitorStats, RegDataFormat, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
 };
 /// 从字符串解析寄存器数据格式
 fn parse_reg_format(s: &str) -> RegDataFormat {
@@ -101,9 +100,11 @@ pub struct Ui {
     pending_mode: Option<MainMode>,
     /// 当前默认配置名
     default_profile: Option<String>,
-    /// 主菜单渲染用的 Logo ASCII ART 行
-    logo_lines: Vec<String>,
-    /// Logo 动画帧计数器（递增到 30 后停止）
+    /// 主菜单渲染用的 Logo ASCII ART 行（正确/最终内容）
+    logo_target: Vec<String>,
+    /// Logo 动画当前显示的字符（随机→正确渐变）
+    logo_current: Vec<String>,
+    /// Logo 动画帧计数器（递增到 LOGO_ANIM_FRAMES 后停止，全部显示正确字符）
     logo_frame: u8,
 
     // --- 配置编辑相关字段 ---
@@ -201,6 +202,86 @@ pub struct Ui {
     swap_words: bool,
 }
 
+/// Logo 动画总帧数（大约 4.5 秒，每帧 100ms）
+const LOGO_ANIM_FRAMES: u8 = 45;
+
+/// 伪随机数生成（线性同余），用于 logo 动画，不依赖 rand crate
+fn lcg(seed: u64) -> u64 {
+    seed.wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407)
+}
+
+/// 根据 (row, col, frame) 生成一个伪随机的可打印 ASCII 字符
+fn logo_random_char(row: usize, col: usize, frame: u8) -> char {
+    let seed = (row as u64)
+        .wrapping_mul(10007)
+        .wrapping_add((col as u64).wrapping_mul(50021))
+        .wrapping_add(frame as u64);
+    let h = lcg(seed);
+    // 33..=126 的可打印 ASCII 范围
+    let idx = ((h >> 32) as u32) % 94;
+    char::from_u32(idx + 33).unwrap_or('?')
+}
+
+/// 生成 logo 动画中每个位置的"揭示帧号"，值在 0..LOGO_ANIM_FRAMES 之间
+fn logo_reveal_frame(row: usize, col: usize) -> u8 {
+    let seed = (row as u64)
+        .wrapping_mul(10007)
+        .wrapping_add((col as u64).wrapping_mul(50021));
+    let h = lcg(seed);
+    ((h >> 32) as u8) % LOGO_ANIM_FRAMES
+}
+
+/// 创建一个全部为随机字符的 logo 显示缓冲区
+fn logo_random_buf(target: &[String]) -> Vec<String> {
+    target
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            line.chars()
+                .enumerate()
+                .map(|(col, _ch)| {
+                    // 空白字符保持原样，非空白替换为随机字符
+                    if _ch == ' ' {
+                        ' '
+                    } else {
+                        logo_random_char(row, col, 0)
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// 更新 logo 动画一帧：未到揭示时间的字符刷新为新的随机字符，已揭示的显示正确字符
+fn logo_animate_frame(current: &mut [String], target: &[String], frame: u8) {
+    for (row, tgt_line) in target.iter().enumerate() {
+        if row >= current.len() {
+            break;
+        }
+        let cur_line = &mut current[row];
+        // 确保长度匹配
+        let tgt_chars: Vec<char> = tgt_line.chars().collect();
+        let cur_chars: Vec<char> = cur_line.chars().collect();
+        if cur_chars.len() != tgt_chars.len() {
+            // 长度不匹配时直接复制目标行
+            *cur_line = tgt_line.clone();
+            continue;
+        }
+        let mut new_line = String::with_capacity(tgt_chars.len());
+        for (col, &tgt_c) in tgt_chars.iter().enumerate() {
+            if tgt_c == ' ' {
+                new_line.push(' ');
+            } else if frame >= logo_reveal_frame(row, col) {
+                new_line.push(tgt_c);
+            } else {
+                new_line.push(logo_random_char(row, col, frame));
+            }
+        }
+        *cur_line = new_line;
+    }
+}
+
 /// 寄存器视图类型常量
 const REG_VIEW_HOLDING: usize = 0;
 const REG_VIEW_COILS: usize = 1;
@@ -208,10 +289,17 @@ const REG_VIEW_DISCRETE: usize = 2;
 const REG_VIEW_INPUT: usize = 3;
 
 impl Ui {
-    fn new(base: DisplayBase, reg_format: RegDataFormat, swap_bytes: bool, swap_words: bool, profiles: Vec<String>) -> Self {
+    fn new(
+        base: DisplayBase,
+        reg_format: RegDataFormat,
+        swap_bytes: bool,
+        swap_words: bool,
+        profiles: Vec<String>,
+    ) -> Self {
         let logo_raw = include_str!("logo.txt");
-        let mut logo_lines: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
-        logo_lines.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
+        let mut logo_target: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
+        logo_target.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
+        let logo_current = logo_random_buf(&logo_target);
         let default = profiles.first().cloned();
         // 检测可用串口列表
         let serial_ports = tokio_serial::available_ports()
@@ -238,7 +326,8 @@ impl Ui {
             selected_profile: default.clone(),
             pending_mode: None,
             default_profile: default,
-            logo_lines,
+            logo_target,
+            logo_current,
             logo_frame: 0,
             serial_ports,
 
@@ -506,7 +595,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
             Modifier::empty()
         });
     let logo_text: Vec<Line> = ui
-        .logo_lines
+        .logo_current
         .iter()
         .map(|l| Line::from(Span::styled(l.clone(), logo_style)))
         .collect();
@@ -857,10 +946,7 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             }
         })
         .map(|n| {
-            let brief = configs
-                .get(*n)
-                .map(profile_pick_brief)
-                .unwrap_or_default();
+            let brief = configs.get(*n).map(profile_pick_brief).unwrap_or_default();
             ((*n).clone(), brief)
         })
         .collect();
@@ -1025,9 +1111,16 @@ fn render_csv_picker(f: &mut Frame<'_>, ui: &Ui) {
         )));
     } else {
         for (i, path) in ui.csv_files.iter().enumerate() {
-            let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let fname = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let style = if i == ui.csv_pick_idx {
-                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -2050,9 +2143,10 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
             Ok(Some(Ok(ev))) => ev,
             Ok(Some(Err(e))) => break Err(anyhow!(e).context("read event")),
             _ => {
-                // Logo 动画（约 3 秒完成，30 frames × 100ms）
-                if ui.logo_frame < 30 {
+                // Logo 动画（约 4.5 秒完成，LOGO_ANIM_FRAMES × 100ms）
+                if ui.logo_frame < LOGO_ANIM_FRAMES {
                     ui.logo_frame += 1;
+                    logo_animate_frame(&mut ui.logo_current, &ui.logo_target, ui.logo_frame);
                 }
                 // 刷新界面
                 let _ = terminal.draw(|f| match ui.menu_screen {
@@ -2808,8 +2902,17 @@ pub async fn run_ui(
                                                         let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
                                                         if let Some(profile_args) = configs.get(&pname) {
                                                             let mut args = profile_args.clone();
-        args.main_mode = "tcp-monitor".to_string();
-                                                            if let Err(e) = crate::modbus::run_modbus_monitor_tcp(args, mon_state).await {
+                                                            // 根据配置的 main_mode 选择对应的监听函数
+                                                            let res = match args.main_mode.as_str() {
+                                                                "rtu-monitor" => {
+                                                                    crate::modbus::run_modbus_monitor_rtu(args, mon_state).await
+                                                                }
+                                                                _ => {
+                                                                    args.main_mode = "tcp-monitor".to_string();
+                                                                    crate::modbus::run_modbus_monitor_tcp(args, mon_state).await
+                                                                }
+                                                            };
+                                                            if let Err(e) = res {
                                                                 eprintln!("监听任务失败: {}", e);
                                                             }
                                                         }
@@ -3517,7 +3620,10 @@ fn render_register_table(
             let v = &items[i];
             if is_bool {
                 let val = if *v == 1 { "ON" } else { "OFF" };
-                Some(Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)]))
+                Some(Row::new(vec![
+                    Cell::from(format!("{}", i)),
+                    Cell::from(val),
+                ]))
             } else {
                 // Check if this register is a secondary (disabled) register in a combination
                 let combinations = match ui.reg_view {
@@ -3531,11 +3637,13 @@ fn render_register_table(
 
                 // Determine the format for this register
                 let reg_fmt = combinations.get(&i).copied().unwrap_or(ui.reg_format);
-                let mut val = format_register_value(items, i, reg_fmt, ui.base, ui.swap_bytes, ui.swap_words);
+                let mut val =
+                    format_register_value(items, i, reg_fmt, ui.base, ui.swap_bytes, ui.swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
                 // Show combination info in label if combined
                 if let Some(&combo_fmt) = combinations.get(&i) {
-                    let combo_label = format!("[{}×{}]", combo_fmt.regs_needed(), combo_fmt.short_label());
+                    let combo_label =
+                        format!("[{}×{}]", combo_fmt.regs_needed(), combo_fmt.short_label());
                     if label.is_empty() {
                         label = combo_label;
                     } else {
