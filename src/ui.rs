@@ -28,6 +28,8 @@ use crate::{
     format_register_value, format_u16, modbus::frame_bytes_from_info, modbus::RegCmd,
     parse_u16_str, export_registers_to_json, AppState, Args, DisplayBase, FrameInfo,
     FrameRecord, MainMode, MonitorStats, RegDataFormat, BAR_HISTORY_SLOTS,
+    csv_log_header, csv_log_append, csv_log_path, list_csv_logs, load_csv_into_monitor,
+    MONITOR_LOG_DIR,
 };
 /// 从字符串解析寄存器数据格式
 fn parse_reg_format(s: &str) -> RegDataFormat {
@@ -138,6 +140,22 @@ pub struct Ui {
     /// 配置文件路径
     config_path: String,
 
+    // --- CSV 日志记录 ---
+    /// 是否正在记录监听数据到 CSV
+    monitor_logging: bool,
+    /// 当前 CSV 日志文件路径
+    monitor_log_path: Option<std::path::PathBuf>,
+    /// CSV 文件选择模式
+    csv_picking: bool,
+    /// CSV 文件列表
+    csv_files: Vec<std::path::PathBuf>,
+    /// CSV 文件选择索引
+    csv_pick_idx: usize,
+    /// 是否正在回放 CSV 文件（用于区分 live 和 replay 模式）
+    csv_replay_active: bool,
+    /// 上次已记录到 CSV 的帧数（用于增量写入）
+    last_logged_frames: usize,
+
     // --- 寄存器视图选择 ---
     /// 当前显示的寄存器类型：0=保持寄存器, 1=线圈, 2=离散输入, 3=输入寄存器
     reg_view: usize,
@@ -242,6 +260,15 @@ impl Ui {
             pick_names: Vec::new(),
             pick_briefs: Vec::new(),
             config_path: String::new(),
+
+            // CSV 日志
+            monitor_logging: false,
+            monitor_log_path: None,
+            csv_picking: false,
+            csv_files: Vec::new(),
+            csv_pick_idx: 0,
+            csv_replay_active: false,
+            last_logged_frames: 0,
 
             // 寄存器视图
             reg_view: REG_VIEW_HOLDING,
@@ -983,6 +1010,43 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .alignment(ratatui::layout::Alignment::Center),
         vert[2],
     );
+}
+
+/// Render the CSV file picker dialog (overlay)
+fn render_csv_picker(f: &mut Frame<'_>, ui: &Ui) {
+    let dialog_area = centered_rect(60, 70, f.area());
+    f.render_widget(ratatui::widgets::Clear, dialog_area);
+
+    let mut items: Vec<Line> = Vec::new();
+    if ui.csv_files.is_empty() {
+        items.push(Line::from(Span::styled(
+            t!("run_ui.csv_no_files"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, path) in ui.csv_files.iter().enumerate() {
+            let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let style = if i == ui.csv_pick_idx {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            items.push(Line::from(Span::styled(format!(" {} ", fname), style)));
+        }
+    }
+
+    let help_text = t!("run_ui.csv_pick_help");
+    items.push(Line::from(Span::raw("")));
+    items.push(Line::from(Span::styled(
+        help_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("run_ui.csv_pick_title"))
+        .border_style(Style::default().fg(Color::Magenta));
+    f.render_widget(Paragraph::new(items).block(block), dialog_area);
 }
 
 fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
@@ -2079,6 +2143,18 @@ pub async fn run_ui(
         tokio::select! {
                     _ = interval.tick() => {
                         let s = state.read().await;
+                        // CSV logging: write any new frames to log file
+                        if ui.monitor_logging {
+                            if let Some(ref log_path) = ui.monitor_log_path {
+                                let total = s.monitor.history.len();
+                                if total > ui.last_logged_frames {
+                                    for rec in s.monitor.history.iter().skip(ui.last_logged_frames) {
+                                        let _ = csv_log_append(log_path, rec);
+                                    }
+                                    ui.last_logged_frames = total;
+                                }
+                            }
+                        }
                         // 从 AppState 同步格式/交换设置到 UI（允许程序化修改）
                         ui.reg_format = s.reg_format;
                         ui.swap_bytes = s.swap_bytes;
@@ -2094,7 +2170,11 @@ pub async fn run_ui(
                             } else if s.stability_test_running {
                                 t!("run_ui.help_stability").into_owned()
                             } else if is_monitor_mode {
-                                t!("run_ui.help_monitoring").into_owned()
+                                let mut h = t!("run_ui.help_monitoring").into_owned();
+                                if ui.monitor_logging {
+                                    h.push_str(" | [LOG●]");
+                                }
+                                h
                             } else if monitor_active {
                                 t!("run_ui.help_monitor").into_owned()
                             } else {
@@ -2191,6 +2271,11 @@ pub async fn run_ui(
                                         f.render_widget(ratatui::widgets::Clear, dialog_area);
                                         f.render_widget(dialog, dialog_area);
                                     }
+                                }
+
+                                // CSV 文件选择对话框
+                                if ui.csv_picking {
+                                    render_csv_picker(f, &ui);
                                 }
                             } else {
                             // Server/Client 模式：顶部区域
@@ -2670,6 +2755,40 @@ pub async fn run_ui(
                                         }
                                         _ => {}
                                     }
+                                } else if ui.csv_picking {
+                                    match code {
+                                        KeyCode::Up | KeyCode::Char('k') => {
+                                            ui.csv_pick_idx = ui.csv_pick_idx.saturating_sub(1);
+                                        }
+                                        KeyCode::Down | KeyCode::Char('j') => {
+                                            if !ui.csv_files.is_empty() {
+                                                ui.csv_pick_idx = (ui.csv_pick_idx + 1).min(ui.csv_files.len().saturating_sub(1));
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            if ui.csv_pick_idx < ui.csv_files.len() {
+                                                let path = ui.csv_files[ui.csv_pick_idx].clone();
+                                                match load_csv_into_monitor(&path) {
+                                                    Ok(stats) => {
+                                                        let mut s = state.write().await;
+                                                        s.monitor = stats;
+                                                        ui.csv_picking = false;
+                                                        ui.csv_replay_active = true;
+                                                        ui.monitor_scroll = 0;
+                                                        let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                                                        set_status(&mut ui, t!("run_ui.csv_loaded", file = fname));
+                                                    }
+                                                    Err(e) => {
+                                                        set_status(&mut ui, format!("CSV load error: {}", e));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Esc => {
+                                            ui.csv_picking = false;
+                                        }
+                                        _ => {}
+                                    }
                                 } else {
                                     match code {
                                         KeyCode::Enter => {
@@ -2947,6 +3066,41 @@ pub async fn run_ui(
                                                 ui.monitor_picking = !ui.monitor_picking;
                                                 if ui.monitor_picking {
                                                     set_status(&mut ui, t!("run_ui.monitor_picking"));
+                                                }
+                                            }
+                                        }
+                                        // L: Toggle CSV logging
+                                        KeyCode::Char('L') => {
+                                            if is_monitor_mode || ui.show_monitor {
+                                                ui.monitor_logging = !ui.monitor_logging;
+                                                if ui.monitor_logging {
+                                                    // Create monitor directory and new log file
+                                                    let dir = std::path::Path::new(MONITOR_LOG_DIR);
+                                                    if !dir.exists() {
+                                                        let _ = std::fs::create_dir_all(dir);
+                                                    }
+                                                    let path = csv_log_path(&args.main_mode, args.tcp_port, &args.device);
+                                                    if let Err(e) = csv_log_header(&path) {
+                                                        set_status(&mut ui, format!("CSV log error: {}", e));
+                                                        ui.monitor_logging = false;
+                                                    } else {
+                                                        ui.monitor_log_path = Some(path.clone());
+                                                        set_status(&mut ui, t!("run_ui.logging_started", path = path.display().to_string()));
+                                                    }
+                                                } else {
+                                                    ui.monitor_log_path = None;
+                                                    set_status(&mut ui, t!("run_ui.logging_stopped"));
+                                                }
+                                            }
+                                        }
+                                        // O: Open CSV file picker for replay
+                                        KeyCode::Char('O') => {
+                                            if is_monitor_mode {
+                                                ui.csv_files = list_csv_logs();
+                                                ui.csv_pick_idx = 0;
+                                                ui.csv_picking = !ui.csv_picking;
+                                                if ui.csv_picking {
+                                                    set_status(&mut ui, t!("run_ui.csv_pick_opened"));
                                                 }
                                             }
                                         }

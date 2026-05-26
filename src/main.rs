@@ -490,6 +490,165 @@ fn format_system_time(t: std::time::SystemTime) -> String {
     }
 }
 
+/// CSV logging directory for monitor mode
+pub const MONITOR_LOG_DIR: &str = "./monitor";
+
+/// Write CSV header to a new log file
+pub fn csv_log_header(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
+    writeln!(f, "time,direction,protocol,unit,func_code,func_name,addr,values")
+}
+
+/// Append a frame record as a CSV row to the log file
+pub fn csv_log_append(path: &std::path::Path, rec: &FrameRecord) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let dir = if rec.is_request { "REQ" } else { "RSP" };
+    let proto = if rec.is_tcp { "TCP" } else { "RTU" };
+    let values_str: Vec<String> = rec.values.iter().map(|v| v.to_string()).collect();
+    writeln!(
+        f,
+        "{},{},{},{},0x{:02X},{},0x{:04X},\"[{}]\"",
+        rec.human_time, dir, proto, rec.unit, rec.func_code, rec.func_name, rec.addr,
+        values_str.join(";")
+    )
+}
+
+/// Generate a CSV log file path based on mode, port/device, and current time.
+/// For TCP mode: `tcp-{port}-{time}.csv`
+/// For RTU mode: `rtu-{device}-{time}.csv`
+pub fn csv_log_path(main_mode: &str, tcp_port: u16, device: &str) -> std::path::PathBuf {
+    let now = std::time::SystemTime::now();
+    let timestamp = match now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => {
+            let total_secs = d.as_secs();
+            // Use UTC time components directly
+            let secs_in_day = total_secs % 86400;
+            let h = secs_in_day / 3600;
+            let m = (secs_in_day % 3600) / 60;
+            let s = secs_in_day % 60;
+            // Days since epoch for date calculation
+            let days = total_secs / 86400;
+            let (year, month, day) = days_to_date(days);
+            format!("{:04}{:02}{:02}_{:02}{:02}{:02}", year, month, day, h, m, s)
+        }
+        Err(_) => "unknown".to_string(),
+    };
+    let prefix = if main_mode.contains("rtu") {
+        // Sanitize device name for use in filename (replace path separators)
+        let dev_name = device.replace(['/', '\\'], "_");
+        format!("rtu-{}-{}", dev_name, timestamp)
+    } else {
+        format!("tcp-{}-{}", tcp_port, timestamp)
+    };
+    std::path::PathBuf::from(MONITOR_LOG_DIR).join(format!("{}.csv", prefix))
+}
+
+/// Convert days since Unix epoch to (year, month, day)
+fn days_to_date(days: u64) -> (u64, u64, u64) {
+    // Civil calendar algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// List all CSV files in the monitor log directory
+pub fn list_csv_logs() -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(MONITOR_LOG_DIR);
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == "csv").unwrap_or(false))
+        .collect();
+    files.sort();
+    files.reverse(); // newest first
+    files
+}
+
+/// Parse a CSV log file back into a vector of FrameRecords
+pub fn parse_csv_log(path: &std::path::Path) -> Result<Vec<FrameRecord>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut records = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if i == 0 {
+            continue; // skip header
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Parse: time,direction,protocol,unit,func_code,func_name,addr,"[values]"
+        // We need to handle the quoted values field
+        let parts: Vec<&str> = if let Some(quote_start) = line.find('"') {
+            let prefix = &line[..quote_start];
+            let suffix = &line[quote_start..];
+            let mut p: Vec<&str> = prefix.trim_end_matches(',').split(',').collect();
+            p.push(suffix.trim_matches('"').trim_matches('[').trim_matches(']'));
+            p
+        } else {
+            line.split(',').collect()
+        };
+        if parts.len() < 7 {
+            continue;
+        }
+        let human_time = parts[0].to_string();
+        let is_request = parts[1] == "REQ";
+        let is_tcp = parts[2] == "TCP";
+        let unit = parts[3].parse::<u8>().unwrap_or(1);
+        let func_code = u8::from_str_radix(parts[4].trim_start_matches("0x"), 16).unwrap_or(0);
+        let func_name = parts[5].to_string();
+        let addr = u16::from_str_radix(parts[6].trim_start_matches("0x"), 16).unwrap_or(0);
+        let values: Vec<u16> = if parts.len() > 7 {
+            parts[7]
+                .split(';')
+                .filter_map(|s| s.trim().parse::<u16>().ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        records.push(FrameRecord {
+            timestamp: Instant::now(),
+            human_time,
+            func_code,
+            func_name,
+            addr,
+            values,
+            is_tcp,
+            is_request,
+            unit,
+        });
+    }
+    Ok(records)
+}
+
+/// Load a CSV log into MonitorStats for re-analysis
+pub fn load_csv_into_monitor(path: &std::path::Path) -> Result<MonitorStats> {
+    let records = parse_csv_log(path)?;
+    let mut stats = MonitorStats::default();
+    for rec in &records {
+        *stats.func_count.entry(rec.func_code).or_insert(0) += 1;
+        *stats.addr_count.entry(rec.addr).or_insert(0) += 1;
+        stats.total_frames += 1;
+    }
+    stats.history = records;
+    Ok(stats)
+}
+
 pub const BAR_HISTORY_SLOTS: usize = 20;
 
 /// 记录寄存器值变化
