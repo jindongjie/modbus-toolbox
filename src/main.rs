@@ -14,171 +14,213 @@ extern crate rust_i18n;
 
 i18n!("locales");
 
-/// 寄存器数据解释格式
+/// 寄存器数据类型
 #[derive(Copy, Clone, Debug, PartialEq, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RegDataFormat {
+pub enum RegDataType {
     #[default]
-    U16,
-    I16,
-    U32,
-    I32,
-    U64,
-    I64,
-    U128,
-    I128,
-    F16,
-    F32,
-    F64,
+    Uint,
+    Int,
+    Float,
     Hex,
     Binary,
     Ascii,
 }
 
+/// 寄存器数据位宽
+#[derive(Copy, Clone, Debug, PartialEq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegDataWidth {
+    #[default]
+    Bits16,
+    Bits32,
+    Bits64,
+    Bits128,
+}
+
+/// 寄存器数据解释格式 = 类型 + 位宽
+#[derive(Copy, Clone, Debug, PartialEq, Default, serde::Deserialize, serde::Serialize)]
+pub struct RegDataFormat {
+    pub data_type: RegDataType,
+    pub width: RegDataWidth,
+}
+
 impl RegDataFormat {
     /// 此格式需要的连续 16 位寄存器数量
     pub fn regs_needed(self) -> usize {
-        match self {
-            RegDataFormat::U16
-            | RegDataFormat::I16
-            | RegDataFormat::F16
-            | RegDataFormat::Hex
-            | RegDataFormat::Binary
-            | RegDataFormat::Ascii => 1,
-            RegDataFormat::U32 | RegDataFormat::I32 | RegDataFormat::F32 => 2,
-            RegDataFormat::U64 | RegDataFormat::I64 | RegDataFormat::F64 => 4,
-            RegDataFormat::U128 | RegDataFormat::I128 => 8,
+        match self.width {
+            RegDataWidth::Bits16 => 1,
+            RegDataWidth::Bits32 => 2,
+            RegDataWidth::Bits64 => 4,
+            RegDataWidth::Bits128 => 8,
         }
     }
 
-    pub fn short_label(self) -> &'static str {
-        match self {
-            RegDataFormat::U16 => "u16",
-            RegDataFormat::I16 => "i16",
-            RegDataFormat::U32 => "u32",
-            RegDataFormat::I32 => "i32",
-            RegDataFormat::U64 => "u64",
-            RegDataFormat::I64 => "i64",
-            RegDataFormat::U128 => "u128",
-            RegDataFormat::I128 => "i128",
-            RegDataFormat::F16 => "f16",
-            RegDataFormat::F32 => "f32",
-            RegDataFormat::F64 => "f64",
-            RegDataFormat::Hex => "hex",
-            RegDataFormat::Binary => "bin",
-            RegDataFormat::Ascii => "ascii",
+    fn type_prefix(self) -> &'static str {
+        match self.data_type {
+            RegDataType::Uint => "u",
+            RegDataType::Int => "i",
+            RegDataType::Float => "f",
+            RegDataType::Hex => "hex",
+            RegDataType::Binary => "bin",
+            RegDataType::Ascii => "ascii",
         }
     }
 
-    /// 可迭代所有格式，用于循环切换
-    pub fn all() -> &'static [RegDataFormat] {
+    fn width_suffix(self) -> &'static str {
+        match self.width {
+            RegDataWidth::Bits16 => "16",
+            RegDataWidth::Bits32 => "32",
+            RegDataWidth::Bits64 => "64",
+            RegDataWidth::Bits128 => "128",
+        }
+    }
+
+    pub fn short_label(self) -> String {
+        match self.data_type {
+            RegDataType::Hex | RegDataType::Binary | RegDataType::Ascii => {
+                self.type_prefix().to_string()
+            }
+            _ => format!("{}{}", self.type_prefix(), self.width_suffix()),
+        }
+    }
+
+    /// 迭代所有数据类型的循环顺序
+    pub fn all_types() -> &'static [RegDataType] {
         &[
-            RegDataFormat::U16,
-            RegDataFormat::I16,
-            RegDataFormat::U32,
-            RegDataFormat::I32,
-            RegDataFormat::U64,
-            RegDataFormat::I64,
-            RegDataFormat::U128,
-            RegDataFormat::I128,
-            RegDataFormat::F16,
-            RegDataFormat::F32,
-            RegDataFormat::F64,
-            RegDataFormat::Hex,
-            RegDataFormat::Binary,
-            RegDataFormat::Ascii,
+            RegDataType::Uint,
+            RegDataType::Int,
+            RegDataType::Float,
+            RegDataType::Hex,
+            RegDataType::Binary,
+            RegDataType::Ascii,
         ]
     }
 
-    /// Cycle combination formats: u16 → i32 → u64 → i128 → u16 (based on register count)
-    pub fn next_combination(self) -> RegDataFormat {
-        match self {
-            RegDataFormat::U16 => RegDataFormat::I32,
-            RegDataFormat::I32 => RegDataFormat::U64,
-            RegDataFormat::U64 => RegDataFormat::I128,
-            RegDataFormat::I128 => RegDataFormat::U16,
-            _ => RegDataFormat::I32,
+    /// 循环切换类型：Uint→Int→Float→Hex→Binary→Ascii→Uint
+    pub fn next_type(self) -> RegDataFormat {
+        let next = match self.data_type {
+            RegDataType::Uint => RegDataType::Int,
+            RegDataType::Int => RegDataType::Float,
+            RegDataType::Float => RegDataType::Hex,
+            RegDataType::Hex => RegDataType::Binary,
+            RegDataType::Binary => RegDataType::Ascii,
+            RegDataType::Ascii => RegDataType::Uint,
+        };
+        let width = RegDataFormat::sanitize_width(next, self.width);
+        RegDataFormat {
+            data_type: next,
+            width,
         }
     }
 
-    /// Cycle format type: u → i → f → hex → bin → ascii → u for 16-bit,
-    /// or u → i → f → u for multi-register formats.
-    pub fn next_format(self) -> RegDataFormat {
-        match self {
-            RegDataFormat::U16 => RegDataFormat::I16,
-            RegDataFormat::I16 => RegDataFormat::U32,
-            RegDataFormat::U32 => RegDataFormat::I32,
-            RegDataFormat::I32 => RegDataFormat::U64,
-            RegDataFormat::U64 => RegDataFormat::I64,
-            RegDataFormat::I64 => RegDataFormat::U128,
-            RegDataFormat::U128 => RegDataFormat::I128,
-            RegDataFormat::I128 => RegDataFormat::F16,
-            RegDataFormat::F16 => RegDataFormat::F32,
-            RegDataFormat::F32 => RegDataFormat::F64,
-            RegDataFormat::F64 => RegDataFormat::Hex,
-            RegDataFormat::Hex => RegDataFormat::Binary,
-            RegDataFormat::Binary => RegDataFormat::Ascii,
-            RegDataFormat::Ascii => RegDataFormat::U16,
+    /// 反向循环切换类型
+    pub fn prev_type(self) -> RegDataFormat {
+        let prev = match self.data_type {
+            RegDataType::Uint => RegDataType::Ascii,
+            RegDataType::Ascii => RegDataType::Binary,
+            RegDataType::Binary => RegDataType::Hex,
+            RegDataType::Hex => RegDataType::Float,
+            RegDataType::Float => RegDataType::Int,
+            RegDataType::Int => RegDataType::Uint,
+        };
+        let width = RegDataFormat::sanitize_width(prev, self.width);
+        RegDataFormat {
+            data_type: prev,
+            width,
         }
     }
 
-    /// Reverse of next_format: ascii → bin → hex → f → i → u for 16-bit,
-    /// or f → i → u → f for multi-register formats.
-    pub fn prev_format(self) -> RegDataFormat {
-        match self {
-            RegDataFormat::U16 => RegDataFormat::Ascii,
-            RegDataFormat::Ascii => RegDataFormat::Binary,
-            RegDataFormat::Binary => RegDataFormat::Hex,
-            RegDataFormat::Hex => RegDataFormat::F64,
-            RegDataFormat::F64 => RegDataFormat::F32,
-            RegDataFormat::F32 => RegDataFormat::F16,
-            RegDataFormat::F16 => RegDataFormat::I128,
-            RegDataFormat::I128 => RegDataFormat::U128,
-            RegDataFormat::U128 => RegDataFormat::I64,
-            RegDataFormat::I64 => RegDataFormat::U64,
-            RegDataFormat::U64 => RegDataFormat::I32,
-            RegDataFormat::I32 => RegDataFormat::U32,
-            RegDataFormat::U32 => RegDataFormat::I16,
-            RegDataFormat::I16 => RegDataFormat::U16,
+    /// 确保位宽对指定类型有效
+    fn sanitize_width(data_type: RegDataType, width: RegDataWidth) -> RegDataWidth {
+        match data_type {
+            RegDataType::Hex | RegDataType::Binary | RegDataType::Ascii => RegDataWidth::Bits16,
+            RegDataType::Float => match width {
+                RegDataWidth::Bits128 => RegDataWidth::Bits64, // 无 F128
+                w => w,
+            },
+            _ => width,
         }
     }
 
-    /// Cycle data width: 16 → 32 → 64 → 128 → 16, keeping the same format type.
-    /// For fallback types (Binary, Ascii) returns U16.
-    /// F16 → F32 → F64 → F16 (no F128).
+    /// 循环增加位宽：16→32→64→128→16
     pub fn next_width(self) -> RegDataFormat {
-        match self {
-            RegDataFormat::U16 => RegDataFormat::U32,
-            RegDataFormat::U32 => RegDataFormat::U64,
-            RegDataFormat::U64 => RegDataFormat::U128,
-            RegDataFormat::U128 => RegDataFormat::U16,
-            RegDataFormat::I16 => RegDataFormat::I32,
-            RegDataFormat::I32 => RegDataFormat::I64,
-            RegDataFormat::I64 => RegDataFormat::I128,
-            RegDataFormat::I128 => RegDataFormat::I16,
-            RegDataFormat::F16 => RegDataFormat::F32,
-            RegDataFormat::F32 => RegDataFormat::F64,
-            RegDataFormat::F64 => RegDataFormat::F16,
-            _ => RegDataFormat::U16,
+        let w = match self.width {
+            RegDataWidth::Bits16 => RegDataWidth::Bits32,
+            RegDataWidth::Bits32 => RegDataWidth::Bits64,
+            RegDataWidth::Bits64 => RegDataWidth::Bits128,
+            RegDataWidth::Bits128 => RegDataWidth::Bits16,
+        };
+        let width = RegDataFormat::sanitize_width(self.data_type, w);
+        RegDataFormat {
+            data_type: self.data_type,
+            width,
         }
     }
 
-    /// Reverse of next_width: 128 → 64 → 32 → 16 → 128, keeping the same format type.
-    /// For fallback types (Binary, Ascii) returns U16.
+    /// 循环减少位宽：128→64→32→16→128
     pub fn prev_width(self) -> RegDataFormat {
-        match self {
-            RegDataFormat::U16 => RegDataFormat::U128,
-            RegDataFormat::U32 => RegDataFormat::U16,
-            RegDataFormat::U64 => RegDataFormat::U32,
-            RegDataFormat::U128 => RegDataFormat::U64,
-            RegDataFormat::I16 => RegDataFormat::I128,
-            RegDataFormat::I32 => RegDataFormat::I16,
-            RegDataFormat::I64 => RegDataFormat::I32,
-            RegDataFormat::I128 => RegDataFormat::I64,
-            RegDataFormat::F16 => RegDataFormat::F64,
-            RegDataFormat::F32 => RegDataFormat::F16,
-            RegDataFormat::F64 => RegDataFormat::F32,
-            _ => RegDataFormat::U16,
+        let w = match self.width {
+            RegDataWidth::Bits16 => RegDataWidth::Bits128,
+            RegDataWidth::Bits32 => RegDataWidth::Bits16,
+            RegDataWidth::Bits64 => RegDataWidth::Bits32,
+            RegDataWidth::Bits128 => RegDataWidth::Bits64,
+        };
+        let width = RegDataFormat::sanitize_width(self.data_type, w);
+        RegDataFormat {
+            data_type: self.data_type,
+            width,
+        }
+    }
+
+    /// 将指定类型设为 Uint，保持位宽
+    pub fn to_uint(self) -> RegDataFormat {
+        RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: self.width,
+        }
+    }
+
+    /// 将指定类型设为 Int，保持位宽
+    pub fn to_int(self) -> RegDataFormat {
+        RegDataFormat {
+            data_type: RegDataType::Int,
+            width: self.width,
+        }
+    }
+
+    /// 将指定类型设为 Float，若已是 Float 则循环位宽
+    pub fn to_float(self) -> RegDataFormat {
+        if self.data_type == RegDataType::Float {
+            self.next_width()
+        } else {
+            RegDataFormat {
+                data_type: RegDataType::Float,
+                width: RegDataFormat::sanitize_width(RegDataType::Float, self.width),
+            }
+        }
+    }
+
+    /// 将指定类型设为 Hex（强制 16 位）
+    pub fn to_hex(self) -> RegDataFormat {
+        RegDataFormat {
+            data_type: RegDataType::Hex,
+            width: RegDataWidth::Bits16,
+        }
+    }
+
+    /// 将指定类型设为 Binary（强制 16 位）
+    pub fn to_binary(self) -> RegDataFormat {
+        RegDataFormat {
+            data_type: RegDataType::Binary,
+            width: RegDataWidth::Bits16,
+        }
+    }
+
+    /// 将指定类型设为 Ascii（强制 16 位）
+    pub fn to_ascii(self) -> RegDataFormat {
+        RegDataFormat {
+            data_type: RegDataType::Ascii,
+            width: RegDataWidth::Bits16,
         }
     }
 }
@@ -509,7 +551,7 @@ impl Default for AppState {
             slave_scan_result: None,
             slave_scan_running: false,
             reg_bar_history: Vec::new(),
-            reg_format: RegDataFormat::U16,
+            reg_format: RegDataFormat::default(),
             holding_swap_bytes: HashMap::new(),
             holding_swap_words: HashMap::new(),
             input_swap_bytes: HashMap::new(),
@@ -1005,17 +1047,46 @@ fn parse_mainmode(s: &str) -> Result<MainMode> {
 
 /// Parse combination format string to RegDataFormat
 fn parse_combination_format(s: &str) -> RegDataFormat {
-    match s.trim().to_lowercase().as_str() {
-        "i32" | "int32" => RegDataFormat::I32,
-        "u32" | "uint32" => RegDataFormat::U32,
-        "u64" | "uint64" => RegDataFormat::U64,
-        "i64" | "int64" => RegDataFormat::I64,
-        "u128" | "uint128" => RegDataFormat::U128,
-        "i128" | "int128" => RegDataFormat::I128,
-        "f32" | "float" => RegDataFormat::F32,
-        "f64" | "double" => RegDataFormat::F64,
-        _ => RegDataFormat::U16,
-    }
+    let s = s.trim().to_lowercase();
+    // Try exact match first (long form)
+    let (data_type, width_str): (RegDataType, String) = match s.as_str() {
+        "i32" | "int32" => (RegDataType::Int, "32".to_string()),
+        "u32" | "uint32" => (RegDataType::Uint, "32".to_string()),
+        "u64" | "uint64" => (RegDataType::Uint, "64".to_string()),
+        "i64" | "int64" => (RegDataType::Int, "64".to_string()),
+        "u128" | "uint128" => (RegDataType::Uint, "128".to_string()),
+        "i128" | "int128" => (RegDataType::Int, "128".to_string()),
+        "f16" | "half" => (RegDataType::Float, "16".to_string()),
+        "f32" | "float" => (RegDataType::Float, "32".to_string()),
+        "f64" | "double" => (RegDataType::Float, "64".to_string()),
+        "hex" => return RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 },
+        "bin" | "binary" => return RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 },
+        "ascii" => return RegDataFormat { data_type: RegDataType::Ascii, width: RegDataWidth::Bits16 },
+        // Parse as type+number format (e.g., "u16", "i32")
+        _ => {
+            let chars: Vec<char> = s.chars().collect();
+            if chars.len() < 3 {
+                return RegDataFormat::default();
+            }
+            let type_char = chars[0];
+            let num_str: String = chars[1..].iter().collect();
+            let dt = match type_char {
+                'u' => RegDataType::Uint,
+                'i' => RegDataType::Int,
+                'f' => RegDataType::Float,
+                _ => return RegDataFormat::default(),
+            };
+            (dt, num_str)
+        }
+    };
+    let width = match width_str.as_str() {
+        "16" => RegDataWidth::Bits16,
+        "32" => RegDataWidth::Bits32,
+        "64" => RegDataWidth::Bits64,
+        "128" => RegDataWidth::Bits128,
+        _ => RegDataWidth::Bits16,
+    };
+    RegDataFormat { data_type, width }
 }
 
 fn parse_parity(s: &str) -> Result<Parity> {
@@ -1052,9 +1123,9 @@ fn parse_stopbits(v: u8) -> Result<StopBits> {
 }
 
 fn format_u16(v: u16, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:04X}"),
-        RegDataFormat::Binary => format!("0b{v:016b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:04X}"),
+        RegDataType::Binary => format!("0b{v:016b}"),
         _ => format!("{v}"),
     }
 }
@@ -1071,72 +1142,72 @@ fn parse_u16_str(s: &str, fmt: RegDataFormat) -> Result<u16> {
     if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
         return u16::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"));
     }
-    match fmt {
-        RegDataFormat::Hex => u16::from_str_radix(t, 16).context(t!("main.parse_hex")),
-        RegDataFormat::Binary => u16::from_str_radix(t, 2).context(t!("main.parse_bin")),
+    match fmt.data_type {
+        RegDataType::Hex => u16::from_str_radix(t, 16).context(t!("main.parse_hex")),
+        RegDataType::Binary => u16::from_str_radix(t, 2).context(t!("main.parse_bin")),
         _ => t.parse::<u16>().context(t!("main.parse_dec")),
     }
 }
 
 /// 将 u32 值按指定格式格式化
 fn format_u32(v: u32, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:08X}"),
-        RegDataFormat::Binary => format!("0b{v:032b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:08X}"),
+        RegDataType::Binary => format!("0b{v:032b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 u64 值按指定格式格式化
 fn format_u64(v: u64, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:016X}"),
-        RegDataFormat::Binary => format!("0b{v:064b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:016X}"),
+        RegDataType::Binary => format!("0b{v:064b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 i16 值按指定格式格式化
 fn format_i16(v: i16, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:04X}"),
-        RegDataFormat::Binary => format!("0b{v:016b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:04X}"),
+        RegDataType::Binary => format!("0b{v:016b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 i32 值按指定格式格式化
 fn format_i32(v: i32, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:08X}"),
-        RegDataFormat::Binary => format!("0b{v:032b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:08X}"),
+        RegDataType::Binary => format!("0b{v:032b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 i64 值按指定格式格式化
 fn format_i64(v: i64, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:016X}"),
-        RegDataFormat::Binary => format!("0b{v:064b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:016X}"),
+        RegDataType::Binary => format!("0b{v:064b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 u128 值按指定格式格式化
 fn format_u128(v: u128, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:032X}"),
-        RegDataFormat::Binary => format!("0b{v:0128b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:032X}"),
+        RegDataType::Binary => format!("0b{v:0128b}"),
         _ => format!("{v}"),
     }
 }
 
 /// 将 i128 值按指定格式格式化
 fn format_i128(v: i128, fmt: RegDataFormat) -> String {
-    match fmt {
-        RegDataFormat::Hex => format!("0x{v:032X}"),
-        RegDataFormat::Binary => format!("0b{v:0128b}"),
+    match fmt.data_type {
+        RegDataType::Hex => format!("0x{v:032X}"),
+        RegDataType::Binary => format!("0b{v:0128b}"),
         _ => format!("{v}"),
     }
 }
@@ -1199,32 +1270,32 @@ pub(crate) fn format_register_value(
         words.reverse();
     }
 
-    match format {
-        RegDataFormat::U16 | RegDataFormat::Hex => format_u16(words[0], format),
-        RegDataFormat::I16 => format_i16(words[0] as i16, format),
-        RegDataFormat::U32 => {
+    match (format.data_type, format.width) {
+        (RegDataType::Uint, RegDataWidth::Bits16) | (RegDataType::Hex, _)
+        | (RegDataType::Binary, _) | (RegDataType::Ascii, _) => {
+            format_u16(words[0], format)
+        }
+        (RegDataType::Int, RegDataWidth::Bits16) => format_i16(words[0] as i16, format),
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits32) => {
             let v = (words[0] as u32) << 16 | words[1] as u32;
-            format_u32(v, format)
+            if format.data_type == RegDataType::Int {
+                format_i32(v as i32, format)
+            } else {
+                format_u32(v, format)
+            }
         }
-        RegDataFormat::I32 => {
-            let v = ((words[0] as u32) << 16 | words[1] as u32) as i32;
-            format_i32(v, format)
-        }
-        RegDataFormat::U64 => {
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits64) => {
             let v = (words[0] as u64) << 48
                 | (words[1] as u64) << 32
                 | (words[2] as u64) << 16
                 | words[3] as u64;
-            format_u64(v, format)
+            if format.data_type == RegDataType::Int {
+                format_i64(v as i64, format)
+            } else {
+                format_u64(v, format)
+            }
         }
-        RegDataFormat::I64 => {
-            let v = ((words[0] as u64) << 48
-                | (words[1] as u64) << 32
-                | (words[2] as u64) << 16
-                | words[3] as u64) as i64;
-            format_i64(v, format)
-        }
-        RegDataFormat::U128 => {
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits128) => {
             let v = (words[0] as u128) << 112
                 | (words[1] as u128) << 96
                 | (words[2] as u128) << 80
@@ -1233,26 +1304,19 @@ pub(crate) fn format_register_value(
                 | (words[5] as u128) << 32
                 | (words[6] as u128) << 16
                 | words[7] as u128;
-            format_u128(v, format)
+            if format.data_type == RegDataType::Int {
+                format_i128(v as i128, format)
+            } else {
+                format_u128(v, format)
+            }
         }
-        RegDataFormat::I128 => {
-            let v = ((words[0] as u128) << 112
-                | (words[1] as u128) << 96
-                | (words[2] as u128) << 80
-                | (words[3] as u128) << 64
-                | (words[4] as u128) << 48
-                | (words[5] as u128) << 32
-                | (words[6] as u128) << 16
-                | words[7] as u128) as i128;
-            format_i128(v, format)
-        }
-        RegDataFormat::F16 => format_f16(words[0]),
-        RegDataFormat::F32 => {
+        (RegDataType::Float, RegDataWidth::Bits16) => format_f16(words[0]),
+        (RegDataType::Float, RegDataWidth::Bits32) => {
             let bits = ((words[0] as u32) << 16) | words[1] as u32;
             let v = f32::from_bits(bits);
             format!("{:.6}", v)
         }
-        RegDataFormat::F64 => {
+        (RegDataType::Float, RegDataWidth::Bits64) => {
             let bits = (words[0] as u64) << 48
                 | (words[1] as u64) << 32
                 | (words[2] as u64) << 16
@@ -1260,20 +1324,16 @@ pub(crate) fn format_register_value(
             let v = f64::from_bits(bits);
             format!("{:.10}", v)
         }
-        RegDataFormat::Binary => format!("0b{:016b}", words[0]),
-        RegDataFormat::Ascii => {
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
-            let s: String = bytes
-                .iter()
-                .map(|&b| {
-                    if b.is_ascii_graphic() || b == b' ' {
-                        b as char
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            s
+        (RegDataType::Float, RegDataWidth::Bits128) => {
+            let bits = (words[0] as u128) << 112
+                | (words[1] as u128) << 96
+                | (words[2] as u128) << 80
+                | (words[3] as u128) << 64
+                | (words[4] as u128) << 48
+                | (words[5] as u128) << 32
+                | (words[6] as u128) << 16
+                | words[7] as u128;
+            format_u128(bits, format)
         }
     }
 }
@@ -1473,13 +1533,13 @@ async fn main() -> Result<()> {
         if let Some(addr_str) = k.strip_prefix("i:") {
             if let Ok(idx) = addr_str.parse::<usize>() {
                 let fmt = parse_combination_format(v);
-                if fmt != RegDataFormat::U16 {
+                if fmt != RegDataFormat::default() {
                     input_combinations.insert(idx, fmt);
                 }
             }
         } else if let Ok(idx) = k.parse::<usize>() {
             let fmt = parse_combination_format(v);
-            if fmt != RegDataFormat::U16 {
+            if fmt != RegDataFormat::default() {
                 holding_combinations.insert(idx, fmt);
             }
         }
@@ -1540,7 +1600,7 @@ async fn main() -> Result<()> {
         slave_scan_result: None,
         slave_scan_running: false,
         reg_bar_history: vec![vec![]; max_count],
-        reg_format: RegDataFormat::U16,
+        reg_format: RegDataFormat::default(),
         holding_swap_bytes,
         holding_swap_words,
         input_swap_bytes,

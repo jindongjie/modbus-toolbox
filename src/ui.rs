@@ -30,24 +30,25 @@ use crate::{
     csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,
     format_u16, list_csv_logs, load_csv_into_monitor, modbus::frame_bytes_from_info,
     modbus::RegCmd, parse_u16_str, AppState, Args, FrameInfo, FrameRecord, MainMode, MonitorStats,
-    RegDataFormat, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
+    RegDataFormat, RegDataType, RegDataWidth, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
 };
 /// 从字符串解析寄存器数据格式
 fn parse_reg_format(s: &str) -> RegDataFormat {
     match s.trim().to_lowercase().as_str() {
-        "i16" => RegDataFormat::I16,
-        "u32" | "uint32" => RegDataFormat::U32,
-        "i32" | "int32" => RegDataFormat::I32,
-        "u64" | "uint64" => RegDataFormat::U64,
-        "i64" | "int64" => RegDataFormat::I64,
-        "u128" | "uint128" => RegDataFormat::U128,
-        "i128" | "int128" => RegDataFormat::I128,
-        "f16" | "half" => RegDataFormat::F16,
-        "f32" | "float" => RegDataFormat::F32,
-        "f64" | "double" => RegDataFormat::F64,
-        "bin" | "binary" => RegDataFormat::Binary,
-        "ascii" => RegDataFormat::Ascii,
-        _ => RegDataFormat::U16,
+        "i16" => RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits16 },
+        "u32" | "uint32" => RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 },
+        "i32" | "int32" => RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits32 },
+        "u64" | "uint64" => RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 },
+        "i64" | "int64" => RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits64 },
+        "u128" | "uint128" => RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits128 },
+        "i128" | "int128" => RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits128 },
+        "f16" | "half" => RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits16 },
+        "f32" | "float" => RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 },
+        "f64" | "double" => RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits64 },
+        "hex" => RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 },
+        "bin" | "binary" => RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 },
+        "ascii" => RegDataFormat { data_type: RegDataType::Ascii, width: RegDataWidth::Bits16 },
+        _ => RegDataFormat::default(),
     }
 }
 
@@ -433,9 +434,9 @@ fn edit_accepts_char(current: &str, ch: char, fmt: RegDataFormat) -> bool {
     if ch == '0' && current.is_empty() {
         return true;
     }
-    match fmt {
-        RegDataFormat::Hex => ch.is_ascii_hexdigit(),
-        RegDataFormat::Binary => ch == '0' || ch == '1',
+    match fmt.data_type {
+        RegDataType::Hex => ch.is_ascii_hexdigit(),
+        RegDataType::Binary => ch == '0' || ch == '1',
         _ => ch.is_ascii_digit() || ch == '-',
     }
 }
@@ -2104,7 +2105,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(RegDataFormat::U16, profiles);
+    let mut ui = Ui::new(RegDataFormat::default(), profiles);
     ui.config_path = config_path.to_string();
     // 尝试读取默认配置
     if let Some(def) = load_default_profile(config_path) {
@@ -3071,14 +3072,82 @@ pub async fn run_ui(
                                                 drop(s);
                                             }
                                         }
-                                        // i: 显示/关闭当前配置信息弹窗
-                                        KeyCode::Char('i') => {
+                                        // I (Shift+I): 显示/关闭当前配置信息弹窗
+                                        KeyCode::Char('I') => {
                                             if !ui.edit_mode {
                                                 ui.show_profile_info = !ui.show_profile_info;
                                             }
                                         }
 
-                                        // f: 切换选中地址的格式类型 u→i→f→u (保持同一位宽)
+                                        // u: 设置类型为 Uint（保持当前位宽）
+                                        KeyCode::Char('u') => {
+                                            if !ui.edit_mode && !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.to_uint();
+                                                        combinations.insert(addr, new_fmt);
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
+                                            }
+                                        }
+                                        // i: 设置类型为 Int（保持当前位宽）
+                                        KeyCode::Char('i') => {
+                                            if !ui.edit_mode && !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.to_int();
+                                                        combinations.insert(addr, new_fmt);
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
+                                            }
+                                        }
+                                        // f: 设置类型为 Float（若已是 Float 则循环位宽 F16→F32→F64→F16）
                                         KeyCode::Char('f') => {
                                             if !ui.edit_mode && !is_monitor_mode {
                                                 let mut s = state.write().await;
@@ -3090,26 +3159,46 @@ pub async fn run_ui(
                                                         _ => unreachable!(),
                                                     };
                                                     if addr < total_regs {
-                                                        let combinations = match ui.reg_view {
-                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                            REG_VIEW_INPUT => &mut s.input_combinations,
-                                                            _ => unreachable!(),
+                                                        // Step 1: 读取当前格式，处理 retain
+                                                        let new_fmt = {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            let current_fmt = combinations
+                                                                .get(&addr)
+                                                                .copied()
+                                                                .unwrap_or(ui.reg_format);
+                                                            if current_fmt.data_type == RegDataType::Float {
+                                                                combinations.retain(|&k, _| k < addr || k >= addr + current_fmt.regs_needed());
+                                                            }
+                                                            current_fmt.to_float()
                                                         };
-                                                        // 当前格式：优先从组合读，没有则用全局默认
-                                                        let current_fmt = combinations
-                                                            .get(&addr)
-                                                            .copied()
-                                                            .unwrap_or(ui.reg_format);
-                                                        let new_fmt = current_fmt.next_format();
-                                                        if new_fmt == current_fmt {
-                                                            drop(s);
-                                                            set_status(&mut ui, "No more format types for this width");
-                                                        } else {
-                                                            combinations.insert(addr, new_fmt);
-                                                            let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
-                                                            set_status(&mut ui, msg);
-                                                            drop(s);
+                                                        let new_needed = new_fmt.regs_needed();
+                                                        // Step 2: 禁用次级寄存器的变化追踪
+                                                        if new_needed > 1 && addr + new_needed <= total_regs {
+                                                            let change_enabled = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
+                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
+                                                                change_enabled[i] = false;
+                                                            }
                                                         }
+                                                        // Step 3: 插入新格式
+                                                        {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            combinations.insert(addr, new_fmt);
+                                                        }
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
                                                     } else {
                                                         drop(s);
                                                     }
@@ -3118,8 +3207,77 @@ pub async fn run_ui(
                                                 }
                                             }
                                         }
-                                        // F (Shift+F): 切换选中地址的格式类型反向 f→i→u→f
+                                        // F (Shift+F): 设置类型为 Float（F32 默认），若已是 Float 则反向循环位宽
                                         KeyCode::Char('F') => {
+                                            if !ui.edit_mode && !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        // 读取当前格式并计算新格式
+                                                        let new_fmt = {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            let current_fmt = combinations
+                                                                .get(&addr)
+                                                                .copied()
+                                                                .unwrap_or(ui.reg_format);
+                                                            if current_fmt.data_type == RegDataType::Float {
+                                                                let old_needed = current_fmt.regs_needed();
+                                                                combinations.retain(|&k, _| k < addr || k >= addr + old_needed);
+                                                                let w = match current_fmt.width {
+                                                                    RegDataWidth::Bits16 => RegDataWidth::Bits64,
+                                                                    RegDataWidth::Bits32 => RegDataWidth::Bits16,
+                                                                    RegDataWidth::Bits64 => RegDataWidth::Bits32,
+                                                                    _ => RegDataWidth::Bits64,
+                                                                };
+                                                                RegDataFormat { data_type: RegDataType::Float, width: w }
+                                                            } else {
+                                                                RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 }
+                                                            }
+                                                        };
+                                                        let new_needed = new_fmt.regs_needed();
+                                                        // 禁用次级寄存器的变化追踪
+                                                        if new_needed > 1 && addr + new_needed <= total_regs {
+                                                            let change_enabled = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
+                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
+                                                                change_enabled[i] = false;
+                                                            }
+                                                        }
+                                                        // 插入新格式
+                                                        {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            combinations.insert(addr, new_fmt);
+                                                        }
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
+                                            }
+                                        }
+                                        // h: 设置类型为 Hex（强制 16 位单寄存器）
+                                        KeyCode::Char('h') => {
                                             if !ui.edit_mode && !is_monitor_mode {
                                                 let mut s = state.write().await;
                                                 if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
@@ -3135,20 +3293,45 @@ pub async fn run_ui(
                                                             REG_VIEW_INPUT => &mut s.input_combinations,
                                                             _ => unreachable!(),
                                                         };
-                                                        let current_fmt = combinations
-                                                            .get(&addr)
-                                                            .copied()
-                                                            .unwrap_or(ui.reg_format);
-                                                        let new_fmt = current_fmt.prev_format();
-                                                        if new_fmt == current_fmt {
-                                                            drop(s);
-                                                            set_status(&mut ui, "No more format types for this width");
-                                                        } else {
-                                                            combinations.insert(addr, new_fmt);
-                                                            let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
-                                                            set_status(&mut ui, msg);
-                                                            drop(s);
-                                                        }
+                                                        // Hex 强制 16 位，移除所有覆盖此地址的组合
+                                                        combinations.retain(|&k, _| k != addr);
+                                                        let new_fmt = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        combinations.insert(addr, new_fmt);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
+                                            }
+                                        }
+                                        // b: 设置类型为 Binary（强制 16 位单寄存器）
+                                        KeyCode::Char('b') => {
+                                            if !ui.edit_mode && !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        // Binary 强制 16 位，移除所有覆盖此地址的组合
+                                                        combinations.retain(|&k, _| k != addr);
+                                                        let new_fmt = RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 };
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        combinations.insert(addr, new_fmt);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
                                                     } else {
                                                         drop(s);
                                                     }
@@ -3373,11 +3556,25 @@ pub async fn run_ui(
                                         }
                                         KeyCode::Char('e') => {
                                             let s = state.read().await;
-                                            if ui.selected < s.holding.len() {
+                                            let items = match ui.reg_view {
+                                                REG_VIEW_HOLDING => &s.holding,
+                                                REG_VIEW_INPUT => &s.input_registers,
+                                                _ => &s.holding,
+                                            };
+                                            if ui.selected < items.len() {
                                                 ui.edit_mode = true;
                                                 ui.edit_is_label = false;
                                                 ui.edit_is_profile = false;
-                                                ui.edit_buf = format_u16(s.holding[ui.selected], ui.reg_format);
+                                                let combos = match ui.reg_view {
+                                                    REG_VIEW_HOLDING => &s.holding_combinations,
+                                                    REG_VIEW_INPUT => &s.input_combinations,
+                                                    _ => &s.holding_combinations,
+                                                };
+                                                let fmt = combos
+                                                    .get(&ui.selected)
+                                                    .copied()
+                                                    .unwrap_or(ui.reg_format);
+                                                ui.edit_buf = format_u16(items[ui.selected], fmt);
                                                 ui.status_msg = None;
                                             }
                                         }
@@ -4629,14 +4826,14 @@ mod tests {
 
     fn make_u32_combo(primary: usize) -> HashMap<usize, crate::RegDataFormat> {
         let mut m = HashMap::new();
-        m.insert(primary, crate::RegDataFormat::U32);
+        m.insert(primary, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 });
         m
     }
 
     #[allow(dead_code)]
     fn make_u64_combo(primary: usize) -> HashMap<usize, crate::RegDataFormat> {
         let mut m = HashMap::new();
-        m.insert(primary, crate::RegDataFormat::U64);
+        m.insert(primary, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits64 });
         m
     }
 
@@ -4663,8 +4860,8 @@ mod tests {
     #[test]
     fn test_is_secondary_register_multiple_combos() {
         let mut combos = HashMap::new();
-        combos.insert(0, crate::RegDataFormat::U64); // covers 0-3
-        combos.insert(10, crate::RegDataFormat::U32); // covers 10-11
+        combos.insert(0, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits64 }); // covers 0-3
+        combos.insert(10, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }); // covers 10-11
                                                       // secondary in first combo
         assert!(is_secondary_register(1, &combos));
         assert!(is_secondary_register(2, &combos));
@@ -4703,8 +4900,8 @@ mod tests {
     #[test]
     fn test_next_visible_reg_multiple_combos() {
         let mut combos = HashMap::new();
-        combos.insert(0, crate::RegDataFormat::U64); // covers 0-3
-        combos.insert(5, crate::RegDataFormat::U32); // covers 5-6
+        combos.insert(0, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits64 }); // covers 0-3
+        combos.insert(5, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }); // covers 5-6
                                                      // from 0 → skip 1,2,3 → 4
         assert_eq!(next_visible_reg(0, 10, &combos), Some(4));
         // from 4 → skip 5, hmm no 5 is primary → 5
@@ -4740,61 +4937,13 @@ mod tests {
         assert_eq!(prev_visible_reg(0, &combos), None);
     }
 
-    // ─── next_width / prev_width cycle (used by g/G hotkeys) ───
-
-    #[test]
-    fn test_next_width_cycle() {
-        use crate::RegDataFormat;
-        assert_eq!(RegDataFormat::U16.next_width(), RegDataFormat::U32);
-        assert_eq!(RegDataFormat::U32.next_width(), RegDataFormat::U64);
-        assert_eq!(RegDataFormat::U64.next_width(), RegDataFormat::U128);
-        assert_eq!(RegDataFormat::U128.next_width(), RegDataFormat::U16);
-        assert_eq!(RegDataFormat::I16.next_width(), RegDataFormat::I32);
-        assert_eq!(RegDataFormat::I32.next_width(), RegDataFormat::I64);
-        assert_eq!(RegDataFormat::I64.next_width(), RegDataFormat::I128);
-        assert_eq!(RegDataFormat::I128.next_width(), RegDataFormat::I16);
-        assert_eq!(RegDataFormat::F16.next_width(), RegDataFormat::F32);
-        assert_eq!(RegDataFormat::F32.next_width(), RegDataFormat::F64);
-        assert_eq!(RegDataFormat::F64.next_width(), RegDataFormat::F16);
-    }
-
-    #[test]
-    fn test_prev_width_cycle() {
-        use crate::RegDataFormat;
-        assert_eq!(RegDataFormat::U16.prev_width(), RegDataFormat::U128);
-        assert_eq!(RegDataFormat::U32.prev_width(), RegDataFormat::U16);
-        assert_eq!(RegDataFormat::U64.prev_width(), RegDataFormat::U32);
-        assert_eq!(RegDataFormat::U128.prev_width(), RegDataFormat::U64);
-        assert_eq!(RegDataFormat::I16.prev_width(), RegDataFormat::I128);
-        assert_eq!(RegDataFormat::I32.prev_width(), RegDataFormat::I16);
-        assert_eq!(RegDataFormat::I64.prev_width(), RegDataFormat::I32);
-        assert_eq!(RegDataFormat::I128.prev_width(), RegDataFormat::I64);
-        assert_eq!(RegDataFormat::F16.prev_width(), RegDataFormat::F64);
-        assert_eq!(RegDataFormat::F32.prev_width(), RegDataFormat::F16);
-        assert_eq!(RegDataFormat::F64.prev_width(), RegDataFormat::F32);
-    }
-
-    // ─── regs_needed ├──
-
-    #[test]
-    fn test_regs_needed() {
-        use crate::RegDataFormat;
-        assert_eq!(RegDataFormat::U16.regs_needed(), 1);
-        assert_eq!(RegDataFormat::U32.regs_needed(), 2);
-        assert_eq!(RegDataFormat::U64.regs_needed(), 4);
-        assert_eq!(RegDataFormat::U128.regs_needed(), 8);
-        assert_eq!(RegDataFormat::F16.regs_needed(), 1);
-        assert_eq!(RegDataFormat::F32.regs_needed(), 2);
-        assert_eq!(RegDataFormat::F64.regs_needed(), 4);
-    }
-
     // ─── format_register_value (value reading from combined registers) ───
 
     #[test]
     fn test_format_register_value_u16() {
         use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::Hex, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }, false, false);
         assert_eq!(val, "0x1234");
     }
 
@@ -4802,9 +4951,9 @@ mod tests {
     fn test_format_register_value_u32_hex() {
         use crate::RegDataFormat;
         // Hex format only reads 1 register; to see the full u32 value,
-        // use RegDataFormat::U32 with byte swap to reconstruct the pair.
+        // use RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 } with byte swap to reconstruct the pair.
         let regs = vec![0x1234u16, 0x5678u16, 0x9ABCu16];
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }, false, false);
         assert_eq!(val, "305419896"); // 0x12345678 in decimal
     }
 
@@ -4812,7 +4961,7 @@ mod tests {
     fn test_format_register_value_u32_out_of_bounds() {
         use crate::RegDataFormat;
         let regs = vec![0x1234u16];
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }, false, false);
         assert!(val.contains("--"));
     }
 
@@ -4820,7 +4969,7 @@ mod tests {
     fn test_format_register_value_u64_hex() {
         use crate::RegDataFormat;
         let regs = vec![0x0001u16, 0x0002u16, 0x0003u16, 0x0004u16];
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::U64, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits64 }, false, false);
         assert_eq!(val, "281483566841860"); // 0x0001000200030004 in decimal
     }
 
@@ -4829,7 +4978,7 @@ mod tests {
         use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
         // Hex reads 1 register; swapped byte: 0x1234 → 0x3412
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::Hex, true, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }, true, false);
         assert_eq!(val, "0x3412");
     }
 
@@ -4838,7 +4987,7 @@ mod tests {
         use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
         // U32 reads 2 regs; word swap reverses: [0x5678, 0x1234] → 0x56781234
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, true);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }, false, true);
         assert_eq!(val, "1450709556"); // 0x56781234 in decimal
     }
 
@@ -4847,7 +4996,7 @@ mod tests {
         use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
         // U32 reads 2 regs; byte swap each: [0x3412, 0x7856] → 0x34127856
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, true, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }, true, false);
         assert_eq!(val, "873625686"); // 0x34127856 in decimal
     }
 
@@ -4855,7 +5004,7 @@ mod tests {
     fn test_format_register_value_i32_negative() {
         use crate::RegDataFormat;
         let regs = vec![0xFFFFu16, 0xFFCEu16]; // -50 in 32-bit signed
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::I32, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Int, width: crate::RegDataWidth::Bits32 }, false, false);
         assert_eq!(val, "-50");
     }
 
@@ -4864,7 +5013,7 @@ mod tests {
         use crate::RegDataFormat;
         // 3.14 in IEEE 754: 0x4048F5C3
         let regs = vec![0x4048u16, 0xF5C3u16];
-        let val = crate::format_register_value(&regs, 0, RegDataFormat::F32, false, false);
+        let val = crate::format_register_value(&regs, 0, RegDataFormat { data_type: crate::RegDataType::Float, width: crate::RegDataWidth::Bits32 }, false, false);
         assert!(val.starts_with("3.140"), "expected 3.14xxx, got: {}", val);
     }
 
@@ -4891,7 +5040,7 @@ mod tests {
     fn test_ensure_selected_visible_last_secondary() {
         // combo covers 8-9, sel=9 is at the end
         let mut combos = HashMap::new();
-        combos.insert(8, crate::RegDataFormat::U32);
+        combos.insert(8, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 });
         let mut sel = 9; // secondary, last reg
         ensure_selected_visible(&mut sel, 10, &combos);
         // no next visible, should go prev: 8 (primary)
@@ -4916,8 +5065,8 @@ mod tests {
     fn test_combo_retain_overlapping() {
         // Simulate what g/G does: remove combos overlapping with new range
         let mut combos = HashMap::new();
-        combos.insert(0, crate::RegDataFormat::U32); // covers 0-1
-        combos.insert(2, crate::RegDataFormat::U32); // covers 2-3
+        combos.insert(0, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }); // covers 0-1
+        combos.insert(2, crate::RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits32 }); // covers 2-3
 
         // Press g at addr 0 with U32 → want to retain combos NOT overlapping [0, 0+2) = [0,2)
         // So combo {2: U32} should stay (addr 2 >= 0+2)
@@ -4949,149 +5098,231 @@ mod tests {
     #[test]
     fn test_edit_accepts_char_hex() {
         // hex accepts 0-9, a-f, A-F
-        assert!(edit_accepts_char("", 'a', RegDataFormat::Hex));
-        assert!(edit_accepts_char("", 'F', RegDataFormat::Hex));
-        assert!(edit_accepts_char("", '3', RegDataFormat::Hex));
-        assert!(!edit_accepts_char("", 'g', RegDataFormat::Hex));
-        assert!(!edit_accepts_char("", 'z', RegDataFormat::Hex));
-        assert!(!edit_accepts_char("", ' ', RegDataFormat::Hex));
+        assert!(edit_accepts_char("", 'a', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("", 'F', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("", '3', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", 'g', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", 'z', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", ' ', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
     }
 
     #[test]
     fn test_edit_accepts_char_binary() {
-        assert!(edit_accepts_char("", '0', RegDataFormat::Binary));
-        assert!(edit_accepts_char("", '1', RegDataFormat::Binary));
-        assert!(!edit_accepts_char("", '2', RegDataFormat::Binary));
-        assert!(!edit_accepts_char("", 'a', RegDataFormat::Binary));
+        assert!(edit_accepts_char("", '0', RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("", '1', RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", '2', RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", 'a', RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }));
     }
 
     #[test]
     fn test_edit_accepts_char_decimal() {
         // U16, I16, U32 etc accept digits and '-'
-        assert!(edit_accepts_char("", '5', RegDataFormat::U16));
-        assert!(edit_accepts_char("", '9', RegDataFormat::U16));
-        assert!(edit_accepts_char("-", '1', RegDataFormat::I16));
-        assert!(!edit_accepts_char("", 'a', RegDataFormat::U16));
-        assert!(!edit_accepts_char("", 'x', RegDataFormat::U16));
+        assert!(edit_accepts_char("", '5', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("", '9', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("-", '1', RegDataFormat { data_type: crate::RegDataType::Int, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", 'a', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", 'x', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
     }
 
     #[test]
     fn test_edit_accepts_char_whitespace_rejected() {
-        assert!(!edit_accepts_char("", ' ', RegDataFormat::U16));
-        assert!(!edit_accepts_char("", '\t', RegDataFormat::Hex));
+        assert!(!edit_accepts_char("", ' ', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("", '\t', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
     }
 
     #[test]
     fn test_edit_accepts_char_0x_prefix() {
         // 'x' allowed only after '0'
-        assert!(edit_accepts_char("0", 'x', RegDataFormat::U16));
-        assert!(edit_accepts_char("0", 'X', RegDataFormat::U16));
-        assert!(!edit_accepts_char("12", 'x', RegDataFormat::U16));
+        assert!(edit_accepts_char("0", 'x', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("0", 'X', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(!edit_accepts_char("12", 'x', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
     }
 
     #[test]
     fn test_edit_accepts_char_0b_prefix() {
-        assert!(edit_accepts_char("0", 'b', RegDataFormat::U16));
-        assert!(edit_accepts_char("0", 'B', RegDataFormat::Hex));
+        assert!(edit_accepts_char("0", 'b', RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }));
+        assert!(edit_accepts_char("0", 'B', RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }));
     }
 
     // ─── parse_u16_str ───
 
     #[test]
     fn test_parse_u16_str_hex_format() {
-        let r = parse_u16_str("FF", RegDataFormat::Hex).unwrap();
+        let r = parse_u16_str("FF", RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 255);
-        let r = parse_u16_str("ff", RegDataFormat::Hex).unwrap();
+        let r = parse_u16_str("ff", RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 255);
-        assert!(parse_u16_str("GG", RegDataFormat::Hex).is_err());
+        assert!(parse_u16_str("GG", RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }).is_err());
     }
 
     #[test]
     fn test_parse_u16_str_binary_format() {
-        let r = parse_u16_str("1010", RegDataFormat::Binary).unwrap();
+        let r = parse_u16_str("1010", RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 10);
-        assert!(parse_u16_str("12", RegDataFormat::Binary).is_err());
+        assert!(parse_u16_str("12", RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 }).is_err());
     }
 
     #[test]
     fn test_parse_u16_str_decimal_format() {
-        let r = parse_u16_str("1234", RegDataFormat::U16).unwrap();
+        let r = parse_u16_str("1234", RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 1234);
-        let r = parse_u16_str("0", RegDataFormat::I16).unwrap();
+        let r = parse_u16_str("0", RegDataFormat { data_type: crate::RegDataType::Int, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 0);
-        assert!(parse_u16_str("99999", RegDataFormat::U16).is_err());
+        assert!(parse_u16_str("99999", RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }).is_err());
     }
 
     #[test]
     fn test_parse_u16_str_prefix_overrides() {
         // 0x prefix forces hex regardless of format
-        let r = parse_u16_str("0xFF", RegDataFormat::U16).unwrap();
+        let r = parse_u16_str("0xFF", RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 255);
         // 0b prefix forces binary regardless of format
-        let r = parse_u16_str("0b1111", RegDataFormat::Hex).unwrap();
+        let r = parse_u16_str("0b1111", RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 }).unwrap();
         assert_eq!(r, 15);
     }
 
     #[test]
     fn test_parse_u16_str_empty_error() {
-        assert!(parse_u16_str("", RegDataFormat::U16).is_err());
-        assert!(parse_u16_str("   ", RegDataFormat::Hex).is_err());
+        assert!(parse_u16_str("", RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 }).is_err());
+        assert!(parse_u16_str("   ", RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 }).is_err());
     }
 
-    // ─── next_format/prev_format unified cycle ───
+    // ─── next_type/prev_type type cycle ───
 
     #[test]
-    fn test_next_format_unified_cycle_all() {
-        use crate::RegDataFormat;
-        // Verify the full cycle covers all 14 variants and loops back
-        let start = RegDataFormat::U16;
+    fn test_next_type_cycle_all() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        // Verify the full type cycle covers all 6 types and loops back
+        let start = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
         let mut f = start;
         let mut count = 0;
         loop {
-            f = f.next_format();
+            f = f.next_type();
             count += 1;
-            if f == start {
+            if f.data_type == start.data_type {
                 break;
             }
-            // safety: should not cycle more than 14
-            assert!(count <= 20, "cycle too long");
+            assert!(count <= 10, "cycle too long");
         }
-        assert_eq!(count, 14, "should cycle through all 14 variants");
+        assert_eq!(count, 6, "should cycle through all 6 data types");
     }
 
     #[test]
-    fn test_prev_format_unified_cycle_all() {
-        use crate::RegDataFormat;
-        let start = RegDataFormat::U16;
+    fn test_prev_type_cycle_all() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let start = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
         let mut f = start;
         let mut count = 0;
         loop {
-            f = f.prev_format();
+            f = f.prev_type();
             count += 1;
-            if f == start {
+            if f.data_type == start.data_type {
                 break;
             }
-            assert!(count <= 20, "cycle too long");
+            assert!(count <= 10, "cycle too long");
         }
-        assert_eq!(count, 14, "should cycle through all 14 variants");
+        assert_eq!(count, 6, "should cycle through all 6 data types");
     }
 
     #[test]
-    fn test_next_format_prev_format_are_inverses() {
+    fn test_next_type_prev_type_are_inverses() {
         use crate::RegDataFormat;
-        for fmt in RegDataFormat::all() {
-            // next then prev should return to original
+        let types = [
+            RegDataFormat { data_type: crate::RegDataType::Uint, width: crate::RegDataWidth::Bits16 },
+            RegDataFormat { data_type: crate::RegDataType::Int, width: crate::RegDataWidth::Bits32 },
+            RegDataFormat { data_type: crate::RegDataType::Float, width: crate::RegDataWidth::Bits16 },
+            RegDataFormat { data_type: crate::RegDataType::Hex, width: crate::RegDataWidth::Bits16 },
+            RegDataFormat { data_type: crate::RegDataType::Binary, width: crate::RegDataWidth::Bits16 },
+            RegDataFormat { data_type: crate::RegDataType::Ascii, width: crate::RegDataWidth::Bits16 },
+        ];
+        for fmt in &types {
+            // next_type then prev_type should return to original type
             assert_eq!(
-                fmt.next_format().prev_format(),
+                fmt.next_type().prev_type(),
                 *fmt,
                 "mismatch for {fmt:?}"
             );
-            // prev then next should return to original
+            // prev_type then next_type should return to original type
             assert_eq!(
-                fmt.prev_format().next_format(),
+                fmt.prev_type().next_type(),
                 *fmt,
                 "mismatch for {fmt:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_next_width_cycle() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let start = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        let mut widths = Vec::new();
+        let mut f = start;
+        loop {
+            widths.push(f.width);
+            f = f.next_width();
+            if f.width == start.width {
+                break;
+            }
+            assert!(widths.len() <= 5);
+        }
+        assert_eq!(widths.len(), 4, "should cycle through 4 widths");
+    }
+
+    #[test]
+    fn test_to_uint_keeps_width() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 };
+        let u = f.to_uint();
+        assert_eq!(u.data_type, RegDataType::Uint);
+        assert_eq!(u.width, RegDataWidth::Bits32);
+    }
+
+    #[test]
+    fn test_to_int_keeps_width() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 };
+        let i = f.to_int();
+        assert_eq!(i.data_type, RegDataType::Int);
+        assert_eq!(i.width, RegDataWidth::Bits64);
+    }
+
+    #[test]
+    fn test_to_hex_forces_16bit() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 };
+        let h = f.to_hex();
+        assert_eq!(h.data_type, RegDataType::Hex);
+        assert_eq!(h.width, RegDataWidth::Bits16);
+    }
+
+    #[test]
+    fn test_to_binary_forces_16bit() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 };
+        let b = f.to_binary();
+        assert_eq!(b.data_type, RegDataType::Binary);
+        assert_eq!(b.width, RegDataWidth::Bits16);
+    }
+
+    #[test]
+    fn test_to_float_cycles_on_float() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let start = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits16 };
+        let next = start.to_float();
+        assert_eq!(next.data_type, RegDataType::Float);
+        assert_eq!(next.width, RegDataWidth::Bits32);
+    }
+
+    #[test]
+    fn test_regs_needed_by_width() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f16 = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        let f32 = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let f64 = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 };
+        let f128 = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits128 };
+        assert_eq!(f16.regs_needed(), 1);
+        assert_eq!(f32.regs_needed(), 2);
+        assert_eq!(f64.regs_needed(), 4);
+        assert_eq!(f128.regs_needed(), 8);
     }
 }
