@@ -227,13 +227,13 @@ pub struct Ui {
 }
 
 /// 伪随机数生成（线性同余），用于 logo 动画，不依赖 rand crate
-fn lcg(seed: u64) -> u64 {
+pub(crate) fn lcg(seed: u64) -> u64 {
     seed.wrapping_mul(6364136223846793005)
         .wrapping_add(1442695040888963407)
 }
 
 /// 根据 (row, col, frame) 生成一个伪随机的可打印 ASCII 字符
-fn logo_random_char(row: usize, col: usize, frame: u8) -> char {
+pub(crate) fn logo_random_char(row: usize, col: usize, frame: u8) -> char {
     let seed = (row as u64)
         .wrapping_mul(10007)
         .wrapping_add((col as u64).wrapping_mul(50021))

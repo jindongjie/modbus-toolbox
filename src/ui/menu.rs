@@ -1437,17 +1437,39 @@ fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 
 const LOGO_ANIM_FRAMES: u32 = 45;
 
-/// Logo 动画插帧
+/// 生成 logo 动画中每个位置的"揭示帧号"，值在 0..LOGO_ANIM_FRAMES 之间
+fn logo_reveal_frame(row: usize, col: usize) -> u32 {
+    let seed = (row as u64)
+        .wrapping_mul(10007)
+        .wrapping_add((col as u64).wrapping_mul(50021));
+    let h = crate::ui::lcg(seed);
+    ((h >> 32) as u32) % LOGO_ANIM_FRAMES
+}
+
+/// Logo 动画插帧：未到揭示时间的字符刷新为新的随机字符，已揭示的显示正确字符
 fn logo_animate_frame(current: &mut [String], target: &[String], frame: u32) {
-    let total = LOGO_ANIM_FRAMES;
-    for (i, line) in current.iter_mut().enumerate() {
-        if let Some(tgt) = target.get(i) {
-            let len = tgt.len();
-            let progress = (len as u64) * (frame as u64) / (total as u64);
-            let progress = progress.min(len as u64) as usize;
-            line.clear();
-            line.push_str(&tgt[..progress]);
+    for (row, tgt_line) in target.iter().enumerate() {
+        if row >= current.len() {
+            break;
         }
+        let cur_line = &mut current[row];
+        let tgt_chars: Vec<char> = tgt_line.chars().collect();
+        let cur_chars: Vec<char> = cur_line.chars().collect();
+        if cur_chars.len() != tgt_chars.len() {
+            *cur_line = tgt_line.clone();
+            continue;
+        }
+        let mut new_line = String::with_capacity(tgt_chars.len());
+        for (col, &tgt_c) in tgt_chars.iter().enumerate() {
+            if tgt_c == ' ' {
+                new_line.push(' ');
+            } else if frame >= logo_reveal_frame(row, col) {
+                new_line.push(tgt_c);
+            } else {
+                new_line.push(crate::ui::logo_random_char(row, col, frame as u8));
+            }
+        }
+        *cur_line = new_line;
     }
 }
 

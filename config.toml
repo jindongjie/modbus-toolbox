@@ -1,3 +1,29 @@
+[test]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[test.labels]
+
+[test.reg_combinations]
+
+[test.swap_bytes_reg]
+
+[test.swap_words_reg]
+
 [tcp-master]
 main_mode = "ts"
 tcp_port = 10688
@@ -14,29 +40,15 @@ databits = 8
 parity = "n"
 stopbits = 1
 flow = "none"
-base = "dec"
+reg_format = ""
 
 [tcp-master.labels]
 
-[tcp-server]
-main_mode = "tcp-server"
-tcp_port = 10699
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
+[tcp-master.reg_combinations]
 
-[tcp-server.labels]
+[tcp-master.swap_bytes_reg]
+
+[tcp-master.swap_words_reg]
 
 [1]
 main_mode = "rtu-monitor"
@@ -54,110 +66,16 @@ databits = 8
 parity = "n"
 stopbits = 1
 flow = "none"
-base = "dec"
+reg_format = ""
 
 [1.labels]
 0 = "???"
 
-[test]
-main_mode = "tcp-client"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
+[1.reg_combinations]
 
-[test.labels]
+[1.swap_bytes_reg]
 
-[__default__]
-main_mode = "tcp-client2"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-[__default__.labels]
-
-["hahaha 你是谁啊"]
-main_mode = "rtu-client"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-["hahaha 你是谁啊".labels]
-
-[tcp-client2]
-main_mode = "tcp-client"
-tcp_port = 10699
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-[tcp-client2.labels]
-
-[hello]
-main_mode = "tcp-client"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-base = "dec"
-
-[hello.labels]
+[1.swap_words_reg]
 
 [tcp-client]
 main_mode = "tcp-client"
@@ -175,7 +93,143 @@ databits = 8
 parity = "n"
 stopbits = 1
 flow = "none"
-base = "dec"
+reg_format = ""
 
 [tcp-client.labels]
 0 = "1233"
+
+[tcp-client.reg_combinations]
+
+[tcp-client.swap_bytes_reg]
+
+[tcp-client.swap_words_reg]
+
+[__default__]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = "u16"
+
+[__default__.labels]
+
+[__default__.reg_combinations]
+
+[__default__.swap_bytes_reg]
+
+[__default__.swap_words_reg]
+
+[tcp-client2]
+main_mode = "tcp-client"
+tcp_port = 10699
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[tcp-client2.labels]
+
+[tcp-client2.reg_combinations]
+
+[tcp-client2.swap_bytes_reg]
+
+[tcp-client2.swap_words_reg]
+
+["hahaha 你是谁啊"]
+main_mode = "rtu-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+["hahaha 你是谁啊".labels]
+
+["hahaha 你是谁啊".reg_combinations]
+
+["hahaha 你是谁啊".swap_bytes_reg]
+
+["hahaha 你是谁啊".swap_words_reg]
+
+[hello]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[hello.labels]
+
+[hello.reg_combinations]
+
+[hello.swap_bytes_reg]
+
+[hello.swap_words_reg]
+
+[tcp-server]
+main_mode = "tcp-server"
+tcp_port = 10699
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[tcp-server.labels]
+
+[tcp-server.reg_combinations]
+
+[tcp-server.swap_bytes_reg]
+
+[tcp-server.swap_words_reg]
