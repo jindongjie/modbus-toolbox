@@ -105,6 +105,83 @@ impl RegDataFormat {
             _ => RegDataFormat::I32,
         }
     }
+
+    /// Cycle format type: u → i → f → u within the same data width.
+    /// For fallback types (Binary, Ascii) returns U16.
+    pub fn next_format(self) -> RegDataFormat {
+        match self {
+            RegDataFormat::U16 => RegDataFormat::I16,
+            RegDataFormat::I16 => RegDataFormat::F16,
+            RegDataFormat::F16 => RegDataFormat::U16,
+            RegDataFormat::U32 => RegDataFormat::I32,
+            RegDataFormat::I32 => RegDataFormat::F32,
+            RegDataFormat::F32 => RegDataFormat::U32,
+            RegDataFormat::U64 => RegDataFormat::I64,
+            RegDataFormat::I64 => RegDataFormat::F64,
+            RegDataFormat::F64 => RegDataFormat::U64,
+            RegDataFormat::U128 => RegDataFormat::I128,
+            RegDataFormat::I128 => RegDataFormat::U128,
+            _ => RegDataFormat::U16,
+        }
+    }
+
+    /// Reverse of next_format: f → i → u → f within the same data width.
+    /// For fallback types (Binary, Ascii) returns U16.
+    pub fn prev_format(self) -> RegDataFormat {
+        match self {
+            RegDataFormat::U16 => RegDataFormat::F16,
+            RegDataFormat::I16 => RegDataFormat::U16,
+            RegDataFormat::F16 => RegDataFormat::I16,
+            RegDataFormat::U32 => RegDataFormat::F32,
+            RegDataFormat::I32 => RegDataFormat::U32,
+            RegDataFormat::F32 => RegDataFormat::I32,
+            RegDataFormat::U64 => RegDataFormat::F64,
+            RegDataFormat::I64 => RegDataFormat::U64,
+            RegDataFormat::F64 => RegDataFormat::I64,
+            RegDataFormat::U128 => RegDataFormat::I128,
+            RegDataFormat::I128 => RegDataFormat::U128,
+            _ => RegDataFormat::U16,
+        }
+    }
+
+    /// Cycle data width: 16 → 32 → 64 → 128 → 16, keeping the same format type.
+    /// For fallback types (Binary, Ascii) returns U16.
+    /// F16 → F32 → F64 → F16 (no F128).
+    pub fn next_width(self) -> RegDataFormat {
+        match self {
+            RegDataFormat::U16 => RegDataFormat::U32,
+            RegDataFormat::U32 => RegDataFormat::U64,
+            RegDataFormat::U64 => RegDataFormat::U128,
+            RegDataFormat::U128 => RegDataFormat::U16,
+            RegDataFormat::I16 => RegDataFormat::I32,
+            RegDataFormat::I32 => RegDataFormat::I64,
+            RegDataFormat::I64 => RegDataFormat::I128,
+            RegDataFormat::I128 => RegDataFormat::I16,
+            RegDataFormat::F16 => RegDataFormat::F32,
+            RegDataFormat::F32 => RegDataFormat::F64,
+            RegDataFormat::F64 => RegDataFormat::F16,
+            _ => RegDataFormat::U16,
+        }
+    }
+
+    /// Reverse of next_width: 128 → 64 → 32 → 16 → 128, keeping the same format type.
+    /// For fallback types (Binary, Ascii) returns U16.
+    pub fn prev_width(self) -> RegDataFormat {
+        match self {
+            RegDataFormat::U16 => RegDataFormat::U128,
+            RegDataFormat::U32 => RegDataFormat::U16,
+            RegDataFormat::U64 => RegDataFormat::U32,
+            RegDataFormat::U128 => RegDataFormat::U64,
+            RegDataFormat::I16 => RegDataFormat::I128,
+            RegDataFormat::I32 => RegDataFormat::I16,
+            RegDataFormat::I64 => RegDataFormat::I32,
+            RegDataFormat::I128 => RegDataFormat::I64,
+            RegDataFormat::F16 => RegDataFormat::F64,
+            RegDataFormat::F32 => RegDataFormat::F16,
+            RegDataFormat::F64 => RegDataFormat::F32,
+            _ => RegDataFormat::U16,
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -1360,7 +1437,7 @@ async fn main() -> Result<()> {
     let config_path_base = cli_args.config.clone();
 
     // 如果 CLI 指定了 --profile，直接使用（跳过菜单）
-    let (main_mode, args) = if let Some(profile_name) = &cli_args.profile {
+    let (main_mode, args, profile_name) = if let Some(profile_name) = &cli_args.profile {
         let config_str = std::fs::read_to_string(&cli_args.config)
             .with_context(|| t!("main.read_config_fail", path = &cli_args.config))?;
         let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
@@ -1369,7 +1446,7 @@ async fn main() -> Result<()> {
             let mut args = profile_args.clone();
             let main_mode = parse_mainmode(&args.main_mode)?;
             args.config = config_path_base;
-            (main_mode, args)
+            (main_mode, args, cli_args.profile.clone())
         } else {
             anyhow::bail!(t!("main.profile_not_found", name = profile_name));
         }
@@ -1382,8 +1459,10 @@ async fn main() -> Result<()> {
         if sel.quit {
             return Ok(());
         }
+        let pname = sel.profile_name.clone();
         // 用户选择的配置解析
-        resolve_selection(&cli_args.config, &sel)?
+        let (main_mode, args) = resolve_selection(&cli_args.config, &sel)?;
+        (main_mode, args, pname)
     };
 
     let binding_count = args.holding_count;
@@ -1509,6 +1588,7 @@ async fn main() -> Result<()> {
             server_status,
             config_path,
             profiles,
+            profile_name,
         )
         .await
     } else {
@@ -1519,6 +1599,7 @@ async fn main() -> Result<()> {
             server_status,
             config_path,
             profiles,
+            profile_name,
         )
         .await
     };

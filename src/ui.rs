@@ -200,10 +200,16 @@ pub struct Ui {
     swap_bytes: bool,
     /// 字序交换
     swap_words: bool,
+
+    // --- 配置信息弹窗 ---
+    /// 是否显示配置信息弹窗
+    show_profile_info: bool,
+    /// 当前配置的完整参数（用于弹窗显示）
+    args: Args,
 }
 
-/// Logo 动画总帧数（大约 4.5 秒，每帧 100ms）
-const LOGO_ANIM_FRAMES: u8 = 45;
+/// Logo 动画总帧数（大约 2 秒，每帧 100ms）
+const LOGO_ANIM_FRAMES: u8 = 20;
 
 /// 伪随机数生成（线性同余），用于 logo 动画，不依赖 rand crate
 fn lcg(seed: u64) -> u64 {
@@ -380,6 +386,8 @@ impl Ui {
             reg_format,
             swap_bytes,
             swap_words,
+            show_profile_info: false,
+            args: crate::Args::default(),
         }
     }
 }
@@ -579,21 +587,10 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     ])
     .split(area);
 
-    // --- Logo 区（渐显动画） ---
+    // --- Logo 区（渐显动画，固定青色 + 粗体） ---
     let logo_style = Style::default()
-        .fg(match ui.logo_frame {
-            0..=2 => Color::DarkGray,
-            3..=5 => Color::Gray,
-            6..=8 => Color::White,
-            9..=11 => Color::LightCyan,
-            12..=14 => Color::Cyan,
-            _ => Color::Cyan,
-        })
-        .add_modifier(if ui.logo_frame >= 12 {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        });
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let logo_text: Vec<Line> = ui
         .logo_current
         .iter()
@@ -1024,17 +1021,6 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                 ),
                 Style::default(),
             )));
-            lines.push(Line::from(Span::styled(
-                format!("  {}", t!("profile_pick.preview_unit", unit = args.unit)),
-                Style::default(),
-            )));
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "  {}",
-                    t!("profile_pick.preview_count", count = args.holding_count)
-                ),
-                Style::default(),
-            )));
             if args.main_mode.to_ascii_lowercase().contains("tcp") {
                 lines.push(Line::from(Span::styled(
                     format!(
@@ -1059,14 +1045,6 @@ fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     Style::default(),
                 )));
             }
-            // coils / discrete / input
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "  coils:{} disc:{} input:{}",
-                    args.coil_count, args.discrete_count, args.input_count
-                ),
-                Style::default().fg(Color::DarkGray),
-            )));
         } else {
             lines.push(Line::from(Span::styled(
                 t!("profile_pick.load_fail"),
@@ -2211,6 +2189,7 @@ pub async fn run_ui(
     server_status: Arc<RwLock<Option<String>>>,
     config_path: String,
     profiles: Vec<String>,
+    monitor_profile: Option<String>,  // 菜单已选的配置名（监听模式自动选中）
 ) -> Result<()> {
     enable_raw_mode().context(t!("run_ui.enable_raw_mode"))?;
     let mut stdout = io::stdout();
@@ -2224,10 +2203,45 @@ pub async fn run_ui(
     let swap_words = args.swap_words;
     let mut ui = Ui::new(args.base, reg_format, swap_bytes, swap_words, profiles);
     ui.config_path = config_path;
+    ui.args = args.clone();
 
     // Monitor 模式默认开启监听面板
     if args.main_mode.contains("monitor") {
         ui.show_monitor = true;
+    }
+
+    // 如果菜单已选了配置，自动选中并启动监听任务
+    if args.main_mode.contains("monitor") {
+        if let Some(ref profile_name) = monitor_profile {
+            if ui.profiles.contains(profile_name) {
+                ui.monitor_selected_profile = Some(profile_name.clone());
+                ui.monitor_picking = false;
+                set_status(&mut ui, t!("run_ui.monitor_selected", name = profile_name));
+                // 启动监听任务
+                let cfg_path = ui.config_path.clone();
+                let pname = profile_name.clone();
+                let mon_state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    let config_str = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+                    let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+                    if let Some(profile_args) = configs.get(&pname) {
+                        let mut args = profile_args.clone();
+                        let res = match args.main_mode.as_str() {
+                            "rtu-monitor" => {
+                                crate::modbus::run_modbus_monitor_rtu(args, mon_state).await
+                            }
+                            _ => {
+                                args.main_mode = "tcp-monitor".to_string();
+                                crate::modbus::run_modbus_monitor_tcp(args, mon_state).await
+                            }
+                        };
+                        if let Err(e) = res {
+                            eprintln!("监听任务失败: {}", e);
+                        }
+                    }
+                });
+            }
+        }
     }
 
     let tick = Duration::from_millis(args.ui_tick_ms);
@@ -2254,7 +2268,7 @@ pub async fn run_ui(
                         ui.swap_bytes = s.swap_bytes;
                         ui.swap_words = s.swap_words;
                         let server_err = server_status.read().await.clone();
-                        let is_monitor_mode = args.main_mode == "monitor";
+                        let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
                         terminal.draw(|f| {
                             let monitor_active = is_monitor_mode || ui.show_monitor;
 
@@ -2543,6 +2557,11 @@ pub async fn run_ui(
                                 }
                             }
 
+                            // --- 配置信息弹窗 ---
+                            if ui.show_profile_info {
+                                render_profile_info(f, &ui);
+                            }
+
                             // --- 寄存器变化模式配置对话框 ---
                             if ui.pattern_dialog_open {
                                 render_pattern_dialog(f, &ui, &s);
@@ -2793,6 +2812,14 @@ pub async fn run_ui(
                                         }
                                         _ => {}
                                     }
+                                } else if ui.show_profile_info {
+                                    // 配置信息弹窗 → 按任意键关闭
+                                    match code {
+                                        KeyCode::Esc | KeyCode::Char('i') => {
+                                            ui.show_profile_info = false;
+                                        }
+                                        _ => {}
+                                    }
                                 } else if ui.goto_mode {
                                     // 跳转地址输入模式
                                     match code {
@@ -3023,57 +3050,57 @@ pub async fn run_ui(
                                             ui.status_msg = None;
                                         }
 
-                                        // f: 循环切换当前寄存器的组合格式 (u16 → i32 → u64 → i128 → u16)
-                                        KeyCode::Char('f') => {
-                                            if !is_monitor_mode && !ui.edit_mode {
-                                                let addr = ui.selected;
-                                                let mut s = state.write().await;
-                                                let combinations = match ui.reg_view {
-                                                    REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                    REG_VIEW_INPUT => &mut s.input_combinations,
-                                                    _ => &mut s.holding_combinations,
-                                                };
-                                                let cur_fmt = combinations.get(&addr).copied().unwrap_or(RegDataFormat::U16);
-                                                let next_fmt = cur_fmt.next_combination();
-                                                if next_fmt == RegDataFormat::U16 {
-                                                    combinations.remove(&addr);
-                                                    drop(s);
-                                                    set_status(&mut ui, t!("run_ui.combination_removed", addr = addr));
-                                                } else {
-                                                    combinations.insert(addr, next_fmt);
-                                                    drop(s);
-                                                    set_status(&mut ui, t!("run_ui.combination_set", addr = addr, fmt = next_fmt.short_label(), count = next_fmt.regs_needed()));
-                                                }
+                                        // i: 显示/关闭当前配置信息弹窗
+                                        KeyCode::Char('i') => {
+                                            if !ui.edit_mode {
+                                                ui.show_profile_info = !ui.show_profile_info;
                                             }
                                         }
-                                        // F (Shift+F): 循环切换当前寄存器的组合格式（向后: u16 → i128 → u64 → i32 → u16）
-                                        KeyCode::Char('F') => {
-                                            if !is_monitor_mode && !ui.edit_mode {
-                                                let addr = ui.selected;
+
+                                        // f: 循环切换全局格式类型 u→i→f→u (保持同一位宽)
+                                        KeyCode::Char('f') => {
+                                            if !ui.edit_mode {
+                                                ui.reg_format = ui.reg_format.next_format();
                                                 let mut s = state.write().await;
-                                                let combinations = match ui.reg_view {
-                                                    REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                    REG_VIEW_INPUT => &mut s.input_combinations,
-                                                    _ => &mut s.holding_combinations,
-                                                };
-                                                let cur_fmt = combinations.get(&addr).copied().unwrap_or(RegDataFormat::U16);
-                                                // Reverse cycle: u16 → i128, i128 → u64, u64 → i32, i32 → u16
-                                                let prev_fmt = match cur_fmt {
-                                                    RegDataFormat::U16 => RegDataFormat::I128,
-                                                    RegDataFormat::I32 => RegDataFormat::U16,
-                                                    RegDataFormat::U64 => RegDataFormat::I32,
-                                                    RegDataFormat::I128 => RegDataFormat::U64,
-                                                    _ => RegDataFormat::I128,
-                                                };
-                                                if prev_fmt == RegDataFormat::U16 {
-                                                    combinations.remove(&addr);
-                                                    drop(s);
-                                                    set_status(&mut ui, t!("run_ui.combination_removed", addr = addr));
-                                                } else {
-                                                    combinations.insert(addr, prev_fmt);
-                                                    drop(s);
-                                                    set_status(&mut ui, t!("run_ui.combination_set", addr = addr, fmt = prev_fmt.short_label(), count = prev_fmt.regs_needed()));
-                                                }
+                                                s.reg_format = ui.reg_format;
+                                                drop(s);
+                                                let msg = format!("Format: {}", ui.reg_format.short_label());
+                                                set_status(&mut ui, msg);
+                                            }
+                                        }
+                                        // F (Shift+F): 循环切换全局格式类型反向 f→i→u→f
+                                        KeyCode::Char('F') => {
+                                            if !ui.edit_mode {
+                                                ui.reg_format = ui.reg_format.prev_format();
+                                                let mut s = state.write().await;
+                                                s.reg_format = ui.reg_format;
+                                                drop(s);
+                                                let msg = format!("Format: {}", ui.reg_format.short_label());
+                                                set_status(&mut ui, msg);
+                                            }
+                                        }
+                                        // g: 循环切换全局数据位宽 16→32→64→128→16 (保持格式类型)
+                                        KeyCode::Char('g') => {
+                                            if !ui.edit_mode {
+                                                ui.reg_format = ui.reg_format.next_width();
+                                                let mut s = state.write().await;
+                                                s.reg_format = ui.reg_format;
+                                                drop(s);
+                                                let w = ui.reg_format.short_label();
+                                                let msg = format!("Width: {} bit", &w[1..]);
+                                                set_status(&mut ui, msg);
+                                            }
+                                        }
+                                        // G (Shift+G): 循环切换数据位宽反向 16←32←64←128←16
+                                        KeyCode::Char('G') => {
+                                            if !ui.edit_mode {
+                                                ui.reg_format = ui.reg_format.prev_width();
+                                                let mut s = state.write().await;
+                                                s.reg_format = ui.reg_format;
+                                                drop(s);
+                                                let w = ui.reg_format.short_label();
+                                                let msg = format!("Width: {} bit", &w[1..]);
+                                                set_status(&mut ui, msg);
                                             }
                                         }
                                         // w: 切换字节序交换
@@ -3225,14 +3252,6 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.stability_started"));
                                             } else {
                                                 set_status(&mut ui, t!("run_ui.stability_stopped"));
-                                            }
-                                        }
-                                        // G: 跳转寄存器地址
-                                        KeyCode::Char('G') => {
-                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
-                                                ui.goto_mode = true;
-                                                ui.goto_buf.clear();
-                                                ui.status_msg = Some("Go to address: ".to_string());
                                             }
                                         }
                                         KeyCode::Char('v') => {
@@ -4223,6 +4242,92 @@ fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppStat
         )
         .style(Style::default().fg(Color::White).bg(Color::Black));
     f.render_widget(ratatui::widgets::Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+}
+
+/// 渲染当前配置信息弹窗
+fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
+    let dialog_area = centered_rect(55, 65, f.area());
+    f.render_widget(ratatui::widgets::Clear, dialog_area);
+
+    let a = &ui.args;
+    let mode = match a.main_mode.as_str() {
+        "tcp-server" => "TCP Server",
+        "tcp-client" => "TCP Client",
+        "rtu-server" => "RTU Server",
+        "rtu-client" => "RTU Client",
+        "tcp-monitor" => "TCP Monitor",
+        "rtu-monitor" => "RTU Monitor",
+        _ => &a.main_mode,
+    };
+    let connection = if a.main_mode.contains("rtu") {
+        format!(
+            "{} | {:.1}K {}/{}/{}",
+            a.device,
+            a.baudrate as f64 / 1000.0,
+            a.databits,
+            a.parity.to_uppercase(),
+            a.stopbits,
+        )
+    } else {
+        format!("port {}", a.tcp_port)
+    };
+    let register_ranges = t!("profile_info.register_ranges",
+        h = a.holding_count, c = a.coil_count, i = a.input_count, d = a.discrete_count,
+    ).to_string();
+    let tick_info = if a.main_mode.contains("client") || a.main_mode.contains("monitor") {
+        t!("profile_info.tick_ms", ms = a.client_tick_ms).to_string()
+    } else {
+        t!("profile_info.server_mode").to_string()
+    };
+    let data_fmt = format!(
+        "{} | {:?} | swap_bytes:{} swap_words:{}",
+        ui.reg_format.short_label(),
+        a.base,
+        if a.swap_bytes { "on" } else { "off" },
+        if a.swap_words { "on" } else { "off" },
+    );
+    let selected_profile = ui
+        .monitor_selected_profile
+        .as_deref()
+        .or(ui.selected_profile.as_deref())
+        .unwrap_or("-");
+    let labels_count = a.labels.len();
+    let combo_count = a.reg_combinations.len();
+
+    let text = format!(
+        "{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}\n\n\
+         {}\n{}",
+        mode,
+        t!("profile_info.connection"), connection,
+        t!("profile_info.slave"),
+        t!("profile_info.unit", unit = a.unit),
+        t!("profile_info.registers"),
+        register_ranges,
+        t!("profile_info.timing"),
+        tick_info,
+        t!("profile_info.data_format"),
+        data_fmt,
+        t!("profile_info.labels_combos"),
+        t!("profile_info.labels_count", c1 = labels_count, c2 = combo_count),
+        t!("profile_info.profile"),
+        selected_profile,
+    );
+
+    let dialog = ratatui::widgets::Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(t!("profile_info.title"))
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .style(Style::default().fg(Color::White).bg(Color::Black));
     f.render_widget(dialog, dialog_area);
 }
 
