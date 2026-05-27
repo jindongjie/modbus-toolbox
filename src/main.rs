@@ -1157,6 +1157,210 @@ fn parse_u16_str(s: &str, fmt: RegDataFormat) -> Result<u16> {
     }
 }
 
+/// 将 f32 转换为 IEEE 754 半精度 (binary16) 的 u16 位表示
+fn f32_to_f16_bits(f: f32) -> u16 {
+    let bits = f.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mant = bits & 0x7fffff;
+
+    if exp == 0xff {
+        // Inf or NaN
+        if mant == 0 {
+            // Inf
+            return sign | 0x7c00;
+        } else {
+            // NaN — preserve mantissa bits as much as possible
+            return sign | 0x7c00 | ((mant >> 13) as u16);
+        }
+    }
+
+    if exp == 0 {
+        // Subnormal or zero
+        return sign;
+    }
+
+    let unbiased_exp = exp - 127;
+    // Clamp to f16 range
+    if unbiased_exp > 15 {
+        // overflow to inf
+        return sign | 0x7c00;
+    }
+    if unbiased_exp < -14 {
+        // underflow to zero
+        return sign;
+    }
+
+    let f16_exp = (unbiased_exp + 15) as u16;
+    let f16_mant = (mant >> 13) as u16;
+    sign | (f16_exp << 10) | f16_mant
+}
+
+/// 将字符串值按指定格式解析，返回拆分后的 u16 寄存器值数组。
+/// 支持浮点数输入（如 "3.14"）、hex ("0xFF")、binary ("0b1010") 和十进制整数。
+/// swap_bytes / swap_words 的逆向操作：拆分完成后，若 swap_words 则反转字序，
+/// 若 swap_bytes 则对每个字做字节交换，以匹配 format_register_value 使用的正向变换（显示→原始）。
+pub(crate) fn parse_register_value(
+    s: &str,
+    fmt: RegDataFormat,
+    swap_bytes: bool,
+    swap_words: bool,
+) -> Result<Vec<u16>> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Err(anyhow!(t!("main.parse_empty")));
+    }
+
+    // 辅助：应用 swap 逆操作
+    let apply_swap = |words: &mut Vec<u16>| {
+        if swap_words && words.len() > 1 {
+            words.reverse();
+        }
+        if swap_bytes {
+            for w in words {
+                *w = w.swap_bytes();
+            }
+        }
+    };
+
+    let prefix_hex = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"));
+    let prefix_bin = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B"));
+
+    match (fmt.data_type, fmt.width) {
+        // Single-register types
+        (RegDataType::Uint, RegDataWidth::Bits16)
+        | (RegDataType::Int, RegDataWidth::Bits16)
+        | (RegDataType::Ascii, _) => {
+            let v = parse_u16_str(t, fmt)?;
+            let mut words = vec![v];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // Hex/Binary always single-register display
+        (RegDataType::Hex, _) | (RegDataType::Binary, _) => {
+            let v = parse_u16_str(t, fmt)?;
+            let mut words = vec![v];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // 32-bit unsigned/signed
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits32) => {
+            let v: u32 = if let Some(rest) = prefix_hex {
+                u32::from_str_radix(rest, 16).context(t!("main.parse_hex_prefix"))?
+            } else if let Some(rest) = prefix_bin {
+                u32::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"))?
+            } else if fmt.data_type == RegDataType::Int {
+                // Signed: parse as i32, reinterpret as u32
+                let signed: i32 = t.parse().context(t!("main.parse_dec"))?;
+                signed as u32
+            } else {
+                t.parse::<u32>().context(t!("main.parse_dec"))?
+            };
+            let mut words = vec![(v >> 16) as u16, v as u16];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // 64-bit unsigned/signed
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits64) => {
+            let v: u64 = if let Some(rest) = prefix_hex {
+                u64::from_str_radix(rest, 16).context(t!("main.parse_hex_prefix"))?
+            } else if let Some(rest) = prefix_bin {
+                u64::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"))?
+            } else if fmt.data_type == RegDataType::Int {
+                let signed: i64 = t.parse().context(t!("main.parse_dec"))?;
+                signed as u64
+            } else {
+                t.parse::<u64>().context(t!("main.parse_dec"))?
+            };
+            let mut words = vec![
+                (v >> 48) as u16,
+                (v >> 32) as u16,
+                (v >> 16) as u16,
+                v as u16,
+            ];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // 128-bit unsigned/signed
+        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits128) => {
+            let v: u128 = if let Some(rest) = prefix_hex {
+                u128::from_str_radix(rest, 16).context(t!("main.parse_hex_prefix"))?
+            } else if let Some(rest) = prefix_bin {
+                u128::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"))?
+            } else if fmt.data_type == RegDataType::Int {
+                let signed: i128 = t.parse().context(t!("main.parse_dec"))?;
+                signed as u128
+            } else {
+                t.parse::<u128>().context(t!("main.parse_dec"))?
+            };
+            let mut words = vec![
+                (v >> 112) as u16,
+                (v >> 96) as u16,
+                (v >> 80) as u16,
+                (v >> 64) as u16,
+                (v >> 48) as u16,
+                (v >> 32) as u16,
+                (v >> 16) as u16,
+                v as u16,
+            ];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // Float 16-bit (half precision)
+        (RegDataType::Float, RegDataWidth::Bits16) => {
+            let f: f32 = t.parse().context(t!("main.parse_dec"))?;
+            let mut words = vec![f32_to_f16_bits(f)];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // Float 32-bit
+        (RegDataType::Float, RegDataWidth::Bits32) => {
+            let f: f32 = t.parse().context(t!("main.parse_dec"))?;
+            let bits = f.to_bits();
+            let mut words = vec![(bits >> 16) as u16, bits as u16];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // Float 64-bit
+        (RegDataType::Float, RegDataWidth::Bits64) => {
+            let f: f64 = t.parse().context(t!("main.parse_dec"))?;
+            let bits = f.to_bits();
+            let mut words = vec![
+                (bits >> 48) as u16,
+                (bits >> 32) as u16,
+                (bits >> 16) as u16,
+                bits as u16,
+            ];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+        // Float 128-bit — f128 not in std, parse as f64 (lossy) or u128
+        (RegDataType::Float, RegDataWidth::Bits128) => {
+            let v: u128 = if let Some(rest) = prefix_hex {
+                u128::from_str_radix(rest, 16).context(t!("main.parse_hex_prefix"))?
+            } else if let Some(rest) = prefix_bin {
+                u128::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"))?
+            } else {
+                // Try f64 first, convert to bits
+                let f: f64 = t.parse().context(t!("main.parse_dec"))?;
+                f.to_bits() as u128
+            };
+            let mut words = vec![
+                (v >> 112) as u16,
+                (v >> 96) as u16,
+                (v >> 80) as u16,
+                (v >> 64) as u16,
+                (v >> 48) as u16,
+                (v >> 32) as u16,
+                (v >> 16) as u16,
+                v as u16,
+            ];
+            apply_swap(&mut words);
+            Ok(words)
+        }
+    }
+}
+
 /// 将 u32 值按指定格式格式化
 fn format_u32(v: u32, fmt: RegDataFormat) -> String {
     match fmt.data_type {

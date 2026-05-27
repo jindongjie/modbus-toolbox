@@ -476,6 +476,9 @@ fn edit_accepts_char(current: &str, ch: char, fmt: RegDataFormat) -> bool {
     match fmt.data_type {
         RegDataType::Hex => ch.is_ascii_hexdigit(),
         RegDataType::Binary => ch == '0' || ch == '1',
+        RegDataType::Float => {
+            ch.is_ascii_digit() || ch == '-' || ch == '.' || ch == 'e' || ch == 'E' || ch == '+'
+        }
         _ => ch.is_ascii_digit() || ch == '-',
     }
 }
@@ -2763,15 +2766,49 @@ pub async fn run_ui(
                 ui.edit_mode = false;
                 ui.edit_buf.clear();
             } else {
-                match parse_u16_str(&ui.edit_buf, ui.reg_format) {
-                    Ok(new_val) => {
-                        let (resp_tx,_) = oneshot::channel();
-                        let _ = tx.send(RegCmd::WriteSingleHolding {
-                            addr: ui.selected,
-                            value: new_val,
-                            resp: resp_tx,
-                        });
-
+                let combos = {
+                    let s = state.read().await;
+                    match ui.reg_view {
+                        REG_VIEW_HOLDING => s.holding_combinations.clone(),
+                        REG_VIEW_INPUT => s.input_combinations.clone(),
+                        _ => s.holding_combinations.clone(),
+                    }
+                };
+                let fmt = combos
+                    .get(&ui.selected)
+                    .copied()
+                    .unwrap_or(ui.reg_format);
+                let (swap_bytes, swap_words) = {
+                    let s = state.read().await;
+                    if ui.reg_view == REG_VIEW_INPUT {
+                        (
+                            s.input_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                            s.input_swap_words.get(&ui.selected).copied().unwrap_or(false),
+                        )
+                    } else {
+                        (
+                            s.holding_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                            s.holding_swap_words.get(&ui.selected).copied().unwrap_or(false),
+                        )
+                    }
+                };
+                match crate::parse_register_value(&ui.edit_buf, fmt, swap_bytes, swap_words) {
+                    Ok(reg_values) => {
+                        if reg_values.len() == 1 {
+                            let (resp_tx,_) = oneshot::channel();
+                            let _ = tx.send(RegCmd::WriteSingleHolding {
+                                addr: ui.selected,
+                                value: reg_values[0],
+                                resp: resp_tx,
+                            });
+                        } else {
+                            let (resp_tx,_) = oneshot::channel();
+                            let _ = tx.send(RegCmd::WriteMultipleHolding {
+                                addr: ui.selected,
+                                values: reg_values,
+                                resp: resp_tx,
+                            });
+                        }
                         ui.edit_mode = false;
                         ui.edit_buf.clear();
                     }
@@ -3588,7 +3625,37 @@ pub async fn run_ui(
                                                     .get(&ui.selected)
                                                     .copied()
                                                     .unwrap_or(ui.reg_format);
-                                                ui.edit_buf = format_u16(items[ui.selected], fmt);
+                                                let (sel_swap_bytes, sel_swap_words) =
+                                                    if ui.reg_view == REG_VIEW_INPUT {
+                                                        (
+                                                            s.input_swap_bytes
+                                                                .get(&ui.selected)
+                                                                .copied()
+                                                                .unwrap_or(false),
+                                                            s.input_swap_words
+                                                                .get(&ui.selected)
+                                                                .copied()
+                                                                .unwrap_or(false),
+                                                        )
+                                                    } else {
+                                                        (
+                                                            s.holding_swap_bytes
+                                                                .get(&ui.selected)
+                                                                .copied()
+                                                                .unwrap_or(false),
+                                                            s.holding_swap_words
+                                                                .get(&ui.selected)
+                                                                .copied()
+                                                                .unwrap_or(false),
+                                                        )
+                                                    };
+                                                ui.edit_buf = crate::format_register_value(
+                                                    items,
+                                                    ui.selected,
+                                                    fmt,
+                                                    sel_swap_bytes,
+                                                    sel_swap_words,
+                                                );
                                                 ui.status_msg = None;
                                             }
                                         }
