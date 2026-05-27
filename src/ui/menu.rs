@@ -393,8 +393,8 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             // coils / discrete / input
             lines.push(Line::from(Span::styled(
                 format!(
-                    "  coils:{} disc:{} input:{}",
-                    args.coil_count, args.discrete_count, args.input_count
+                    "  {}",
+                    t!("profile_pick.preview_ranges", c = args.coil_count, d = args.discrete_count, i = args.input_count)
                 ),
                 Style::default().fg(Color::DarkGray),
             )));
