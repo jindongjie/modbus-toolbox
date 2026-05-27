@@ -29,8 +29,8 @@ use ratatui::{
 use crate::{
     csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,
     format_u16, list_csv_logs, load_csv_into_monitor, modbus::frame_bytes_from_info,
-    modbus::RegCmd, parse_u16_str, AppState, Args, DisplayBase, FrameInfo, FrameRecord, MainMode,
-    MonitorStats, RegDataFormat, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
+    modbus::RegCmd, parse_u16_str, AppState, Args, FrameInfo, FrameRecord, MainMode, MonitorStats,
+    RegDataFormat, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
 };
 /// 从字符串解析寄存器数据格式
 fn parse_reg_format(s: &str) -> RegDataFormat {
@@ -72,7 +72,6 @@ pub struct MenuSelection {
 }
 
 pub struct Ui {
-    base: DisplayBase,
     selected: usize,
     scroll: usize,
     edit_mode: bool,
@@ -293,7 +292,7 @@ const REG_VIEW_DISCRETE: usize = 2;
 const REG_VIEW_INPUT: usize = 3;
 
 impl Ui {
-    fn new(base: DisplayBase, reg_format: RegDataFormat, profiles: Vec<String>) -> Self {
+    fn new(reg_format: RegDataFormat, profiles: Vec<String>) -> Self {
         let logo_raw = include_str!("logo.txt");
         let mut logo_target: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
         logo_target.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
@@ -305,7 +304,6 @@ impl Ui {
             .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
             .unwrap_or_default();
         Self {
-            base,
             selected: 0,
             scroll: 0,
             edit_mode: false,
@@ -425,7 +423,7 @@ fn search_match(idx: usize, search_lower: &str, _items: &[u16], labels: Option<&
     false
 }
 
-fn edit_accepts_char(current: &str, ch: char, base: DisplayBase) -> bool {
+fn edit_accepts_char(current: &str, ch: char, fmt: RegDataFormat) -> bool {
     if ch.is_ascii_whitespace() {
         return false;
     }
@@ -435,10 +433,10 @@ fn edit_accepts_char(current: &str, ch: char, base: DisplayBase) -> bool {
     if ch == '0' && current.is_empty() {
         return true;
     }
-    match base {
-        DisplayBase::Dec => ch.is_ascii_digit(),
-        DisplayBase::Hex => ch.is_ascii_hexdigit(),
-        DisplayBase::Bin => ch == '0' || ch == '1',
+    match fmt {
+        RegDataFormat::Hex => ch.is_ascii_hexdigit(),
+        RegDataFormat::Binary => ch == '0' || ch == '1',
+        _ => ch.is_ascii_digit() || ch == '-',
     }
 }
 
@@ -2106,7 +2104,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(DisplayBase::Dec, RegDataFormat::U16, profiles);
+    let mut ui = Ui::new(RegDataFormat::U16, profiles);
     ui.config_path = config_path.to_string();
     // 尝试读取默认配置
     if let Some(def) = load_default_profile(config_path) {
@@ -2200,7 +2198,7 @@ pub async fn run_ui(
 
     let mut events = EventStream::new();
     let reg_format = parse_reg_format(&args.reg_format);
-    let mut ui = Ui::new(args.base, reg_format, profiles);
+    let mut ui = Ui::new(reg_format, profiles);
     ui.config_path = config_path;
     ui.args = args.clone();
 
@@ -2468,7 +2466,7 @@ pub async fn run_ui(
                                 } else if ui.edit_is_label {
                                     t!("run_ui.edit_label", buf = &ui.edit_buf)
                                 } else {
-                                    t!("run_ui.edit_value", base = format!("{:?}", ui.base), buf = &ui.edit_buf)
+                                    t!("run_ui.edit_value", base = ui.reg_format.short_label(), buf = &ui.edit_buf)
                                 }
                             } else if s.stability_test_running {
                                 let (total, ok, fail) = s.stability_stats;
@@ -2496,7 +2494,7 @@ pub async fn run_ui(
                                 } else {
                                     String::new()
                                 };
-                                t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
+                                t!("run_ui.status_tcp", func = &fi.func_name, base = ui.reg_format.short_label(), fmt = fmt, sw = sw)
                                 } else {
                                     let fmt = ui.reg_format.short_label();
                                     let (sel_bytes, sel_words) = if ui.reg_view == REG_VIEW_INPUT {
@@ -2511,7 +2509,7 @@ pub async fn run_ui(
                                     } else {
                                         String::new()
                                     };
-                                    t!("run_ui.status_rtu", func = &fi.func_name, base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
+                                    t!("run_ui.status_rtu", func = &fi.func_name, base = ui.reg_format.short_label(), fmt = fmt, sw = sw)
                                 }
                             } else {
                                 let fmt = ui.reg_format.short_label();
@@ -2527,7 +2525,7 @@ pub async fn run_ui(
                                 } else {
                                     String::new()
                                 };
-                                t!("run_ui.status_waiting", base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
+                                t!("run_ui.status_waiting", base = ui.reg_format.short_label(), fmt = fmt, sw = sw)
                             };
 
                             f.render_widget(
@@ -2555,7 +2553,7 @@ pub async fn run_ui(
                                     let found: Vec<&(u8, Option<u16>)> = results.iter().filter(|(_, v)| v.is_some()).collect();
                                     let mut text = format!("{}\n\n", t!("run_ui.scan_found_slaves", count = found.len()));
                                     for (id, val) in &found {
-                                        let v = format_u16(val.unwrap(), ui.base);
+                                        let v = format_u16(val.unwrap(), ui.reg_format);
                                         text.push_str(&format!("  Slave {}:  {}\n", id, v));
                                     }
                                     if found.is_empty() {
@@ -2725,7 +2723,7 @@ pub async fn run_ui(
                 ui.edit_mode = false;
                 ui.edit_buf.clear();
             } else {
-                match parse_u16_str(&ui.edit_buf, ui.base) {
+                match parse_u16_str(&ui.edit_buf, ui.reg_format) {
                     Ok(new_val) => {
                         let (resp_tx,_) = oneshot::channel();
                         let _ = tx.send(RegCmd::WriteSingleHolding {
@@ -2753,7 +2751,7 @@ pub async fn run_ui(
                                             if ui.edit_is_label || ui.edit_is_profile {
                                                 ui.edit_buf.push('m');
                                             } else {
-                                                match parse_u16_str(&ui.edit_buf, ui.base) {
+                                                match parse_u16_str(&ui.edit_buf, ui.reg_format) {
                                                     Ok(new_val) => {
                                                         let (resp_tx, resp_rx) = oneshot::channel();
                                                         let values = vec![new_val; 100];
@@ -2798,7 +2796,7 @@ pub async fn run_ui(
 
                                         KeyCode::Char(ch) => {
                                             ui.status_msg = None;
-                                            if ui.edit_is_label || ui.edit_is_profile || edit_accepts_char(&ui.edit_buf, ch, ui.base) {
+                                            if ui.edit_is_label || ui.edit_is_profile || edit_accepts_char(&ui.edit_buf, ch, ui.reg_format) {
                                                 ui.edit_buf.push(ch);
                                             } else {
                                                 set_status(
@@ -3073,20 +3071,6 @@ pub async fn run_ui(
                                                 drop(s);
                                             }
                                         }
-                                        KeyCode::Char('d') => {
-                                            ui.base = DisplayBase::Dec;
-                                            ui.status_msg = None;
-                                        }
-                                        KeyCode::Char('h') => {
-                                            ui.base = DisplayBase::Hex;
-                                            ui.status_msg = None;
-                                        }
-
-                                        KeyCode::Char('b') => {
-                                            ui.base = DisplayBase::Bin;
-                                            ui.status_msg = None;
-                                        }
-
                                         // i: 显示/关闭当前配置信息弹窗
                                         KeyCode::Char('i') => {
                                             if !ui.edit_mode {
@@ -3354,7 +3338,7 @@ pub async fn run_ui(
                                         KeyCode::Char('E') => {
                                             if !is_monitor_mode && !ui.edit_mode {
                                                 let s = state.read().await;
-                                                match export_registers_to_json(ui.reg_format, ui.base, &s) {
+                                                match export_registers_to_json(ui.reg_format, &s) {
                                                     Ok((filename, json)) => {
                                                         drop(s);
                                                         match std::fs::write(&filename, &json) {
@@ -3393,7 +3377,7 @@ pub async fn run_ui(
                                                 ui.edit_mode = true;
                                                 ui.edit_is_label = false;
                                                 ui.edit_is_profile = false;
-                                                ui.edit_buf = format_u16(s.holding[ui.selected], ui.base);
+                                                ui.edit_buf = format_u16(s.holding[ui.selected], ui.reg_format);
                                                 ui.status_msg = None;
                                             }
                                         }
@@ -3944,8 +3928,7 @@ fn render_register_table(
                         s.holding_swap_words.get(&i).copied().unwrap_or(false),
                     )
                 };
-                let mut val =
-                    format_register_value(items, i, reg_fmt, ui.base, swap_bytes, swap_words);
+                let mut val = format_register_value(items, i, reg_fmt, swap_bytes, swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
                 // Show combination info in label if combined
                 if let Some(&combo_fmt) = combinations.and_then(|c| c.get(&i)) {
@@ -4480,9 +4463,9 @@ fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppStat
     let addr = ui.pattern_dialog_addr;
 
     let current_val = match ui.pattern_dialog_reg_type {
-        REG_VIEW_HOLDING if addr < s.holding.len() => format_u16(s.holding[addr], ui.base),
+        REG_VIEW_HOLDING if addr < s.holding.len() => format_u16(s.holding[addr], ui.reg_format),
         REG_VIEW_INPUT if addr < s.input_registers.len() => {
-            format_u16(s.input_registers[addr], ui.base)
+            format_u16(s.input_registers[addr], ui.reg_format)
         }
         _ => "?".to_string(),
     };
@@ -4573,7 +4556,7 @@ fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
     } else {
         t!("profile_info.server_mode").to_string()
     };
-    let data_fmt = format!("{} | {:?}", ui.reg_format.short_label(), a.base);
+    let data_fmt = ui.reg_format.short_label().to_string();
     let selected_profile = ui
         .monitor_selected_profile
         .as_deref()
@@ -4809,125 +4792,79 @@ mod tests {
 
     #[test]
     fn test_format_register_value_u16() {
-        use crate::{DisplayBase, RegDataFormat};
+        use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U16,
-            DisplayBase::Hex,
-            false,
-            false,
-        );
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::Hex, false, false);
         assert_eq!(val, "0x1234");
     }
 
     #[test]
-    fn test_format_register_value_u32() {
-        use crate::{DisplayBase, RegDataFormat};
+    fn test_format_register_value_u32_hex() {
+        use crate::RegDataFormat;
+        // Hex format only reads 1 register; to see the full u32 value,
+        // use RegDataFormat::U32 with byte swap to reconstruct the pair.
         let regs = vec![0x1234u16, 0x5678u16, 0x9ABCu16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U32,
-            DisplayBase::Hex,
-            false,
-            false,
-        );
-        assert_eq!(val, "0x12345678");
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, false);
+        assert_eq!(val, "305419896"); // 0x12345678 in decimal
     }
 
     #[test]
     fn test_format_register_value_u32_out_of_bounds() {
-        use crate::{DisplayBase, RegDataFormat};
+        use crate::RegDataFormat;
         let regs = vec![0x1234u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U32,
-            DisplayBase::Hex,
-            false,
-            false,
-        );
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, false);
         assert!(val.contains("--"));
     }
 
     #[test]
-    fn test_format_register_value_u64() {
-        use crate::{DisplayBase, RegDataFormat};
+    fn test_format_register_value_u64_hex() {
+        use crate::RegDataFormat;
         let regs = vec![0x0001u16, 0x0002u16, 0x0003u16, 0x0004u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U64,
-            DisplayBase::Hex,
-            false,
-            false,
-        );
-        assert_eq!(val, "0x0001000200030004");
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::U64, false, false);
+        assert_eq!(val, "281483566841860"); // 0x0001000200030004 in decimal
     }
 
     #[test]
-    fn test_format_register_value_byte_swap() {
-        use crate::{DisplayBase, RegDataFormat};
+    fn test_format_register_value_byte_swap_hex() {
+        use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U32,
-            DisplayBase::Hex,
-            true,
-            false,
-        );
-        // 0x1234 → swapped byte → 0x3412, 0x5678 → 0x7856
-        // combined: 0x34127856
-        assert_eq!(val, "0x34127856");
+        // Hex reads 1 register; swapped byte: 0x1234 → 0x3412
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::Hex, true, false);
+        assert_eq!(val, "0x3412");
     }
 
     #[test]
-    fn test_format_register_value_word_swap() {
-        use crate::{DisplayBase, RegDataFormat};
+    fn test_format_register_value_word_swap_u32() {
+        use crate::RegDataFormat;
         let regs = vec![0x1234u16, 0x5678u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::U32,
-            DisplayBase::Hex,
-            false,
-            true,
-        );
-        // words reversed: [0x5678, 0x1234] → 0x56781234
-        assert_eq!(val, "0x56781234");
+        // U32 reads 2 regs; word swap reverses: [0x5678, 0x1234] → 0x56781234
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, false, true);
+        assert_eq!(val, "1450709556"); // 0x56781234 in decimal
+    }
+
+    #[test]
+    fn test_format_register_value_byte_swap_u32_hex() {
+        use crate::RegDataFormat;
+        let regs = vec![0x1234u16, 0x5678u16];
+        // U32 reads 2 regs; byte swap each: [0x3412, 0x7856] → 0x34127856
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::U32, true, false);
+        assert_eq!(val, "873625686"); // 0x34127856 in decimal
     }
 
     #[test]
     fn test_format_register_value_i32_negative() {
-        use crate::{DisplayBase, RegDataFormat};
+        use crate::RegDataFormat;
         let regs = vec![0xFFFFu16, 0xFFCEu16]; // -50 in 32-bit signed
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::I32,
-            DisplayBase::Dec,
-            false,
-            false,
-        );
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::I32, false, false);
         assert_eq!(val, "-50");
     }
 
     #[test]
     fn test_format_register_value_float32() {
-        use crate::{DisplayBase, RegDataFormat};
+        use crate::RegDataFormat;
         // 3.14 in IEEE 754: 0x4048F5C3
         let regs = vec![0x4048u16, 0xF5C3u16];
-        let val = crate::format_register_value(
-            &regs,
-            0,
-            RegDataFormat::F32,
-            DisplayBase::Dec,
-            false,
-            false,
-        );
+        let val = crate::format_register_value(&regs, 0, RegDataFormat::F32, false, false);
         assert!(val.starts_with("3.140"), "expected 3.14xxx, got: {}", val);
     }
 
@@ -5005,5 +4942,156 @@ mod tests {
             combos.remove(&addr);
         }
         assert!(combos.is_empty());
+    }
+
+    // ─── edit_accepts_char ───
+
+    #[test]
+    fn test_edit_accepts_char_hex() {
+        // hex accepts 0-9, a-f, A-F
+        assert!(edit_accepts_char("", 'a', RegDataFormat::Hex));
+        assert!(edit_accepts_char("", 'F', RegDataFormat::Hex));
+        assert!(edit_accepts_char("", '3', RegDataFormat::Hex));
+        assert!(!edit_accepts_char("", 'g', RegDataFormat::Hex));
+        assert!(!edit_accepts_char("", 'z', RegDataFormat::Hex));
+        assert!(!edit_accepts_char("", ' ', RegDataFormat::Hex));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_binary() {
+        assert!(edit_accepts_char("", '0', RegDataFormat::Binary));
+        assert!(edit_accepts_char("", '1', RegDataFormat::Binary));
+        assert!(!edit_accepts_char("", '2', RegDataFormat::Binary));
+        assert!(!edit_accepts_char("", 'a', RegDataFormat::Binary));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_decimal() {
+        // U16, I16, U32 etc accept digits and '-'
+        assert!(edit_accepts_char("", '5', RegDataFormat::U16));
+        assert!(edit_accepts_char("", '9', RegDataFormat::U16));
+        assert!(edit_accepts_char("-", '1', RegDataFormat::I16));
+        assert!(!edit_accepts_char("", 'a', RegDataFormat::U16));
+        assert!(!edit_accepts_char("", 'x', RegDataFormat::U16));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_whitespace_rejected() {
+        assert!(!edit_accepts_char("", ' ', RegDataFormat::U16));
+        assert!(!edit_accepts_char("", '\t', RegDataFormat::Hex));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_0x_prefix() {
+        // 'x' allowed only after '0'
+        assert!(edit_accepts_char("0", 'x', RegDataFormat::U16));
+        assert!(edit_accepts_char("0", 'X', RegDataFormat::U16));
+        assert!(!edit_accepts_char("12", 'x', RegDataFormat::U16));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_0b_prefix() {
+        assert!(edit_accepts_char("0", 'b', RegDataFormat::U16));
+        assert!(edit_accepts_char("0", 'B', RegDataFormat::Hex));
+    }
+
+    // ─── parse_u16_str ───
+
+    #[test]
+    fn test_parse_u16_str_hex_format() {
+        let r = parse_u16_str("FF", RegDataFormat::Hex).unwrap();
+        assert_eq!(r, 255);
+        let r = parse_u16_str("ff", RegDataFormat::Hex).unwrap();
+        assert_eq!(r, 255);
+        assert!(parse_u16_str("GG", RegDataFormat::Hex).is_err());
+    }
+
+    #[test]
+    fn test_parse_u16_str_binary_format() {
+        let r = parse_u16_str("1010", RegDataFormat::Binary).unwrap();
+        assert_eq!(r, 10);
+        assert!(parse_u16_str("12", RegDataFormat::Binary).is_err());
+    }
+
+    #[test]
+    fn test_parse_u16_str_decimal_format() {
+        let r = parse_u16_str("1234", RegDataFormat::U16).unwrap();
+        assert_eq!(r, 1234);
+        let r = parse_u16_str("0", RegDataFormat::I16).unwrap();
+        assert_eq!(r, 0);
+        assert!(parse_u16_str("99999", RegDataFormat::U16).is_err());
+    }
+
+    #[test]
+    fn test_parse_u16_str_prefix_overrides() {
+        // 0x prefix forces hex regardless of format
+        let r = parse_u16_str("0xFF", RegDataFormat::U16).unwrap();
+        assert_eq!(r, 255);
+        // 0b prefix forces binary regardless of format
+        let r = parse_u16_str("0b1111", RegDataFormat::Hex).unwrap();
+        assert_eq!(r, 15);
+    }
+
+    #[test]
+    fn test_parse_u16_str_empty_error() {
+        assert!(parse_u16_str("", RegDataFormat::U16).is_err());
+        assert!(parse_u16_str("   ", RegDataFormat::Hex).is_err());
+    }
+
+    // ─── next_format/prev_format unified cycle ───
+
+    #[test]
+    fn test_next_format_unified_cycle_all() {
+        use crate::RegDataFormat;
+        // Verify the full cycle covers all 14 variants and loops back
+        let start = RegDataFormat::U16;
+        let mut f = start;
+        let mut count = 0;
+        loop {
+            f = f.next_format();
+            count += 1;
+            if f == start {
+                break;
+            }
+            // safety: should not cycle more than 14
+            assert!(count <= 20, "cycle too long");
+        }
+        assert_eq!(count, 14, "should cycle through all 14 variants");
+    }
+
+    #[test]
+    fn test_prev_format_unified_cycle_all() {
+        use crate::RegDataFormat;
+        let start = RegDataFormat::U16;
+        let mut f = start;
+        let mut count = 0;
+        loop {
+            f = f.prev_format();
+            count += 1;
+            if f == start {
+                break;
+            }
+            assert!(count <= 20, "cycle too long");
+        }
+        assert_eq!(count, 14, "should cycle through all 14 variants");
+    }
+
+    #[test]
+    fn test_next_format_prev_format_are_inverses() {
+        use crate::RegDataFormat;
+        for fmt in RegDataFormat::all() {
+            // next then prev should return to original
+            assert_eq!(
+                fmt.next_format().prev_format(),
+                *fmt,
+                "mismatch for {fmt:?}"
+            );
+            // prev then next should return to original
+            assert_eq!(
+                fmt.prev_format().next_format(),
+                *fmt,
+                "mismatch for {fmt:?}"
+            );
+        }
     }
 }

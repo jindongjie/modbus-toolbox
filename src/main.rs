@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 mod modbus;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::sync::{mpsc, RwLock};
@@ -13,15 +13,6 @@ use ui::*;
 extern crate rust_i18n;
 
 i18n!("locales");
-
-#[derive(Copy, Clone, Debug, ValueEnum, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-enum DisplayBase {
-    #[default]
-    Dec,
-    Hex,
-    Bin,
-}
 
 /// 寄存器数据解释格式
 #[derive(Copy, Clone, Debug, PartialEq, Default, serde::Deserialize, serde::Serialize)]
@@ -39,6 +30,7 @@ pub enum RegDataFormat {
     F16,
     F32,
     F64,
+    Hex,
     Binary,
     Ascii,
 }
@@ -50,6 +42,7 @@ impl RegDataFormat {
             RegDataFormat::U16
             | RegDataFormat::I16
             | RegDataFormat::F16
+            | RegDataFormat::Hex
             | RegDataFormat::Binary
             | RegDataFormat::Ascii => 1,
             RegDataFormat::U32 | RegDataFormat::I32 | RegDataFormat::F32 => 2,
@@ -71,6 +64,7 @@ impl RegDataFormat {
             RegDataFormat::F16 => "f16",
             RegDataFormat::F32 => "f32",
             RegDataFormat::F64 => "f64",
+            RegDataFormat::Hex => "hex",
             RegDataFormat::Binary => "bin",
             RegDataFormat::Ascii => "ascii",
         }
@@ -90,6 +84,7 @@ impl RegDataFormat {
             RegDataFormat::F16,
             RegDataFormat::F32,
             RegDataFormat::F64,
+            RegDataFormat::Hex,
             RegDataFormat::Binary,
             RegDataFormat::Ascii,
         ]
@@ -106,41 +101,45 @@ impl RegDataFormat {
         }
     }
 
-    /// Cycle format type: u → i → f → u within the same data width.
-    /// For fallback types (Binary, Ascii) returns U16.
+    /// Cycle format type: u → i → f → hex → bin → ascii → u for 16-bit,
+    /// or u → i → f → u for multi-register formats.
     pub fn next_format(self) -> RegDataFormat {
         match self {
             RegDataFormat::U16 => RegDataFormat::I16,
-            RegDataFormat::I16 => RegDataFormat::F16,
-            RegDataFormat::F16 => RegDataFormat::U16,
+            RegDataFormat::I16 => RegDataFormat::U32,
             RegDataFormat::U32 => RegDataFormat::I32,
-            RegDataFormat::I32 => RegDataFormat::F32,
-            RegDataFormat::F32 => RegDataFormat::U32,
+            RegDataFormat::I32 => RegDataFormat::U64,
             RegDataFormat::U64 => RegDataFormat::I64,
-            RegDataFormat::I64 => RegDataFormat::F64,
-            RegDataFormat::F64 => RegDataFormat::U64,
+            RegDataFormat::I64 => RegDataFormat::U128,
             RegDataFormat::U128 => RegDataFormat::I128,
-            RegDataFormat::I128 => RegDataFormat::U128,
-            _ => RegDataFormat::U16,
+            RegDataFormat::I128 => RegDataFormat::F16,
+            RegDataFormat::F16 => RegDataFormat::F32,
+            RegDataFormat::F32 => RegDataFormat::F64,
+            RegDataFormat::F64 => RegDataFormat::Hex,
+            RegDataFormat::Hex => RegDataFormat::Binary,
+            RegDataFormat::Binary => RegDataFormat::Ascii,
+            RegDataFormat::Ascii => RegDataFormat::U16,
         }
     }
 
-    /// Reverse of next_format: f → i → u → f within the same data width.
-    /// For fallback types (Binary, Ascii) returns U16.
+    /// Reverse of next_format: ascii → bin → hex → f → i → u for 16-bit,
+    /// or f → i → u → f for multi-register formats.
     pub fn prev_format(self) -> RegDataFormat {
         match self {
-            RegDataFormat::U16 => RegDataFormat::F16,
-            RegDataFormat::I16 => RegDataFormat::U16,
-            RegDataFormat::F16 => RegDataFormat::I16,
-            RegDataFormat::U32 => RegDataFormat::F32,
-            RegDataFormat::I32 => RegDataFormat::U32,
-            RegDataFormat::F32 => RegDataFormat::I32,
-            RegDataFormat::U64 => RegDataFormat::F64,
-            RegDataFormat::I64 => RegDataFormat::U64,
-            RegDataFormat::F64 => RegDataFormat::I64,
-            RegDataFormat::U128 => RegDataFormat::I128,
+            RegDataFormat::U16 => RegDataFormat::Ascii,
+            RegDataFormat::Ascii => RegDataFormat::Binary,
+            RegDataFormat::Binary => RegDataFormat::Hex,
+            RegDataFormat::Hex => RegDataFormat::F64,
+            RegDataFormat::F64 => RegDataFormat::F32,
+            RegDataFormat::F32 => RegDataFormat::F16,
+            RegDataFormat::F16 => RegDataFormat::I128,
             RegDataFormat::I128 => RegDataFormat::U128,
-            _ => RegDataFormat::U16,
+            RegDataFormat::U128 => RegDataFormat::I64,
+            RegDataFormat::I64 => RegDataFormat::U64,
+            RegDataFormat::U64 => RegDataFormat::I32,
+            RegDataFormat::I32 => RegDataFormat::U32,
+            RegDataFormat::U32 => RegDataFormat::I16,
+            RegDataFormat::I16 => RegDataFormat::U16,
         }
     }
 
@@ -261,11 +260,6 @@ struct Args {
     #[arg(long, default_value = "none")]
     flow: String,
 
-    /// 界面初始化时间
-    #[arg(long, value_enum, default_value_t = DisplayBase::Dec)]
-    base: DisplayBase,
-
-    /// 寄存器数据格式 (u16, i16, u32, i32, u64, i64, f16, f32, f64, bin, ascii)
     #[arg(long, default_value = "u16")]
     #[serde(default)]
     reg_format: String,
@@ -316,7 +310,6 @@ impl Default for Args {
             parity: "n".into(),
             stopbits: 1,
             flow: "none".into(),
-            base: DisplayBase::Dec,
             reg_format: "u16".into(),
             labels: HashMap::new(),
             reg_combinations: HashMap::new(),
@@ -1058,15 +1051,15 @@ fn parse_stopbits(v: u8) -> Result<StopBits> {
     }
 }
 
-fn format_u16(v: u16, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:04X}"),
-        DisplayBase::Bin => format!("0b{v:016b}"),
+fn format_u16(v: u16, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:04X}"),
+        RegDataFormat::Binary => format!("0b{v:016b}"),
+        _ => format!("{v}"),
     }
 }
 
-fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
+fn parse_u16_str(s: &str, fmt: RegDataFormat) -> Result<u16> {
     let t = s.trim();
     if t.is_empty() {
         return Err(anyhow!(t!("main.parse_empty")));
@@ -1078,73 +1071,73 @@ fn parse_u16_str(s: &str, base: DisplayBase) -> Result<u16> {
     if let Some(rest) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
         return u16::from_str_radix(rest, 2).context(t!("main.parse_bin_prefix"));
     }
-    match base {
-        DisplayBase::Dec => t.parse::<u16>().context(t!("main.parse_dec")),
-        DisplayBase::Hex => u16::from_str_radix(t, 16).context(t!("main.parse_hex")),
-        DisplayBase::Bin => u16::from_str_radix(t, 2).context(t!("main.parse_bin")),
+    match fmt {
+        RegDataFormat::Hex => u16::from_str_radix(t, 16).context(t!("main.parse_hex")),
+        RegDataFormat::Binary => u16::from_str_radix(t, 2).context(t!("main.parse_bin")),
+        _ => t.parse::<u16>().context(t!("main.parse_dec")),
     }
 }
 
-/// 将 u32 值按指定进制格式化
-fn format_u32(v: u32, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:08X}"),
-        DisplayBase::Bin => format!("0b{v:032b}"),
+/// 将 u32 值按指定格式格式化
+fn format_u32(v: u32, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:08X}"),
+        RegDataFormat::Binary => format!("0b{v:032b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 u64 值按指定进制格式化
-fn format_u64(v: u64, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:016X}"),
-        DisplayBase::Bin => format!("0b{v:064b}"),
+/// 将 u64 值按指定格式格式化
+fn format_u64(v: u64, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:016X}"),
+        RegDataFormat::Binary => format!("0b{v:064b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 i16 值按指定进制格式化
-fn format_i16(v: i16, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:04X}"),
-        DisplayBase::Bin => format!("0b{v:016b}"),
+/// 将 i16 值按指定格式格式化
+fn format_i16(v: i16, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:04X}"),
+        RegDataFormat::Binary => format!("0b{v:016b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 i32 值按指定进制格式化
-fn format_i32(v: i32, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:08X}"),
-        DisplayBase::Bin => format!("0b{v:032b}"),
+/// 将 i32 值按指定格式格式化
+fn format_i32(v: i32, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:08X}"),
+        RegDataFormat::Binary => format!("0b{v:032b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 i64 值按指定进制格式化
-fn format_i64(v: i64, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:016X}"),
-        DisplayBase::Bin => format!("0b{v:064b}"),
+/// 将 i64 值按指定格式格式化
+fn format_i64(v: i64, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:016X}"),
+        RegDataFormat::Binary => format!("0b{v:064b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 u128 值按指定进制格式化
-fn format_u128(v: u128, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:032X}"),
-        DisplayBase::Bin => format!("0b{v:0128b}"),
+/// 将 u128 值按指定格式格式化
+fn format_u128(v: u128, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:032X}"),
+        RegDataFormat::Binary => format!("0b{v:0128b}"),
+        _ => format!("{v}"),
     }
 }
 
-/// 将 i128 值按指定进制格式化
-fn format_i128(v: i128, base: DisplayBase) -> String {
-    match base {
-        DisplayBase::Dec => format!("{v}"),
-        DisplayBase::Hex => format!("0x{v:032X}"),
-        DisplayBase::Bin => format!("0b{v:0128b}"),
+/// 将 i128 值按指定格式格式化
+fn format_i128(v: i128, fmt: RegDataFormat) -> String {
+    match fmt {
+        RegDataFormat::Hex => format!("0x{v:032X}"),
+        RegDataFormat::Binary => format!("0b{v:0128b}"),
+        _ => format!("{v}"),
     }
 }
 
@@ -1185,7 +1178,6 @@ pub(crate) fn format_register_value(
     regs: &[u16],
     addr: usize,
     format: RegDataFormat,
-    base: DisplayBase,
     swap_bytes: bool,
     swap_words: bool,
 ) -> String {
@@ -1208,29 +1200,29 @@ pub(crate) fn format_register_value(
     }
 
     match format {
-        RegDataFormat::U16 => format_u16(words[0], base),
-        RegDataFormat::I16 => format_i16(words[0] as i16, base),
+        RegDataFormat::U16 | RegDataFormat::Hex => format_u16(words[0], format),
+        RegDataFormat::I16 => format_i16(words[0] as i16, format),
         RegDataFormat::U32 => {
             let v = (words[0] as u32) << 16 | words[1] as u32;
-            format_u32(v, base)
+            format_u32(v, format)
         }
         RegDataFormat::I32 => {
             let v = ((words[0] as u32) << 16 | words[1] as u32) as i32;
-            format_i32(v, base)
+            format_i32(v, format)
         }
         RegDataFormat::U64 => {
             let v = (words[0] as u64) << 48
                 | (words[1] as u64) << 32
                 | (words[2] as u64) << 16
                 | words[3] as u64;
-            format_u64(v, base)
+            format_u64(v, format)
         }
         RegDataFormat::I64 => {
             let v = ((words[0] as u64) << 48
                 | (words[1] as u64) << 32
                 | (words[2] as u64) << 16
                 | words[3] as u64) as i64;
-            format_i64(v, base)
+            format_i64(v, format)
         }
         RegDataFormat::U128 => {
             let v = (words[0] as u128) << 112
@@ -1241,7 +1233,7 @@ pub(crate) fn format_register_value(
                 | (words[5] as u128) << 32
                 | (words[6] as u128) << 16
                 | words[7] as u128;
-            format_u128(v, base)
+            format_u128(v, format)
         }
         RegDataFormat::I128 => {
             let v = ((words[0] as u128) << 112
@@ -1252,7 +1244,7 @@ pub(crate) fn format_register_value(
                 | (words[5] as u128) << 32
                 | (words[6] as u128) << 16
                 | words[7] as u128) as i128;
-            format_i128(v, base)
+            format_i128(v, format)
         }
         RegDataFormat::F16 => format_f16(words[0]),
         RegDataFormat::F32 => {
@@ -1268,7 +1260,7 @@ pub(crate) fn format_register_value(
             let v = f64::from_bits(bits);
             format!("{:.10}", v)
         }
-        RegDataFormat::Binary => format!("{:016b}", words[0]),
+        RegDataFormat::Binary => format!("0b{:016b}", words[0]),
         RegDataFormat::Ascii => {
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
             let s: String = bytes
@@ -1289,7 +1281,6 @@ pub(crate) fn format_register_value(
 /// 导出当前所有寄存器值为 JSON
 pub(crate) fn export_registers_to_json(
     reg_format: RegDataFormat,
-    base: DisplayBase,
     state: &AppState,
 ) -> Result<(String, String)> {
     use serde::Serialize;
@@ -1298,7 +1289,6 @@ pub(crate) fn export_registers_to_json(
     struct ExportData {
         export_time: String,
         reg_format: String,
-        base: String,
         holding: Vec<ExportReg>,
         coils: Vec<bool>,
         discrete: Vec<bool>,
@@ -1319,14 +1309,13 @@ pub(crate) fn export_registers_to_json(
         reg_format: RegDataFormat,
         swap_bytes_map: &HashMap<usize, bool>,
         swap_words_map: &HashMap<usize, bool>,
-        base: DisplayBase,
     ) -> Vec<ExportReg> {
         regs.iter()
             .enumerate()
             .map(|(i, &raw)| {
                 let sb = swap_bytes_map.get(&i).copied().unwrap_or(false);
                 let sw = swap_words_map.get(&i).copied().unwrap_or(false);
-                let value = format_register_value(regs, i, reg_format, base, sb, sw);
+                let value = format_register_value(regs, i, reg_format, sb, sw);
                 let label = labels.get(i).cloned().unwrap_or_default();
                 ExportReg {
                     addr: i,
@@ -1343,14 +1332,12 @@ pub(crate) fn export_registers_to_json(
     let data = ExportData {
         export_time: now.clone(),
         reg_format: reg_format.short_label().to_string(),
-        base: format!("{:?}", base),
         holding: make_regs(
             &state.holding,
             &state.holding_label,
             reg_format,
             &state.holding_swap_bytes,
             &state.holding_swap_words,
-            base,
         ),
         coils: state.coils.clone(),
         discrete: state.discrete.clone(),
@@ -1360,7 +1347,6 @@ pub(crate) fn export_registers_to_json(
             reg_format,
             &state.input_swap_bytes,
             &state.input_swap_words,
-            base,
         ),
     };
 
