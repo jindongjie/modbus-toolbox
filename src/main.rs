@@ -96,15 +96,14 @@ impl RegDataFormat {
         ]
     }
 
-    /// 循环切换类型：Uint→Int→Float→Hex→Binary→Ascii→Uint
+    /// 循环切换类型：Uint→Int→Float→Hex→Binary→Uint
     pub fn next_type(self) -> RegDataFormat {
         let next = match self.data_type {
             RegDataType::Uint => RegDataType::Int,
             RegDataType::Int => RegDataType::Float,
             RegDataType::Float => RegDataType::Hex,
             RegDataType::Hex => RegDataType::Binary,
-            RegDataType::Binary => RegDataType::Ascii,
-            RegDataType::Ascii => RegDataType::Uint,
+            RegDataType::Binary | RegDataType::Ascii => RegDataType::Uint,
         };
         let width = RegDataFormat::sanitize_width(next, self.width);
         RegDataFormat {
@@ -113,15 +112,14 @@ impl RegDataFormat {
         }
     }
 
-    /// 反向循环切换类型
+    /// 反向循环切换类型：Uint←Binary←Hex←Float←Int←Uint
     pub fn prev_type(self) -> RegDataFormat {
         let prev = match self.data_type {
-            RegDataType::Uint => RegDataType::Ascii,
-            RegDataType::Ascii => RegDataType::Binary,
-            RegDataType::Binary => RegDataType::Hex,
-            RegDataType::Hex => RegDataType::Float,
-            RegDataType::Float => RegDataType::Int,
+            RegDataType::Uint => RegDataType::Binary,
             RegDataType::Int => RegDataType::Uint,
+            RegDataType::Float => RegDataType::Int,
+            RegDataType::Hex => RegDataType::Float,
+            RegDataType::Binary | RegDataType::Ascii => RegDataType::Hex,
         };
         let width = RegDataFormat::sanitize_width(prev, self.width);
         RegDataFormat {
@@ -133,7 +131,6 @@ impl RegDataFormat {
     /// 确保位宽对指定类型有效
     fn sanitize_width(data_type: RegDataType, width: RegDataWidth) -> RegDataWidth {
         match data_type {
-            RegDataType::Hex | RegDataType::Binary | RegDataType::Ascii => RegDataWidth::Bits16,
             RegDataType::Float => match width {
                 RegDataWidth::Bits128 => RegDataWidth::Bits64, // 无 F128
                 w => w,
@@ -188,39 +185,35 @@ impl RegDataFormat {
         }
     }
 
-    /// 将指定类型设为 Float，若已是 Float 则循环位宽
+    /// 将指定类型设为 Float，保持当前位宽
     pub fn to_float(self) -> RegDataFormat {
-        if self.data_type == RegDataType::Float {
-            self.next_width()
-        } else {
-            RegDataFormat {
-                data_type: RegDataType::Float,
-                width: RegDataFormat::sanitize_width(RegDataType::Float, self.width),
-            }
+        RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataFormat::sanitize_width(RegDataType::Float, self.width),
         }
     }
 
-    /// 将指定类型设为 Hex（强制 16 位）
+    /// 将指定类型设为 Hex，保持当前位宽
     pub fn to_hex(self) -> RegDataFormat {
         RegDataFormat {
             data_type: RegDataType::Hex,
-            width: RegDataWidth::Bits16,
+            width: RegDataFormat::sanitize_width(RegDataType::Hex, self.width),
         }
     }
 
-    /// 将指定类型设为 Binary（强制 16 位）
+    /// 将指定类型设为 Binary，保持当前位宽
     pub fn to_binary(self) -> RegDataFormat {
         RegDataFormat {
             data_type: RegDataType::Binary,
-            width: RegDataWidth::Bits16,
+            width: RegDataFormat::sanitize_width(RegDataType::Binary, self.width),
         }
     }
 
-    /// 将指定类型设为 Ascii（强制 16 位）
+    /// 将指定类型设为 Ascii，保持当前位宽
     pub fn to_ascii(self) -> RegDataFormat {
         RegDataFormat {
             data_type: RegDataType::Ascii,
-            width: RegDataWidth::Bits16,
+            width: RegDataFormat::sanitize_width(RegDataType::Ascii, self.width),
         }
     }
 }
@@ -1059,9 +1052,24 @@ fn parse_combination_format(s: &str) -> RegDataFormat {
         "f16" | "half" => (RegDataType::Float, "16".to_string()),
         "f32" | "float" => (RegDataType::Float, "32".to_string()),
         "f64" | "double" => (RegDataType::Float, "64".to_string()),
-        "hex" => return RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 },
-        "bin" | "binary" => return RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 },
-        "ascii" => return RegDataFormat { data_type: RegDataType::Ascii, width: RegDataWidth::Bits16 },
+        "hex" => {
+            return RegDataFormat {
+                data_type: RegDataType::Hex,
+                width: RegDataWidth::Bits16,
+            }
+        }
+        "bin" | "binary" => {
+            return RegDataFormat {
+                data_type: RegDataType::Binary,
+                width: RegDataWidth::Bits16,
+            }
+        }
+        "ascii" => {
+            return RegDataFormat {
+                data_type: RegDataType::Ascii,
+                width: RegDataWidth::Bits16,
+            }
+        }
         // Parse as type+number format (e.g., "u16", "i32")
         _ => {
             let chars: Vec<char> = s.chars().collect();
@@ -1271,10 +1279,10 @@ pub(crate) fn format_register_value(
     }
 
     match (format.data_type, format.width) {
-        (RegDataType::Uint, RegDataWidth::Bits16) | (RegDataType::Hex, _)
-        | (RegDataType::Binary, _) | (RegDataType::Ascii, _) => {
-            format_u16(words[0], format)
-        }
+        (RegDataType::Uint, RegDataWidth::Bits16)
+        | (RegDataType::Hex, _)
+        | (RegDataType::Binary, _)
+        | (RegDataType::Ascii, _) => format_u16(words[0], format),
         (RegDataType::Int, RegDataWidth::Bits16) => format_i16(words[0] as i16, format),
         (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits32) => {
             let v = (words[0] as u32) << 16 | words[1] as u32;
