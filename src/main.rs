@@ -221,7 +221,7 @@ impl RegDataFormat {
 #[derive(Parser, Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[command(
     name = "modbus 工具箱",
-    about = "TUI 程序，包含 RTU/TCP 服务器/客户端与静默侦听"
+    about = "Modbus TUI toolbox — TCP/RTU 服务器、客户端、监听器"
 )]
 #[serde(default)]
 struct Args {
@@ -235,7 +235,7 @@ struct Args {
     #[serde(skip)]
     profile: Option<String>,
 
-    /// 主模式 1.tcp-服务端: tcp-server/ts 2.tcp-客户端 tcp-client/tc 3.rtu-服务端 rtu-server/rs 4.rtu-客户端 rtu-client/rs
+    /// 主模式: ts/tcp-server tcp服务端 | tc/tcp-client tcp客户端 | tm/tcp-monitor tcp监听 | rs/rtu-server rtu服务端 | rc/rtu-client rtu客户端 | rm/rtu-monitor rtu监听
     #[arg(short = 'm', long, default_value = "tcp-client")]
     main_mode: String,
 
