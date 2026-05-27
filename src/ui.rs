@@ -3335,62 +3335,6 @@ pub async fn run_ui(
                                                 }
                                             }
                                         }
-                                        // b: 设置类型为 Binary，保持当前位宽
-                                        KeyCode::Char('b') => {
-                                            if !ui.edit_mode && !is_monitor_mode {
-                                                let mut s = state.write().await;
-                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
-                                                    let addr = ui.selected;
-                                                    let total_regs = match ui.reg_view {
-                                                        REG_VIEW_HOLDING => s.holding.len(),
-                                                        REG_VIEW_INPUT => s.input_registers.len(),
-                                                        _ => unreachable!(),
-                                                    };
-                                                    if addr < total_regs {
-                                                        let new_fmt = {
-                                                            let combinations = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                                REG_VIEW_INPUT => &mut s.input_combinations,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            let current_fmt = combinations
-                                                                .get(&addr)
-                                                                .copied()
-                                                                .unwrap_or(ui.reg_format);
-                                                            let old_needed = current_fmt.regs_needed();
-                                                            combinations.retain(|&k, _| k < addr || k >= addr + old_needed);
-                                                            current_fmt.to_binary()
-                                                        };
-                                                        let new_needed = new_fmt.regs_needed();
-                                                        if new_needed > 1 && addr + new_needed <= total_regs {
-                                                            let change_enabled = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
-                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
-                                                                change_enabled[i] = false;
-                                                            }
-                                                        }
-                                                        {
-                                                            let combinations = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                                REG_VIEW_INPUT => &mut s.input_combinations,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            combinations.insert(addr, new_fmt);
-                                                        }
-                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
-                                                        set_status(&mut ui, msg);
-                                                        drop(s);
-                                                    } else {
-                                                        drop(s);
-                                                    }
-                                                } else {
-                                                    drop(s);
-                                                }
-                                            }
-                                        }
                                         // g: 切换选中地址的数据位宽 16→32→64→128→16 (保持格式类型)
                                         // 同时更新选中寄存器的组合配置，使其正确合并/隐藏相邻寄存器
                                         KeyCode::Char('g') => {
@@ -5463,6 +5407,27 @@ mod tests {
                 width: crate::RegDataWidth::Bits16
             }
         ));
+    }
+
+    #[test]
+    fn test_edit_accepts_char_float() {
+        // Float accepts digits, '.', '-', '+', 'e', 'E'
+        let float_fmt = RegDataFormat {
+            data_type: crate::RegDataType::Float,
+            width: crate::RegDataWidth::Bits32,
+        };
+        assert!(edit_accepts_char("", '3', float_fmt));
+        assert!(edit_accepts_char("3", '.', float_fmt));
+        assert!(edit_accepts_char("3.", '1', float_fmt));
+        assert!(edit_accepts_char("3.1", '4', float_fmt));
+        assert!(edit_accepts_char("3.14", 'e', float_fmt));
+        assert!(edit_accepts_char("3.14e", '-', float_fmt));
+        assert!(edit_accepts_char("3.14e-", '1', float_fmt));
+        assert!(edit_accepts_char("-3.14", 'e', float_fmt));
+        // Invalid chars for float
+        assert!(!edit_accepts_char("", 'x', float_fmt));
+        assert!(!edit_accepts_char("", 'a', float_fmt));
+        assert!(!edit_accepts_char("", 'g', float_fmt));
     }
 
     #[test]
