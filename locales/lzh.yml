@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTU 監聽"
 main_menu.profile_settings: "預設管理"
 main_menu.none: "(無)"
 main_menu.info: "消息"
-main_menu.info_bar: "預設: %{default} | 所選: %{selected} | ↑ ↓ 選 Enter 定 q 出"
+main_menu.info_bar: "所選: %{selected} | ↑ ↓ 選 Enter 定 q 出"
 
 # 選配置
 profile_pick.title: "選配置 — %{mode}"
@@ -44,12 +44,7 @@ profile_pick.no_match_hint: "當前模式無匹配配置"
 profile_settings.title: " 配置管理 "
 profile_settings.list_title: "配置列（○ 常 ● 預設）"
 profile_settings.empty_list: " (無配置) "
-profile_settings.info_title: "說明"
-profile_settings.info_default: "(未設)"
-profile_settings.info_text: "當今預設: %{name}\n─────────────────\n按 Enter 設所選為預設\n按 Esc 返主選\n\n提示：\n啟時未指 --profile\n則自動載預設"
 profile_settings.help: " ↑ ↓ 切 Enter 設預設 Esc 返 "
-profile_settings.set_success: "已設預設為: %{name}"
-profile_settings.set_fail: "設預設敗，請查配置檔權限"
 
 # 執行界面
 run_ui.enable_raw_mode: "啟 raw 式"

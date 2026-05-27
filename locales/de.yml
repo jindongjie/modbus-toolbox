@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTU Überwachung"
 main_menu.profile_settings: "Profileinstellungen"
 main_menu.none: "(keine)"
 main_menu.info: "Info"
-main_menu.info_bar: "Standard: %{default} | Ausgewählt: %{selected} | ↑ ↓ Auswählen  Enter Bestät.  q Beenden"
+main_menu.info_bar: "Ausgewählt: %{selected} | ↑ ↓ Auswählen  Enter Bestät.  q Beenden"
 
 # Profilauswahl
 profile_pick.title: "Profil auswählen — %{mode}"
@@ -36,20 +36,15 @@ profile_pick.preview_device: "Gerät:      %{device}"
 profile_pick.preview_baud: "Baudrate:   %{baud}"
 profile_pick.load_fail: "Profildetails konnten nicht geladen werden"
 profile_pick.select_hint: "Bitte wählen Sie ein Profil"
-profile_pick.help: " ↑ ↓ Profil wechseln  Enter Bestätigen  Esc Zurück "
+profile_pick.help: " ↑ ↓ Profil wechseln  Esc Zurück "
 profile_pick.no_profiles_hint: "Erstellen Sie zuerst Profile in den Einstellungen"
 profile_pick.no_match_hint: "Kein Profil passt zu diesem Modus"
 
 # Profileinstellungen
 profile_settings.title: " Profileinstellungen "
-profile_settings.list_title: "Profile (○ Normal  ● Standard)"
+profile_settings.list_title: "Profile"
 profile_settings.empty_list: " (keine Profile) "
-profile_settings.info_title: "Info"
-profile_settings.info_default: "(nicht gesetzt)"
-profile_settings.info_text: "Aktuelles Standardprofil: %{name}\n─────────────────\nEnter — als Standard setzen\nEsc — zurück\n\nTipp:\nWenn --profile nicht angegeben wird,\nwird das Standardprofil automatisch geladen"
-profile_settings.help: " ↑ ↓ Wechseln  Enter Standard  Esc Zurück "
-profile_settings.set_success: "Standardprofil gesetzt: %{name}"
-profile_settings.set_fail: "Standardprofil konnte nicht gesetzt werden, bitte Konfigurationsdatei-Berechtigungen prüfen"
+profile_settings.help: " ↑ ↓ Wechseln  Esc Zurück "
 
 # Laufzeit-UI
 run_ui.enable_raw_mode: "Raw-Modus aktivieren"

@@ -120,8 +120,6 @@ pub struct Ui {
     pub selected_profile: Option<String>,
     /// 待选模式（从主菜单进入子菜单时暂存）
     pub pending_mode: Option<MainMode>,
-    /// 当前默认配置名
-    pub default_profile: Option<String>,
     /// 主菜单渲染用的 Logo ASCII ART 行（正确/最终内容）
     pub logo_target: Vec<String>,
     /// Logo 动画当前显示的字符（随机→正确渐变）
@@ -277,12 +275,12 @@ impl Ui {
         let mut logo_target: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
         logo_target.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
         let logo_current = logo_random_buf(&logo_target);
-        let default = profiles.first().cloned();
         // 检测可用串口列表
         let serial_ports = tokio_serial::available_ports()
             .ok()
             .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
             .unwrap_or_default();
+        let first = profiles.first().cloned();
         Self {
             selected: 0,
             scroll: 0,
@@ -299,9 +297,8 @@ impl Ui {
             menu_screen: MenuScreen::Main,
             menu_list_idx: 0,
             profiles,
-            selected_profile: default.clone(),
+            selected_profile: first.clone(),
             pending_mode: None,
-            default_profile: default,
             logo_target,
             logo_current,
             logo_frame: 0,

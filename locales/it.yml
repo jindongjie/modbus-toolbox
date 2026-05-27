@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "Monitor RTU"
 main_menu.profile_settings: "Impostazioni Profilo"
 main_menu.none: "(nessuno)"
 main_menu.info: "Info"
-main_menu.info_bar: "Default: %{default} | Selezionato: %{selected} | ↑ ↓ Scegli  Enter Conferma  q Esci"
+main_menu.info_bar: "Selezionato: %{selected} | ↑ ↓ Scegli  Enter Conferma  q Esci"
 
 # Profile pick
 profile_pick.title: "Seleziona Profilo — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "Nessun profilo corrisponde a questa modalità, crea
 
 # Profile settings
 profile_settings.title: " Impostazioni Profilo "
-profile_settings.list_title: "Profili (○ Normale  ● Default)"
+profile_settings.list_title: "Profili"
 profile_settings.empty_list: " (nessun profilo) "
-profile_settings.info_title: "Info"
-profile_settings.info_default: "(non impostato)"
-profile_settings.info_text: "Default attuale: %{name}\n─────────────────\nPremi Enter per impostare come default\nPremi Esc per tornare\n\nSuggerimento:\nQuando --profile non è specificato,\nil profilo predefinito verrà caricato automaticamente"
-profile_settings.help: " ↑ ↓ Cambia  Enter Default  e Modifica  a Aggiungi  c Clona  d Elimina  Esc Indietro "
-profile_settings.set_success: "Profilo predefinito impostato: %{name}"
-profile_settings.set_fail: "Impossibile impostare il profilo predefinito, controlla i permessi del file di configurazione"
+profile_settings.help: " ↑ ↓ Cambia  e Modifica  a Aggiungi  c Clona  d Elimina  Esc Indietro "
 profile_settings.delete_confirm: "Premi d di nuovo per eliminare '%{name}'"
 profile_settings.delete_success: "Profilo [%{name}] eliminato"
 profile_settings.delete_fail: "Eliminazione fallita, controlla i permessi del file di configurazione"

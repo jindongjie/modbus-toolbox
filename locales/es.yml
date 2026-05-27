@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "Monitor RTU"
 main_menu.profile_settings: "Ajustes de Perfiles"
 main_menu.none: "(ninguno)"
 main_menu.info: "Información"
-main_menu.info_bar: "Defecto: %{default} | Seleccionado: %{selected} | ↑ ↓ Seleccionar  Enter Confirmar  q Salir"
+main_menu.info_bar: "Seleccionado: %{selected} | ↑ ↓ Seleccionar  Enter Confirmar  q Salir"
 
 # Selección de perfil
 profile_pick.title: "Seleccionar Perfil — %{mode}"
@@ -36,20 +36,15 @@ profile_pick.preview_device: "Dispositivo: %{device}"
 profile_pick.preview_baud: "Baudios:  %{baud}"
 profile_pick.load_fail: "No se pudo cargar los detalles del perfil"
 profile_pick.select_hint: "Por favor seleccione un perfil"
-profile_pick.help: " ↑ ↓ Cambiar perfil  Enter Confirmar  Esc Atrás "
+profile_pick.help: " ↑ ↓ Cambiar perfil  Esc Atrás "
 profile_pick.no_profiles_hint: "Cree perfiles en Configuración primero"
 profile_pick.no_match_hint: "Ningún perfil coincide con este modo"
 
 # Ajustes de perfil
 profile_settings.title: " Ajustes de Perfiles "
-profile_settings.list_title: "Perfiles (○ Normal  ● Por defecto)"
+profile_settings.list_title: "Perfiles"
 profile_settings.empty_list: " (sin perfiles) "
-profile_settings.info_title: "Información"
-profile_settings.info_default: "(no establecido)"
-profile_settings.info_text: "Actual por defecto: %{name}\n─────────────────\nEnter para establecer por defecto\nEsc para volver\n\nConsejo:\nSi no se especifica --profile,\nse cargará el perfil por defecto"
-profile_settings.help: " ↑ ↓ Cambiar  Enter Predeter.  Esc Atrás "
-profile_settings.set_success: "Perfil por defecto establecido: %{name}"
-profile_settings.set_fail: "Error al establecer perfil por defecto, revise permisos del archivo de configuración"
+profile_settings.help: " ↑ ↓ Cambiar  Esc Atrás "
 
 # Interfaz de ejecución
 run_ui.enable_raw_mode: "habilitar modo raw"

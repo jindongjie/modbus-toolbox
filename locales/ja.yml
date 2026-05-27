@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTUモニタ"
 main_menu.profile_settings: "プロファイル設定"
 main_menu.none: "(なし)"
 main_menu.info: "情報"
-main_menu.info_bar: "デフォルト: %{default} | 選択: %{selected} | ↑ ↓ 選択  Enter 確定  q 終了"
+main_menu.info_bar: "選択: %{selected} | ↑ ↓ 選択  Enter 確定  q 終了"
 
 # Profile pick
 profile_pick.title: "プロファイル選択 — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "このモードに一致するプロファイルが
 
 # Profile settings
 profile_settings.title: " プロファイル設定 "
-profile_settings.list_title: "プロファイル (○ 通常  ● デフォルト)"
+profile_settings.list_title: "プロファイル"
 profile_settings.empty_list: " (プロファイルなし) "
-profile_settings.info_title: "情報"
-profile_settings.info_default: "(未設定)"
-profile_settings.info_text: "現在のデフォルト: %{name}\n─────────────────\nEnterでデフォルトに設定\nEscで戻る\n\nヒント:\n--profileが指定されていない場合、\nデフォルトプロファイルが自動的に読み込まれます"
-profile_settings.help: " ↑ ↓ 切替  Enter デフォルト  e 編集  a 追加  c 複製  d 削除  Esc 戻る "
-profile_settings.set_success: "デフォルトプロファイルを設定: %{name}"
-profile_settings.set_fail: "デフォルトプロファイルの設定に失敗、設定ファイルの権限を確認してください"
+profile_settings.help: " ↑ ↓ 切替  e 編集  a 追加  c 複製  d 削除  Esc 戻る "
 profile_settings.delete_confirm: "もう一度dを押して'%{name}'を削除"
 profile_settings.delete_success: "プロファイル [%{name}] を削除しました"
 profile_settings.delete_fail: "プロファイルの削除に失敗、設定ファイルの権限を確認してください"

@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTU монитор"
 main_menu.profile_settings: "Настройки профилей"
 main_menu.none: "(нет)"
 main_menu.info: "Информация"
-main_menu.info_bar: "По умолч.: %{default} | Выбрано: %{selected} | ↑ ↓ Выбор  Enter Подтв.  q Выход"
+main_menu.info_bar: "Выбрано: %{selected} | ↑ ↓ Выбор  Enter Подтв.  q Выход"
 
 # Выбор профиля
 profile_pick.title: "Выбор профиля — %{mode}"
@@ -36,20 +36,15 @@ profile_pick.preview_device: "Устройство: %{device}"
 profile_pick.preview_baud: "Скорость:  %{baud}"
 profile_pick.load_fail: "Не удалось загрузить детали профиля"
 profile_pick.select_hint: "Пожалуйста, выберите профиль"
-profile_pick.help: " ↑ ↓ Переключить  Enter Подтвердить  Esc Назад "
+profile_pick.help: " ↑ ↓ Переключить  Esc Назад "
 profile_pick.no_profiles_hint: "Создайте профили в настройках"
 profile_pick.no_match_hint: "Нет профилей для этого режима"
 
 # Настройки профилей
 profile_settings.title: " Настройки профилей "
-profile_settings.list_title: "Профили (○ Обычный  ● По умолч.)"
+profile_settings.list_title: "Профили"
 profile_settings.empty_list: " (нет профилей) "
-profile_settings.info_title: "Справка"
-profile_settings.info_default: "(не задан)"
-profile_settings.info_text: "Текущий по умолч.: %{name}\n─────────────────\nEnter — установить по умолч.\nEsc — назад\n\nПодсказка:\nЕсли --profile не указан,\nпрофиль по умолч. загрузится автоматически"
-profile_settings.help: " ↑ ↓ Переключить  Enter По умолч.  Esc Назад "
-profile_settings.set_success: "Профиль по умолчанию: %{name}"
-profile_settings.set_fail: "Ошибка установки профиля, проверьте права файла конфигурации"
+profile_settings.help: " ↑ ↓ Переключить  Esc Назад "
 
 # Экран выполнения
 run_ui.enable_raw_mode: "включить raw mode"

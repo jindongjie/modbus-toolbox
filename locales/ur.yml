@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTU مانیٹر"
 main_menu.profile_settings: "پروفائل سیٹنگز"
 main_menu.none: "(کوئی نہیں)"
 main_menu.info: "معلومات"
-main_menu.info_bar: "ڈیفالٹ: %{default} | منتخب: %{selected} | ↑ ↓ انتخاب  Enter تصدیق  q باہر"
+main_menu.info_bar: "منتخب: %{selected} | ↑ ↓ انتخاب  Enter تصدیق  q باہر"
 
 # Profile pick
 profile_pick.title: "پروفائل منتخب کریں — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "اس موڈ سے کوئی پروفائل مماثل
 
 # Profile settings
 profile_settings.title: " پروفائل سیٹنگز "
-profile_settings.list_title: "پروفائلز (○ نارمل  ● ڈیفالٹ)"
+profile_settings.list_title: "پروفائلز"
 profile_settings.empty_list: " (کوئی پروفائل نہیں) "
-profile_settings.info_title: "معلومات"
-profile_settings.info_default: "(سیٹ نہیں)"
-profile_settings.info_text: "موجودہ ڈیفالٹ: %{name}\n─────────────────\nڈیفالٹ سیٹ کرنے کے لیے Enter دبائیں\nواپس جانے کے لیے Esc دبائیں\n\nٹپ:\nجب --profile مخصوص نہ ہو،\nڈیفالٹ پروفائل خودکار طور پر لوڈ ہو گی"
-profile_settings.help: " ↑ ↓ تبدیل  Enter ڈیفالٹ  e تدوین  a شامل  c کلون  d حذف  Esc واپس "
-profile_settings.set_success: "ڈیفالٹ پروفائل سیٹ: %{name}"
-profile_settings.set_fail: "ڈیفالٹ پروفائل سیٹ کرنے میں ناکامی، کنفیگ فائل کی اجازتیں چیک کریں"
+profile_settings.help: " ↑ ↓ تبدیل  e تدوین  a شامل  c کلون  d حذف  Esc واپس "
 profile_settings.delete_confirm: "حذف کرنے کے لیے دوبارہ d دبائیں '%{name}'"
 profile_settings.delete_success: "پروفائل [%{name}] حذف"
 profile_settings.delete_fail: "پروفائل حذف کرنے میں ناکامی، کنفیگ فائل کی اجازتیں چیک کریں"

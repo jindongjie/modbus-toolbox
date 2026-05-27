@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "RTU Monitor"
 main_menu.profile_settings: "Profile Settings"
 main_menu.none: "(none)"
 main_menu.info: "Info"
-main_menu.info_bar: "Default: %{default} | Selected: %{selected} | ↑ ↓ Select  Enter Confirm  q Quit"
+main_menu.info_bar: "Selected: %{selected} | ↑ ↓ Select  Enter Confirm  q Quit"
 
 # Profile pick
 profile_pick.title: "Select Profile — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "No profile matches this mode, create one or edit pr
 
 # Profile settings
 profile_settings.title: " Profile Settings "
-profile_settings.list_title: "Profiles (○ Normal  ● Default)"
+profile_settings.list_title: "Profiles"
 profile_settings.empty_list: " (no profiles) "
-profile_settings.info_title: "Info"
-profile_settings.info_default: "(not set)"
-profile_settings.info_text: "Current default: %{name}\n─────────────────\nPress Enter to set selected as default\nPress Esc to return\n\nTip:\nWhen --profile is not specified,\nthe default profile will load automatically"
-profile_settings.help: " ↑ ↓ Switch  Enter Set Default  e Edit  a Add  c Clone  d Delete  Esc Back "
-profile_settings.set_success: "Default profile set to: %{name}"
-profile_settings.set_fail: "Failed to set default profile, check config file permissions"
+profile_settings.help: " ↑ ↓ Switch  e Edit  a Add  c Clone  d Delete  Esc Back "
 profile_settings.delete_confirm: "Press d again to delete '%{name}'"
 profile_settings.delete_success: "Profile [%{name}] deleted"
 profile_settings.delete_fail: "Failed to delete profile, check config file permissions"

@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "مراقب RTU"
 main_menu.profile_settings: "إعدادات الملفات"
 main_menu.none: "(لا شيء)"
 main_menu.info: "معلومات"
-main_menu.info_bar: "الافتراضي: %{default} | المحدد: %{selected} | ↑ ↓ اختيار  Enter تأكيد  q خروج"
+main_menu.info_bar: "المحدد: %{selected} | ↑ ↓ اختيار  Enter تأكيد  q خروج"
 
 # Profile pick
 profile_pick.title: "اختيار ملف — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "لا يوجد ملف يطابق هذا الوضع،
 
 # Profile settings
 profile_settings.title: " إعدادات الملفات "
-profile_settings.list_title: "الملفات (○ عادي  ● افتراضي)"
+profile_settings.list_title: "الملفات"
 profile_settings.empty_list: " (لا توجد ملفات) "
-profile_settings.info_title: "معلومات"
-profile_settings.info_default: "(غير مضبوط)"
-profile_settings.info_text: "الافتراضي الحالي: %{name}\n─────────────────\nاضغط Enter لتعيين كافتراضي\nاضغط Esc للرجوع\n\nتلميح:\nعند عدم تحديد --profile،\nسيتم تحميل الملف الافتراضي تلقائياً"
-profile_settings.help: " ↑ ↓ تبديل  Enter افتراضي  e تعديل  a إضافة  c استنساخ  d حذف  Esc رجوع "
-profile_settings.set_success: "تم تعيين الملف الافتراضي: %{name}"
-profile_settings.set_fail: "فشل في تعيين الملف الافتراضي، تحقق من صلاحيات ملف الإعدادات"
+profile_settings.help: " ↑ ↓ تبديل  e تعديل  a إضافة  c استنساخ  d حذف  Esc رجوع "
 profile_settings.delete_confirm: "اضغط d مرة أخرى لحذف '%{name}'"
 profile_settings.delete_success: "تم حذف الملف [%{name}]"
 profile_settings.delete_fail: "فشل حذف الملف، تحقق من صلاحيات ملف الإعدادات"

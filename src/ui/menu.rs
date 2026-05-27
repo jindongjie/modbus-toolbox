@@ -35,27 +35,7 @@ pub fn load_profile_args(config_path: &str, name: &str) -> Option<(String, Args)
     configs.remove(name).map(|a| (name.to_string(), a))
 }
 
-/// 保存默认配置标记（写入到配置文件的 default 字段）
-fn save_default_profile(config_path: &str, name: &str) -> Result<()> {
-    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
-    let mut configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
-    // 把默认配置名存为 key "default" 的特殊配置，只存一个 name 字段
-    let default_args = Args {
-        main_mode: name.to_string(),
-        ..Default::default()
-    };
-    configs.insert("__default__".to_string(), default_args);
-    let s = toml::to_string_pretty(&configs)?;
-    std::fs::write(config_path, s)?;
-    Ok(())
-}
 
-/// 读取默认配置名
-fn load_default_profile(config_path: &str) -> Option<String> {
-    let config_str = std::fs::read_to_string(config_path).ok()?;
-    let configs: HashMap<String, Args> = toml::from_str(&config_str).ok()?;
-    configs.get("__default__").map(|a| a.main_mode.clone())
-}
 
 // ─────────────────────────────────────────
 // 菜单渲染与事件处理
@@ -238,11 +218,6 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     f.render_widget(paragraph, inner);
 
     // --- 底部信息栏 ---
-    let default_name = ui
-        .default_profile
-        .as_deref()
-        .map(std::borrow::Cow::Borrowed)
-        .unwrap_or_else(|| t!("main_menu.none"));
     let selected = ui
         .selected_profile
         .as_deref()
@@ -250,7 +225,6 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
         .unwrap_or_else(|| t!("main_menu.none"));
     let status = t!(
         "main_menu.info_bar",
-        default = default_name,
         selected = selected
     );
     f.render_widget(
@@ -305,8 +279,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     // 左：筛选后的配置列表（含简介）
     let mut items: Vec<Line> = Vec::new();
     for (i, name) in ui.pick_names.iter().enumerate() {
-        let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
-        let icon = if is_default { "●" } else { "○" };
+        let icon = "○";
         let brief = ui.pick_briefs.get(i).map(|s| s.as_str()).unwrap_or("");
         if i == ui.menu_list_idx {
             items.push(Line::from(Span::styled(
@@ -321,19 +294,6 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
-                    .add_modifier(Modifier::DIM),
-            )));
-        } else if is_default {
-            items.push(Line::from(Span::styled(
-                format!(" {} {}", icon, name),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            items.push(Line::from(Span::styled(
-                format!("   {}", brief),
-                Style::default()
-                    .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
             )));
         } else {
@@ -496,21 +456,13 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     // 左：配置列表，可设置为默认
     let mut items: Vec<Line> = Vec::new();
     for (i, name) in ui.profiles.iter().enumerate() {
-        let is_default = Some(name.as_str()) == ui.default_profile.as_deref();
-        let icon = if is_default { "●" } else { "○" };
+        let icon = "○";
         let line = if i == ui.menu_list_idx {
             Line::from(Span::styled(
                 format!(" {icon} {name}"),
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        } else if is_default {
-            Line::from(Span::styled(
-                format!(" {icon} {name}"),
-                Style::default()
-                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
@@ -531,18 +483,13 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(items).block(list_block), main[0]);
 
-    // 右：当前默认配置信息 + 操作说明
-    let default_name = ui
-        .default_profile
-        .as_deref()
-        .map(std::borrow::Cow::Borrowed)
-        .unwrap_or_else(|| t!("profile_settings.info_default"));
-    let info = t!("profile_settings.info_text", name = default_name);
+    // 右：操作说明
+    let help_info = t!("profile_settings.help");
     let info_block = Block::default()
         .borders(Borders::ALL)
-        .title(t!("profile_settings.info_title"))
+        .title("Help")
         .border_style(Style::default().fg(Color::Green));
-    f.render_widget(Paragraph::new(info).block(info_block), main[1]);
+    f.render_widget(Paragraph::new(help_info).block(info_block), main[1]);
 
     // 底部
     let help = t!("profile_settings.help");
@@ -675,24 +622,6 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                 ui.menu_list_idx += 1;
             }
         }
-        KeyCode::Enter => {
-            if ui.menu_list_idx < ui.profiles.len() {
-                let name = ui.profiles[ui.menu_list_idx].clone();
-                if save_default_profile(config_path, &name).is_ok() {
-                    ui.default_profile = Some(name.clone());
-                    ui.selected_profile = Some(name);
-                    set_status(
-                        ui,
-                        t!(
-                            "profile_settings.set_success",
-                            name = ui.default_profile.as_deref().unwrap_or("")
-                        ),
-                    );
-                } else {
-                    set_status(ui, t!("profile_settings.set_fail"));
-                }
-            }
-        }
         KeyCode::Char('e') => {
             // 编辑选中配置
             if ui.menu_list_idx < ui.profiles.len() {
@@ -750,11 +679,6 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
                             ui.profiles = reloaded;
                             ui.menu_list_idx =
                                 ui.menu_list_idx.min(ui.profiles.len().saturating_sub(1));
-                            // 如果删除的是默认配置，清除默认
-                            if ui.default_profile.as_deref() == Some(&name) {
-                                ui.default_profile = None;
-                                let _ = save_default_profile(config_path, "");
-                            }
                             set_status(ui, t!("profile_settings.delete_success", name = &name));
                         } else {
                             set_status(ui, t!("profile_settings.delete_fail"));
@@ -1435,7 +1359,7 @@ fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 // 菜单主循环
 // ─────────────────────────────────────────
 
-const LOGO_ANIM_FRAMES: u32 = 45;
+const LOGO_ANIM_FRAMES: u32 = 20;
 
 /// 生成 logo 动画中每个位置的"揭示帧号"，值在 0..LOGO_ANIM_FRAMES 之间
 fn logo_reveal_frame(row: usize, col: usize) -> u32 {
@@ -1483,13 +1407,6 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
     let mut events = EventStream::new();
     let mut ui = Ui::new(RegDataFormat::default(), profiles);
     ui.config_path = config_path.to_string();
-    // 尝试读取默认配置
-    if let Some(def) = load_default_profile(config_path) {
-        if ui.profiles.contains(&def) {
-            ui.default_profile = Some(def.clone());
-            ui.selected_profile = Some(def);
-        }
-    }
 
     let res: Result<MenuSelection> = loop {
         let ev = tokio::time::timeout(Duration::from_millis(100), events.next()).await;

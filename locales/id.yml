@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "Monitor RTU"
 main_menu.profile_settings: "Pengaturan Profil"
 main_menu.none: "(tidak ada)"
 main_menu.info: "Info"
-main_menu.info_bar: "Default: %{default} | Dipilih: %{selected} | ↑ ↓ Pilih  Enter Konfirmasi  q Keluar"
+main_menu.info_bar: "Dipilih: %{selected} | ↑ ↓ Pilih  Enter Konfirmasi  q Keluar"
 
 # Profile pick
 profile_pick.title: "Pilih Profil — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "Tidak ada profil yang cocok dengan mode ini, buat b
 
 # Profile settings
 profile_settings.title: " Pengaturan Profil "
-profile_settings.list_title: "Profil (○ Normal  ● Default)"
+profile_settings.list_title: "Profil"
 profile_settings.empty_list: " (tidak ada profil) "
-profile_settings.info_title: "Info"
-profile_settings.info_default: "(tidak diatur)"
-profile_settings.info_text: "Default saat ini: %{name}\n─────────────────\nTekan Enter untuk menetapkan sebagai default\nTekan Esc untuk kembali\n\nTips:\nJika --profile tidak ditentukan,\nprofil default akan dimuat secara otomatis"
-profile_settings.help: " ↑ ↓ Ganti  Enter Default  e Edit  a Tambah  c Klon  d Hapus  Esc Kembali "
-profile_settings.set_success: "Profil default ditetapkan: %{name}"
-profile_settings.set_fail: "Gagal menetapkan profil default, periksa izin file konfigurasi"
+profile_settings.help: " ↑ ↓ Ganti  e Edit  a Tambah  c Klon  d Hapus  Esc Kembali "
 profile_settings.delete_confirm: "Tekan d lagi untuk menghapus '%{name}'"
 profile_settings.delete_success: "Profil [%{name}] dihapus"
 profile_settings.delete_fail: "Gagal menghapus profil, periksa izin file konfigurasi"

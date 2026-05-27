@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "Monitor RTU"
 main_menu.profile_settings: "Configurações de Perfil"
 main_menu.none: "(nenhum)"
 main_menu.info: "Info"
-main_menu.info_bar: "Padrão: %{default} | Selecionado: %{selected} | ↑ ↓ Selecionar  Enter Confirmar  q Sair"
+main_menu.info_bar: "Selecionado: %{selected} | ↑ ↓ Selecionar  Enter Confirmar  q Sair"
 
 # Profile pick
 profile_pick.title: "Selecionar Perfil — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "Nenhum perfil corresponde a este modo, crie um ou e
 
 # Profile settings
 profile_settings.title: " Configurações de Perfil "
-profile_settings.list_title: "Perfis (○ Normal  ● Padrão)"
+profile_settings.list_title: "Perfis"
 profile_settings.empty_list: " (sem perfis) "
-profile_settings.info_title: "Info"
-profile_settings.info_default: "(não definido)"
-profile_settings.info_text: "Padrão atual: %{name}\n─────────────────\nPressione Enter para definir como padrão\nPressione Esc para voltar\n\nDica:\nQuando --profile não for especificado,\no perfil padrão será carregado automaticamente"
-profile_settings.help: " ↑ ↓ Alternar  Enter Padrão  e Editar  a Adicionar  c Clonar  d Excluir  Esc Voltar "
-profile_settings.set_success: "Perfil padrão definido para: %{name}"
-profile_settings.set_fail: "Falha ao definir perfil padrão, verifique permissões do arquivo de config"
+profile_settings.help: " ↑ ↓ Alternar  e Editar  a Adicionar  c Clonar  d Excluir  Esc Voltar "
 profile_settings.delete_confirm: "Pressione d novamente para excluir '%{name}'"
 profile_settings.delete_success: "Perfil [%{name}] excluído"
 profile_settings.delete_fail: "Falha ao excluir perfil, verifique permissões do arquivo de config"

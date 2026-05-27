@@ -20,7 +20,7 @@ main_menu.rtu_monitor: "Moniteur RTU"
 main_menu.profile_settings: "Paramètres des profils"
 main_menu.none: "(aucun)"
 main_menu.info: "Infos"
-main_menu.info_bar: "Défaut: %{default} | Sélectionné: %{selected} | ↑ ↓ Choisir  Enter Confirmer  q Quitter"
+main_menu.info_bar: "Sélectionné: %{selected} | ↑ ↓ Choisir  Enter Confirmer  q Quitter"
 
 # Profile pick
 profile_pick.title: "Sélectionner le profil — %{mode}"
@@ -42,14 +42,9 @@ profile_pick.no_match_hint: "Aucun profil ne correspond à ce mode, créez-en un
 
 # Profile settings
 profile_settings.title: " Paramètres des profils "
-profile_settings.list_title: "Profils (○ Normal  ● Défaut)"
+profile_settings.list_title: "Profils"
 profile_settings.empty_list: " (aucun profil) "
-profile_settings.info_title: "Infos"
-profile_settings.info_default: "(non défini)"
-profile_settings.info_text: "Défaut actuel: %{name}\n─────────────────\nAppuyez sur Entrée pour définir comme défaut\nAppuyez sur Esc pour revenir\n\nAstuce:\nQuand --profile n'est pas spécifié,\nle profil par défaut sera chargé automatiquement"
-profile_settings.help: " ↑ ↓ Changer  Enter Défaut  e Modifier  a Ajouter  c Cloner  d Supprimer  Esc Retour "
-profile_settings.set_success: "Profil par défaut défini: %{name}"
-profile_settings.set_fail: "Échec de la définition du profil par défaut, vérifiez les permissions du fichier de config"
+profile_settings.help: " ↑ ↓ Changer  e Modifier  a Ajouter  c Cloner  d Supprimer  Esc Retour "
 profile_settings.delete_confirm: "Appuyez à nouveau sur d pour supprimer '%{name}'"
 profile_settings.delete_success: "Profil [%{name}] supprimé"
 profile_settings.delete_fail: "Échec de la suppression, vérifiez les permissions du fichier de config"
