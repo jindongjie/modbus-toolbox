@@ -42,7 +42,7 @@ profile_pick.no_match_hint: "当前模式没有匹配的配置，请创建或修
 
 # 配置管理
 profile_settings.title: " 配置管理设置 "
-profile_settings.list_title: "配置列表（○ 普通  ● 默认）"
+profile_settings.list_title: "配置列表"
 profile_settings.empty_list: " (暂无配置) "
 profile_settings.help: " ↑ ↓ 切换  e 编辑  a 新增  c 克隆  d 删除  Esc 返回主菜单 "
 profile_settings.load_fail: "无法加载配置详情，可能已损坏"

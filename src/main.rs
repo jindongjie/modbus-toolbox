@@ -1026,7 +1026,7 @@ pub async fn run_register_simulator(
     }
 }
 
-fn parse_mainmode(s: &str) -> Result<MainMode> {
+pub(crate) fn parse_mainmode(s: &str) -> Result<MainMode> {
     match s.to_ascii_lowercase().as_str() {
         "ts" | "tcp-server" => Ok(MainMode::TcpServer),
         "tc" | "tcp-client" => Ok(MainMode::TcpClient),

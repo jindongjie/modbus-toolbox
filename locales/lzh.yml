@@ -42,9 +42,9 @@ profile_pick.no_match_hint: "當前模式無匹配配置"
 
 # 配置管理
 profile_settings.title: " 配置管理 "
-profile_settings.list_title: "配置列（○ 常 ● 預設）"
+profile_settings.list_title: "配置列"
 profile_settings.empty_list: " (無配置) "
-profile_settings.help: " ↑ ↓ 切 Enter 設預設 Esc 返 "
+profile_settings.help: " ↑ ↓ 切  e 編  a 增  c 複  d 刪  Esc 返 "
 
 # 執行界面
 run_ui.enable_raw_mode: "啟 raw 式"

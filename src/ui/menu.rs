@@ -1,5 +1,5 @@
 use super::{set_status, MenuScreen, MenuSelection, Ui};
-use crate::{Args, MainMode, RegDataFormat};
+use crate::{parse_mainmode, Args, MainMode, RegDataFormat};
 use anyhow::{anyhow, Context, Result};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent},
@@ -429,7 +429,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     );
 }
 
-fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
+fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     let area = f.area();
     let vert = Layout::vertical([
         Constraint::Length(3),
@@ -483,13 +483,60 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(items).block(list_block), main[0]);
 
-    // 右：操作说明
-    let help_info = t!("profile_settings.help");
-    let info_block = Block::default()
+    // 右：选中配置的参数预览
+    let mut preview_lines: Vec<Line> = Vec::new();
+    if let Some(name) = ui.profiles.get(ui.menu_list_idx) {
+        if let Some((_, args)) = load_profile_args(config_path, name) {
+            let mode_label = parse_mainmode(&args.main_mode)
+                .map(|m| format!("{:?}", m))
+                .unwrap_or_else(|_| args.main_mode.clone());
+            preview_lines.push(Line::from(Span::styled(
+                format!("{}: {}", t!("profile_edit.main_mode"), mode_label),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_edit.tcp_port"), args.tcp_port),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_edit.unit"), args.unit),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::raw("")));
+            preview_lines.push(Line::from(Span::styled(
+                format!("{}: {}", t!("profile_edit.device"), args.device),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::styled(
+                format!("{}: {} bps", t!("profile_edit.baudrate"), args.baudrate),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::raw("")));
+            preview_lines.push(Line::from(Span::styled(
+                format!("{}: {}", t!("profile_edit.holding_count"), args.holding_count),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::styled(
+                format!("{}: {}", t!("profile_edit.coil_count"), args.coil_count),
+                Style::default().fg(Color::DarkGray),
+            )));
+        } else {
+            preview_lines.push(Line::from(Span::styled(
+                t!("profile_settings.load_fail"),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    } else {
+        preview_lines.push(Line::from(Span::styled(
+            t!("profile_settings.empty_list"),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    let preview_block = Block::default()
         .borders(Borders::ALL)
-        .title("Help")
+        .title(t!("profile_edit.preview_title"))
         .border_style(Style::default().fg(Color::Green));
-    f.render_widget(Paragraph::new(help_info).block(info_block), main[1]);
+    f.render_widget(Paragraph::new(preview_lines).block(preview_block), main[1]);
 
     // 底部
     let help = t!("profile_settings.help");
