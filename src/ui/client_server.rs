@@ -678,14 +678,7 @@ pub async fn run_ui(
 
                                         KeyCode::Char(ch) => {
                                             ui.status_msg = None;
-                                            if ui.edit_is_label || ui.edit_is_profile || edit_accepts_char(&ui.edit_buf, ch, ui.reg_format) {
                                                 ui.edit_buf.push(ch);
-                                            } else {
-                                                set_status(
-                                                    &mut ui,
-                                                    t!("run_ui.char_rejected"),
-                                                );
-                                            }
                                         }
 
                                         _ => {}
