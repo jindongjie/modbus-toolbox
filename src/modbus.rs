@@ -1640,8 +1640,10 @@ mod tests {
             slave_scan_running: false,
             reg_bar_history: vec![Vec::new(); holding],
             reg_format: crate::RegDataFormat::U16,
-            swap_bytes: false,
-            swap_words: false,
+            holding_swap_bytes: std::collections::HashMap::new(),
+            holding_swap_words: std::collections::HashMap::new(),
+            input_swap_bytes: std::collections::HashMap::new(),
+            input_swap_words: std::collections::HashMap::new(),
             holding_combinations: std::collections::HashMap::new(),
             input_combinations: std::collections::HashMap::new(),
         }

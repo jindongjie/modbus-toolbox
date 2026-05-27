@@ -270,16 +270,6 @@ struct Args {
     #[serde(default)]
     reg_format: String,
 
-    /// 交换字节序
-    #[arg(long, default_value_t = false)]
-    #[serde(default)]
-    swap_bytes: bool,
-
-    /// 交换字序（多寄存器格式时有效）
-    #[arg(long, default_value_t = false)]
-    #[serde(default)]
-    swap_words: bool,
-
     /// 寄存器备注标签
     #[arg(skip)]
     #[serde(default)]
@@ -289,6 +279,16 @@ struct Args {
     #[arg(skip)]
     #[serde(default)]
     reg_combinations: HashMap<String, String>,
+
+    /// Per-register byte swap (地址 → "true"/"false"，"i:addr" 表示输入寄存器)
+    #[arg(skip)]
+    #[serde(default)]
+    swap_bytes_reg: HashMap<String, String>,
+
+    /// Per-register word swap (地址 → "true"/"false"，"i:addr" 表示输入寄存器)
+    #[arg(skip)]
+    #[serde(default)]
+    swap_words_reg: HashMap<String, String>,
 
     /// 界面语言 (zh-CN 或 en)
     #[arg(long, default_value = "zh-CN")]
@@ -318,10 +318,10 @@ impl Default for Args {
             flow: "none".into(),
             base: DisplayBase::Dec,
             reg_format: "u16".into(),
-            swap_bytes: false,
-            swap_words: false,
             labels: HashMap::new(),
             reg_combinations: HashMap::new(),
+            swap_bytes_reg: HashMap::new(),
+            swap_words_reg: HashMap::new(),
             lang: "zh-CN".into(),
         }
     }
@@ -474,10 +474,14 @@ pub struct AppState {
     pub reg_bar_history: Vec<Vec<u16>>,
     /// 当前寄存器数据解释格式
     pub reg_format: RegDataFormat,
-    /// 是否交换字节序
-    pub swap_bytes: bool,
-    /// 是否交换字序
-    pub swap_words: bool,
+    /// Per-register byte swap for holding registers
+    pub holding_swap_bytes: HashMap<usize, bool>,
+    /// Per-register word swap for holding registers
+    pub holding_swap_words: HashMap<usize, bool>,
+    /// Per-register byte swap for input registers
+    pub input_swap_bytes: HashMap<usize, bool>,
+    /// Per-register word swap for input registers
+    pub input_swap_words: HashMap<usize, bool>,
     /// Holding 寄存器组合配置 (primary address → format)
     pub holding_combinations: HashMap<usize, RegDataFormat>,
     /// Input 寄存器组合配置 (primary address → format)
@@ -513,8 +517,10 @@ impl Default for AppState {
             slave_scan_running: false,
             reg_bar_history: Vec::new(),
             reg_format: RegDataFormat::U16,
-            swap_bytes: false,
-            swap_words: false,
+            holding_swap_bytes: HashMap::new(),
+            holding_swap_words: HashMap::new(),
+            input_swap_bytes: HashMap::new(),
+            input_swap_words: HashMap::new(),
             holding_combinations: HashMap::new(),
             input_combinations: HashMap::new(),
         }
@@ -1283,8 +1289,6 @@ pub(crate) fn format_register_value(
 /// 导出当前所有寄存器值为 JSON
 pub(crate) fn export_registers_to_json(
     reg_format: RegDataFormat,
-    swap_bytes: bool,
-    swap_words: bool,
     base: DisplayBase,
     state: &AppState,
 ) -> Result<(String, String)> {
@@ -1294,8 +1298,6 @@ pub(crate) fn export_registers_to_json(
     struct ExportData {
         export_time: String,
         reg_format: String,
-        swap_bytes: bool,
-        swap_words: bool,
         base: String,
         holding: Vec<ExportReg>,
         coils: Vec<bool>,
@@ -1315,15 +1317,16 @@ pub(crate) fn export_registers_to_json(
         regs: &[u16],
         labels: &[String],
         reg_format: RegDataFormat,
-        swap_bytes: bool,
-        swap_words: bool,
+        swap_bytes_map: &HashMap<usize, bool>,
+        swap_words_map: &HashMap<usize, bool>,
         base: DisplayBase,
     ) -> Vec<ExportReg> {
         regs.iter()
             .enumerate()
             .map(|(i, &raw)| {
-                let value =
-                    format_register_value(regs, i, reg_format, base, swap_bytes, swap_words);
+                let sb = swap_bytes_map.get(&i).copied().unwrap_or(false);
+                let sw = swap_words_map.get(&i).copied().unwrap_or(false);
+                let value = format_register_value(regs, i, reg_format, base, sb, sw);
                 let label = labels.get(i).cloned().unwrap_or_default();
                 ExportReg {
                     addr: i,
@@ -1340,15 +1343,13 @@ pub(crate) fn export_registers_to_json(
     let data = ExportData {
         export_time: now.clone(),
         reg_format: reg_format.short_label().to_string(),
-        swap_bytes,
-        swap_words,
         base: format!("{:?}", base),
         holding: make_regs(
             &state.holding,
             &state.holding_label,
             reg_format,
-            swap_bytes,
-            swap_words,
+            &state.holding_swap_bytes,
+            &state.holding_swap_words,
             base,
         ),
         coils: state.coils.clone(),
@@ -1357,8 +1358,8 @@ pub(crate) fn export_registers_to_json(
             &state.input_registers,
             &[],
             reg_format,
-            swap_bytes,
-            swap_words,
+            &state.input_swap_bytes,
+            &state.input_swap_words,
             base,
         ),
     };
@@ -1497,6 +1498,33 @@ async fn main() -> Result<()> {
             }
         }
     }
+    // Parse swap_bytes_reg / swap_words_reg from profile
+    let mut holding_swap_bytes: HashMap<usize, bool> = HashMap::new();
+    let mut holding_swap_words: HashMap<usize, bool> = HashMap::new();
+    let mut input_swap_bytes: HashMap<usize, bool> = HashMap::new();
+    let mut input_swap_words: HashMap<usize, bool> = HashMap::new();
+    for (k, v) in &args.swap_bytes_reg {
+        if v == "true" {
+            if let Some(addr_str) = k.strip_prefix("i:") {
+                if let Ok(idx) = addr_str.parse::<usize>() {
+                    input_swap_bytes.insert(idx, true);
+                }
+            } else if let Ok(idx) = k.parse::<usize>() {
+                holding_swap_bytes.insert(idx, true);
+            }
+        }
+    }
+    for (k, v) in &args.swap_words_reg {
+        if v == "true" {
+            if let Some(addr_str) = k.strip_prefix("i:") {
+                if let Ok(idx) = addr_str.parse::<usize>() {
+                    input_swap_words.insert(idx, true);
+                }
+            } else if let Ok(idx) = k.parse::<usize>() {
+                holding_swap_words.insert(idx, true);
+            }
+        }
+    }
     let state = Arc::new(RwLock::new(AppState {
         holding: vec![0u16; binding_count],
         holding_label,
@@ -1527,8 +1555,10 @@ async fn main() -> Result<()> {
         slave_scan_running: false,
         reg_bar_history: vec![vec![]; max_count],
         reg_format: RegDataFormat::U16,
-        swap_bytes: false,
-        swap_words: false,
+        holding_swap_bytes,
+        holding_swap_words,
+        input_swap_bytes,
+        input_swap_words,
         holding_combinations,
         input_combinations,
     }));

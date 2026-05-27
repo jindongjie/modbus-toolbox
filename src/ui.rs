@@ -198,10 +198,6 @@ pub struct Ui {
     search_buf: String,
     /// 当前寄存器数据解释格式（UI 本地副本，与 AppState 同步）
     reg_format: RegDataFormat,
-    /// 字节序交换
-    swap_bytes: bool,
-    /// 字序交换
-    swap_words: bool,
 
     // --- 配置信息弹窗 ---
     /// 是否显示配置信息弹窗
@@ -297,13 +293,7 @@ const REG_VIEW_DISCRETE: usize = 2;
 const REG_VIEW_INPUT: usize = 3;
 
 impl Ui {
-    fn new(
-        base: DisplayBase,
-        reg_format: RegDataFormat,
-        swap_bytes: bool,
-        swap_words: bool,
-        profiles: Vec<String>,
-    ) -> Self {
+    fn new(base: DisplayBase, reg_format: RegDataFormat, profiles: Vec<String>) -> Self {
         let logo_raw = include_str!("logo.txt");
         let mut logo_target: Vec<String> = logo_raw.lines().map(|l| l.to_string()).collect();
         logo_target.push(format!("        v{}", env!("CARGO_PKG_VERSION")));
@@ -386,8 +376,6 @@ impl Ui {
             search_mode: false,
             search_buf: String::new(),
             reg_format,
-            swap_bytes,
-            swap_words,
             show_profile_info: false,
             args: crate::Args::default(),
         }
@@ -2118,7 +2106,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
     let mut events = EventStream::new();
-    let mut ui = Ui::new(DisplayBase::Dec, RegDataFormat::U16, false, false, profiles);
+    let mut ui = Ui::new(DisplayBase::Dec, RegDataFormat::U16, profiles);
     ui.config_path = config_path.to_string();
     // 尝试读取默认配置
     if let Some(def) = load_default_profile(config_path) {
@@ -2212,9 +2200,7 @@ pub async fn run_ui(
 
     let mut events = EventStream::new();
     let reg_format = parse_reg_format(&args.reg_format);
-    let swap_bytes = args.swap_bytes;
-    let swap_words = args.swap_words;
-    let mut ui = Ui::new(args.base, reg_format, swap_bytes, swap_words, profiles);
+    let mut ui = Ui::new(args.base, reg_format, profiles);
     ui.config_path = config_path;
     ui.args = args.clone();
 
@@ -2277,10 +2263,8 @@ pub async fn run_ui(
                                 }
                             }
                         }
-                        // 从 AppState 同步格式/交换设置到 UI（允许程序化修改）
+                        // 从 AppState 同步格式到 UI（允许程序化修改）
                         ui.reg_format = s.reg_format;
-                        ui.swap_bytes = s.swap_bytes;
-                        ui.swap_words = s.swap_words;
                         let server_err = server_status.read().await.clone();
                         let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
                         terminal.draw(|f| {
@@ -2500,16 +2484,30 @@ pub async fn run_ui(
                             } else if let Some(ref fi) = s.last_frame {
                                 if fi.is_tcp {
                                     let fmt = ui.reg_format.short_label();
-                                let sw = if ui.swap_bytes || ui.swap_words {
-                                    format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
+                                let (sel_bytes, sel_words) = if ui.reg_view == REG_VIEW_INPUT {
+                                    (s.input_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                     s.input_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                } else {
+                                    (s.holding_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                     s.holding_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                };
+                                let sw = if sel_bytes || sel_words {
+                                    format!(" sw:{}{}", if sel_bytes {"B"} else {""}, if sel_words {"W"} else {""})
                                 } else {
                                     String::new()
                                 };
                                 t!("run_ui.status_tcp", func = &fi.func_name, base = format!("{:?}", ui.base), fmt = fmt, sw = sw)
                                 } else {
                                     let fmt = ui.reg_format.short_label();
-                                    let sw = if ui.swap_bytes || ui.swap_words {
-                                        format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
+                                    let (sel_bytes, sel_words) = if ui.reg_view == REG_VIEW_INPUT {
+                                        (s.input_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                         s.input_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                    } else {
+                                        (s.holding_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                         s.holding_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                    };
+                                    let sw = if sel_bytes || sel_words {
+                                        format!(" sw:{}{}", if sel_bytes {"B"} else {""}, if sel_words {"W"} else {""})
                                     } else {
                                         String::new()
                                     };
@@ -2517,8 +2515,15 @@ pub async fn run_ui(
                                 }
                             } else {
                                 let fmt = ui.reg_format.short_label();
-                                let sw = if ui.swap_bytes || ui.swap_words {
-                                    format!(" sw:{}{}", if ui.swap_bytes {"B"} else {""}, if ui.swap_words {"W"} else {""})
+                                let (sel_bytes, sel_words) = if ui.reg_view == REG_VIEW_INPUT {
+                                    (s.input_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                     s.input_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                } else {
+                                    (s.holding_swap_bytes.get(&ui.selected).copied().unwrap_or(false),
+                                     s.holding_swap_words.get(&ui.selected).copied().unwrap_or(false))
+                                };
+                                let sw = if sel_bytes || sel_words {
+                                    format!(" sw:{}{}", if sel_bytes {"B"} else {""}, if sel_words {"W"} else {""})
                                 } else {
                                     String::new()
                                 };
@@ -3249,33 +3254,53 @@ pub async fn run_ui(
                                                 drop(s);
                                             }
                                         }
-                                        // w: 切换字节序交换
+                                        // w: 切换当前选中地址的字节序交换
                                         KeyCode::Char('w') => {
                                             if !is_monitor_mode && !ui.edit_mode {
                                                 let mut s = state.write().await;
-                                                s.swap_bytes = !s.swap_bytes;
-                                                ui.swap_bytes = s.swap_bytes;
+                                                let map = if ui.reg_view == REG_VIEW_INPUT {
+                                                    &mut s.input_swap_bytes
+                                                } else {
+                                                    &mut s.holding_swap_bytes
+                                                };
+                                                let new_val = !map.get(&ui.selected).copied().unwrap_or(false);
+                                                if new_val {
+                                                    map.insert(ui.selected, true);
+                                                } else {
+                                                    map.remove(&ui.selected);
+                                                }
+                                                let sel = ui.selected;
                                                 drop(s);
-                                                if ui.swap_bytes { set_status(&mut ui, "Byte swap: ON"); }
-                                                else { set_status(&mut ui, "Byte swap: OFF"); }
+                                                if new_val { set_status(&mut ui, format!("Byte swap: ON for addr {}", sel)); }
+                                                else { set_status(&mut ui, format!("Byte swap: OFF for addr {}", sel)); }
                                             }
                                         }
-                                        // W (Shift+W): 切换字序交换
+                                        // W (Shift+W): 切换当前选中地址的字序交换
                                         KeyCode::Char('W') => {
                                             if !is_monitor_mode && !ui.edit_mode {
                                                 let mut s = state.write().await;
-                                                s.swap_words = !s.swap_words;
-                                                ui.swap_words = s.swap_words;
+                                                let map = if ui.reg_view == REG_VIEW_INPUT {
+                                                    &mut s.input_swap_words
+                                                } else {
+                                                    &mut s.holding_swap_words
+                                                };
+                                                let new_val = !map.get(&ui.selected).copied().unwrap_or(false);
+                                                if new_val {
+                                                    map.insert(ui.selected, true);
+                                                } else {
+                                                    map.remove(&ui.selected);
+                                                }
+                                                let sel = ui.selected;
                                                 drop(s);
-                                                if ui.swap_words { set_status(&mut ui, "Word swap: ON"); }
-                                                else { set_status(&mut ui, "Word swap: OFF"); }
+                                                if new_val { set_status(&mut ui, format!("Word swap: ON for addr {}", sel)); }
+                                                else { set_status(&mut ui, format!("Word swap: OFF for addr {}", sel)); }
                                             }
                                         }
                                         // E (Shift+E): 导出当前寄存器到 JSON 文件
                                         KeyCode::Char('E') => {
                                             if !is_monitor_mode && !ui.edit_mode {
                                                 let s = state.read().await;
-                                                match export_registers_to_json(ui.reg_format, ui.swap_bytes, ui.swap_words, ui.base, &s) {
+                                                match export_registers_to_json(ui.reg_format, ui.base, &s) {
                                                     Ok((filename, json)) => {
                                                         drop(s);
                                                         match std::fs::write(&filename, &json) {
@@ -3854,8 +3879,19 @@ fn render_register_table(
                 let reg_fmt = combinations
                     .and_then(|c| c.get(&i).copied())
                     .unwrap_or(ui.reg_format);
+                let (swap_bytes, swap_words) = if ui.reg_view == REG_VIEW_INPUT {
+                    (
+                        s.input_swap_bytes.get(&i).copied().unwrap_or(false),
+                        s.input_swap_words.get(&i).copied().unwrap_or(false),
+                    )
+                } else {
+                    (
+                        s.holding_swap_bytes.get(&i).copied().unwrap_or(false),
+                        s.holding_swap_words.get(&i).copied().unwrap_or(false),
+                    )
+                };
                 let mut val =
-                    format_register_value(items, i, reg_fmt, ui.base, ui.swap_bytes, ui.swap_words);
+                    format_register_value(items, i, reg_fmt, ui.base, swap_bytes, swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
                 // Show combination info in label if combined
                 if let Some(&combo_fmt) = combinations.and_then(|c| c.get(&i)) {
@@ -4483,13 +4519,7 @@ fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
     } else {
         t!("profile_info.server_mode").to_string()
     };
-    let data_fmt = format!(
-        "{} | {:?} | swap_bytes:{} swap_words:{}",
-        ui.reg_format.short_label(),
-        a.base,
-        if a.swap_bytes { "on" } else { "off" },
-        if a.swap_words { "on" } else { "off" },
-    );
+    let data_fmt = format!("{} | {:?}", ui.reg_format.short_label(), a.base);
     let selected_profile = ui
         .monitor_selected_profile
         .as_deref()
