@@ -408,6 +408,7 @@ pub fn search_match(
     false
 }
 
+#[allow(dead_code)]
 pub fn edit_accepts_char(current: &str, ch: char, fmt: RegDataFormat) -> bool {
     if ch.is_ascii_whitespace() {
         return false;
