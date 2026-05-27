@@ -3094,38 +3094,93 @@ pub async fn run_ui(
                                             }
                                         }
 
-                                        // f: 循环切换全局格式类型 u→i→f→u (保持同一位宽)
+                                        // f: 切换选中地址的格式类型 u→i→f→u (保持同一位宽)
                                         KeyCode::Char('f') => {
-                                            if !ui.edit_mode {
-                                                ui.reg_format = ui.reg_format.next_format();
+                                            if !ui.edit_mode && !is_monitor_mode {
                                                 let mut s = state.write().await;
-                                                s.reg_format = ui.reg_format;
-                                                drop(s);
-                                                let msg = format!("Format: {}", ui.reg_format.short_label());
-                                                set_status(&mut ui, msg);
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        // 当前格式：优先从组合读，没有则用全局默认
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.next_format();
+                                                        if new_fmt == current_fmt {
+                                                            drop(s);
+                                                            set_status(&mut ui, "No more format types for this width");
+                                                        } else {
+                                                            combinations.insert(addr, new_fmt);
+                                                            let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                            set_status(&mut ui, msg);
+                                                            drop(s);
+                                                        }
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
                                             }
                                         }
-                                        // F (Shift+F): 循环切换全局格式类型反向 f→i→u→f
+                                        // F (Shift+F): 切换选中地址的格式类型反向 f→i→u→f
                                         KeyCode::Char('F') => {
-                                            if !ui.edit_mode {
-                                                ui.reg_format = ui.reg_format.prev_format();
+                                            if !ui.edit_mode && !is_monitor_mode {
                                                 let mut s = state.write().await;
-                                                s.reg_format = ui.reg_format;
-                                                drop(s);
-                                                let msg = format!("Format: {}", ui.reg_format.short_label());
-                                                set_status(&mut ui, msg);
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.prev_format();
+                                                        if new_fmt == current_fmt {
+                                                            drop(s);
+                                                            set_status(&mut ui, "No more format types for this width");
+                                                        } else {
+                                                            combinations.insert(addr, new_fmt);
+                                                            let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                            set_status(&mut ui, msg);
+                                                            drop(s);
+                                                        }
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
                                             }
                                         }
-                                        // g: 循环切换全局数据位宽 16→32→64→128→16 (保持格式类型)
+                                        // g: 切换选中地址的数据位宽 16→32→64→128→16 (保持格式类型)
                                         // 同时更新选中寄存器的组合配置，使其正确合并/隐藏相邻寄存器
                                         KeyCode::Char('g') => {
                                             if !ui.edit_mode {
-                                                let new_fmt = ui.reg_format.next_width();
                                                 let mut s = state.write().await;
                                                 // 对 holding/input 寄存器视图，更新组合配置实现寄存器合并
                                                 if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
                                                     let addr = ui.selected;
-                                                    let new_needed = new_fmt.regs_needed();
                                                     let total_regs = match ui.reg_view {
                                                         REG_VIEW_HOLDING => s.holding.len(),
                                                         REG_VIEW_INPUT => s.input_registers.len(),
@@ -3137,6 +3192,13 @@ pub async fn run_ui(
                                                             REG_VIEW_INPUT => &mut s.input_combinations,
                                                             _ => unreachable!(),
                                                         };
+                                                        // 当前格式：优先从组合读，没有则用全局默认
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.next_width();
+                                                        let new_needed = new_fmt.regs_needed();
                                                         // 移除与选中寄存器范围重叠的所有旧组合
                                                         combinations.retain(|&k, _| k < addr || k >= addr + new_needed);
                                                         if new_needed > 1 && addr + new_needed <= total_regs {
@@ -3175,26 +3237,18 @@ pub async fn run_ui(
                                                             set_status(&mut ui, msg);
                                                         }
                                                     }
-                                                } else {
-                                                    let w = new_fmt.short_label();
-                                                    let msg = format!("Width: {} bit", &w[1..]);
-                                                    set_status(&mut ui, msg);
                                                 }
-                                                ui.reg_format = new_fmt;
-                                                s.reg_format = new_fmt;
                                                 drop(s);
                                             }
                                         }
-                                        // G (Shift+G): 循环切换数据位宽反向 16←32←64←128←16
+                                        // G (Shift+G): 切换选中地址的数据位宽反向 16←32←64←128←16
                                         // 同时更新选中寄存器的组合配置，使其正确合并/隐藏相邻寄存器
                                         KeyCode::Char('G') => {
                                             if !ui.edit_mode {
-                                                let new_fmt = ui.reg_format.prev_width();
                                                 let mut s = state.write().await;
                                                 // 对 holding/input 寄存器视图，更新组合配置实现寄存器合并
                                                 if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
                                                     let addr = ui.selected;
-                                                    let new_needed = new_fmt.regs_needed();
                                                     let total_regs = match ui.reg_view {
                                                         REG_VIEW_HOLDING => s.holding.len(),
                                                         REG_VIEW_INPUT => s.input_registers.len(),
@@ -3206,6 +3260,12 @@ pub async fn run_ui(
                                                             REG_VIEW_INPUT => &mut s.input_combinations,
                                                             _ => unreachable!(),
                                                         };
+                                                        let current_fmt = combinations
+                                                            .get(&addr)
+                                                            .copied()
+                                                            .unwrap_or(ui.reg_format);
+                                                        let new_fmt = current_fmt.prev_width();
+                                                        let new_needed = new_fmt.regs_needed();
                                                         // 移除与选中寄存器范围重叠的所有旧组合
                                                         combinations.retain(|&k, _| k < addr || k >= addr + new_needed);
                                                         if new_needed > 1 && addr + new_needed <= total_regs {
@@ -3244,13 +3304,7 @@ pub async fn run_ui(
                                                             set_status(&mut ui, msg);
                                                         }
                                                     }
-                                                } else {
-                                                    let w = new_fmt.short_label();
-                                                    let msg = format!("Width: {} bit", &w[1..]);
-                                                    set_status(&mut ui, msg);
                                                 }
-                                                ui.reg_format = new_fmt;
-                                                s.reg_format = new_fmt;
                                                 drop(s);
                                             }
                                         }
