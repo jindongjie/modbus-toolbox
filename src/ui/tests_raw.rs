@@ -957,4 +957,705 @@ mod tests {
         assert_eq!(f64.regs_needed(), 4);
         assert_eq!(f128.regs_needed(), 8);
     }
+
+    // ─── format_register_value additional coverage ───
+
+    #[test]
+    fn test_format_register_value_float64() {
+        use crate::format_register_value;
+        let regs = [0x4009_u16, 0x21CA_u16, 0xC0DE_u16, 0x0000_u16]; // π ≈ 3.14159 as f64 + junk
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataWidth::Bits64,
+        };
+        // regs[0..4] = f64 bits: 0x400921CA_C0DE_0000
+        let result = format_register_value(&regs, 0, fmt, false, false);
+        // Should produce a valid f64 string
+        assert!(result.contains('.'), "expected float string, got: {result}");
+        assert!(!result.starts_with("--"), "unexpected out-of-bounds: {result}");
+    }
+
+    #[test]
+    fn test_format_register_value_f16() {
+        use crate::format_register_value;
+        let regs = [0x3C00_u16]; // f16 = 1.0
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataWidth::Bits16,
+        };
+        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "1.000000");
+    }
+
+    #[test]
+    fn test_format_register_value_f16_zero() {
+        use crate::format_register_value;
+        let regs = [0x0000_u16];
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataWidth::Bits16,
+        };
+        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "0.000000");
+    }
+
+    #[test]
+    fn test_format_register_value_i64() {
+        use crate::format_register_value;
+        // i64 = -1 → all bits = 0xFFFFFFFF_FFFFFFFF
+        let regs = [0xFFFF_u16, 0xFFFF_u16, 0xFFFF_u16, 0xFFFF_u16];
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Int,
+            width: RegDataWidth::Bits64,
+        };
+        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "-1");
+    }
+
+    #[test]
+    fn test_format_register_value_u128_hex() {
+        use crate::format_register_value;
+        let regs = [0xDEAD_u16, 0xBEEF_u16, 0x0000_u16, 0x0000_u16,
+                    0x0000_u16, 0x0000_u16, 0x0000_u16, 0x0001_u16];
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Hex,
+            width: RegDataWidth::Bits128,
+        };
+        let result = format_register_value(&regs, 0, fmt, false, false);
+        assert!(result.starts_with("0x"), "expected hex prefix: {result}");
+    }
+
+    #[test]
+    fn test_format_register_value_ascii() {
+        use crate::format_register_value;
+        // "AB" = 0x41 0x42 in a single u16 = 0x4142
+        let regs = [0x4142_u16];
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Ascii,
+            width: RegDataWidth::Bits16,
+        };
+        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "16706");
+    }
+
+    #[test]
+    fn test_format_register_value_out_of_bounds_u32() {
+        use crate::format_register_value;
+        let regs = [0x1234_u16]; // only 1 reg, but need 2 for u32
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits32,
+        };
+        let result = format_register_value(&regs, 0, fmt, false, false);
+        assert!(result.starts_with("--"), "expected out-of-bounds: {result}");
+    }
+
+    // ─── f32 to f16 bit conversion ───
+
+    #[test]
+    fn test_f32_to_f16_bits_one() {
+        use crate::f32_to_f16_bits;
+        assert_eq!(f32_to_f16_bits(1.0), 0x3C00);
+    }
+
+    #[test]
+    fn test_f32_to_f16_bits_zero() {
+        use crate::f32_to_f16_bits;
+        assert_eq!(f32_to_f16_bits(0.0), 0x0000);
+    }
+
+    #[test]
+    fn test_f32_to_f16_bits_negative() {
+        use crate::f32_to_f16_bits;
+        assert_eq!(f32_to_f16_bits(-2.0), 0xC000);
+    }
+
+    #[test]
+    fn test_f32_to_f16_bits_infinity() {
+        use crate::f32_to_f16_bits;
+        assert_eq!(f32_to_f16_bits(f32::INFINITY), 0x7C00);
+        assert_eq!(f32_to_f16_bits(f32::NEG_INFINITY), 0xFC00);
+    }
+
+    #[test]
+    fn test_f32_to_f16_bits_nan() {
+        use crate::f32_to_f16_bits;
+        let nan_val = f32_to_f16_bits(f32::NAN);
+        // NaN: sign=0, exp=0x1F, mant ≠ 0
+        assert!(nan_val & 0x7C00 == 0x7C00);
+        assert!(nan_val & 0x03FF != 0);
+    }
+
+    // ─── format_f16 ───
+
+    #[test]
+    fn test_format_f16_one() {
+        use crate::format_f16;
+        assert_eq!(format_f16(0x3C00), "1.000000");
+    }
+
+    #[test]
+    fn test_format_f16_zero() {
+        use crate::format_f16;
+        assert_eq!(format_f16(0x0000), "0.000000");
+    }
+
+    #[test]
+    fn test_format_f16_infinity() {
+        use crate::format_f16;
+        assert_eq!(format_f16(0x7C00), "inf");
+    }
+
+    #[test]
+    fn test_format_f16_neg_infinity() {
+        use crate::format_f16;
+        assert_eq!(format_f16(0xFC00), "-inf");
+    }
+
+    #[test]
+    fn test_format_f16_nan() {
+        use crate::format_f16;
+        let s = format_f16(0x7C01);
+        // Rust formats f32::NAN as "NaN"
+        assert_eq!(s, "NaN");
+    }
+
+    // ─── parse_register_value ───
+
+    #[test]
+    fn test_parse_register_value_u16() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        let result = parse_register_value("42", fmt, false, false).unwrap();
+        assert_eq!(result, vec![42]);
+    }
+
+    #[test]
+    fn test_parse_register_value_u32() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let result = parse_register_value("70000", fmt, false, false).unwrap();
+        // 70000 = 0x0001_1170 => hi=0x0001, lo=0x1170
+        assert_eq!(result, vec![0x0001, 0x1170]);
+    }
+
+    #[test]
+    fn test_parse_register_value_i32_negative() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits32 };
+        let result = parse_register_value("-70000", fmt, false, false).unwrap();
+        // -70000 as u32 = 0xFFFE_EE90 => hi=0xFFFE, lo=0xEE90
+        assert_eq!(result, vec![0xFFFE, 0xEE90]);
+    }
+
+    #[test]
+    fn test_parse_register_value_u64() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 };
+        let result = parse_register_value("0xDEADBEEF00000001", fmt, false, false).unwrap();
+        assert_eq!(result, vec![0xDEAD, 0xBEEF, 0x0000, 0x0001]);
+    }
+
+    #[test]
+    fn test_parse_register_value_hex16() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        let result = parse_register_value("FF", fmt, false, false).unwrap();
+        assert_eq!(result, vec![0x00FF]);
+    }
+
+    #[test]
+    fn test_parse_register_value_binary() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 };
+        let result = parse_register_value("0b1010", fmt, false, false).unwrap();
+        assert_eq!(result, vec![0b1010]);
+    }
+
+    #[test]
+    fn test_parse_register_value_f32() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 };
+        let result = parse_register_value("3.14", fmt, false, false).unwrap();
+        // f32 bits of 3.14 = 0x4048F5C3 => hi=0x4048, lo=0xF5C3
+        assert_eq!(result, vec![0x4048, 0xF5C3]);
+    }
+
+    #[test]
+    fn test_parse_register_value_f64() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits64 };
+        let result = parse_register_value("3.14", fmt, false, false).unwrap();
+        // f64 bits of 3.14 = 0x40091EB8_51EB851F
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], 0x4009);
+    }
+
+    #[test]
+    fn test_parse_register_value_empty_error() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        assert!(parse_register_value("", fmt, false, false).is_err());
+        assert!(parse_register_value("  ", fmt, false, false).is_err());
+    }
+
+    #[test]
+    fn test_parse_register_value_swap_bytes() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        let result = parse_register_value("0x1234", fmt, true, false).unwrap();
+        assert_eq!(result, vec![0x3412]); // byte-swapped
+    }
+
+    #[test]
+    fn test_parse_register_value_swap_words() {
+        use crate::parse_register_value;
+        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let result = parse_register_value("0x12345678", fmt, false, true).unwrap();
+        assert_eq!(result, vec![0x5678, 0x1234]); // word-swapped
+    }
+
+    // ─── days_to_date ───
+
+    #[test]
+    fn test_days_to_date_epoch() {
+        use crate::days_to_date;
+        // Unix epoch: 1970-01-01
+        assert_eq!(days_to_date(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn test_days_to_date_today() {
+        use crate::days_to_date;
+        // 2024-01-01: days since epoch ≈ 19723
+        let (y, m, d) = days_to_date(19723);
+        assert_eq!((y, m, d), (2024, 1, 1));
+    }
+
+    #[test]
+    fn test_days_to_date_leap_year() {
+        use crate::days_to_date;
+        // 2000-02-29: a leap year
+        let (y, m, d) = days_to_date(11016);
+        assert_eq!((y, m, d), (2000, 2, 29));
+    }
+
+    #[test]
+    fn test_days_to_date_future() {
+        use crate::days_to_date;
+        // 2038-01-19: the "year 2038" date
+        let (y, m, d) = days_to_date(24855);
+        assert_eq!((y, m, d), (2038, 1, 19));
+    }
+
+    // ─── parse_mainmode ───
+
+    #[test]
+    fn test_parse_mainmode() {
+        use crate::parse_mainmode;
+        assert!(parse_mainmode("tcp-server").is_ok());
+        assert!(parse_mainmode("ts").is_ok());
+        assert!(parse_mainmode("tcp-client").is_ok());
+        assert!(parse_mainmode("tc").is_ok());
+        assert!(parse_mainmode("rtu-server").is_ok());
+        assert!(parse_mainmode("rs").is_ok());
+        assert!(parse_mainmode("rtu-client").is_ok());
+        assert!(parse_mainmode("rc").is_ok());
+        assert!(parse_mainmode("tcp-monitor").is_ok());
+        assert!(parse_mainmode("tm").is_ok());
+        assert!(parse_mainmode("rtu-monitor").is_ok());
+        assert!(parse_mainmode("rm").is_ok());
+        assert!(parse_mainmode("invalid").is_err());
+    }
+
+    // ─── parse_combination_format ───
+
+    #[test]
+    fn test_parse_combination_format_named() {
+        use crate::parse_combination_format;
+        use crate::RegDataType;
+        let r = parse_combination_format("f32");
+        assert_eq!(r.data_type, RegDataType::Float);
+        assert_eq!(r.width, RegDataWidth::Bits32);
+
+        let r = parse_combination_format("u64");
+        assert_eq!(r.data_type, RegDataType::Uint);
+        assert_eq!(r.width, RegDataWidth::Bits64);
+    }
+
+    #[test]
+    fn test_parse_combination_format_hex() {
+        use crate::parse_combination_format;
+        use crate::RegDataType;
+        let r = parse_combination_format("hex");
+        assert_eq!(r.data_type, RegDataType::Hex);
+        assert_eq!(r.width, RegDataWidth::Bits16);
+    }
+
+    #[test]
+    fn test_parse_combination_format_binary() {
+        use crate::parse_combination_format;
+        use crate::RegDataType;
+        let r = parse_combination_format("bin");
+        assert_eq!(r.data_type, RegDataType::Binary);
+    }
+
+    #[test]
+    fn test_parse_combination_format_short() {
+        use crate::parse_combination_format;
+        let r = parse_combination_format("x");
+        // Too short → default
+        assert_eq!(r, RegDataFormat::default());
+    }
+
+    #[test]
+    fn test_parse_combination_format_invalid_type_char() {
+        use crate::parse_combination_format;
+        let r = parse_combination_format("z32");
+        assert_eq!(r, RegDataFormat::default());
+    }
+
+    // ─── parse_parity / parse_flow / parse_databits / parse_stopbits ───
+
+    #[test]
+    fn test_parse_parity() {
+        use crate::parse_parity;
+        use tokio_serial::Parity;
+        assert_eq!(parse_parity("none").unwrap(), Parity::None);
+        assert_eq!(parse_parity("even").unwrap(), Parity::Even);
+        assert_eq!(parse_parity("odd").unwrap(), Parity::Odd);
+        assert!(parse_parity("bad").is_err());
+    }
+
+    #[test]
+    fn test_parse_flow() {
+        use crate::parse_flow;
+        use tokio_serial::FlowControl;
+        assert_eq!(parse_flow("none").unwrap(), FlowControl::None);
+        assert_eq!(parse_flow("hard").unwrap(), FlowControl::Hardware);
+        assert_eq!(parse_flow("rtscts").unwrap(), FlowControl::Hardware);
+        assert_eq!(parse_flow("soft").unwrap(), FlowControl::Software);
+        assert_eq!(parse_flow("xonxoff").unwrap(), FlowControl::Software);
+        assert!(parse_flow("bad").is_err());
+    }
+
+    #[test]
+    fn test_parse_databits() {
+        use crate::parse_databits;
+        use tokio_serial::DataBits;
+        assert_eq!(parse_databits(5).unwrap(), DataBits::Five);
+        assert_eq!(parse_databits(6).unwrap(), DataBits::Six);
+        assert_eq!(parse_databits(7).unwrap(), DataBits::Seven);
+        assert_eq!(parse_databits(8).unwrap(), DataBits::Eight);
+        assert!(parse_databits(9).is_err());
+    }
+
+    #[test]
+    fn test_parse_stopbits() {
+        use crate::parse_stopbits;
+        use tokio_serial::StopBits;
+        assert_eq!(parse_stopbits(1).unwrap(), StopBits::One);
+        assert_eq!(parse_stopbits(2).unwrap(), StopBits::Two);
+        assert!(parse_stopbits(0).is_err());
+    }
+
+    // ─── record_frame ───
+
+    #[test]
+    fn test_record_frame() {
+        use crate::{record_frame, FrameInfo, MonitorStats};
+        let mut stats = MonitorStats::default();
+        let fi = FrameInfo {
+            func_code: 0x03,
+            func_name: "Read Holding".into(),
+            addr: 0x0000,
+            values: vec![0x1234],
+            is_tcp: true,
+            is_request: false,
+            unit: 1,
+        };
+        record_frame(&mut stats, &fi);
+        assert_eq!(stats.total_frames, 1);
+        assert_eq!(stats.func_count.get(&0x03), Some(&1));
+        assert_eq!(stats.addr_count.get(&0x0000), Some(&1));
+        assert_eq!(stats.history.len(), 1);
+    }
+
+    #[test]
+    fn test_record_frame_max_history() {
+        use crate::{record_frame, FrameInfo, MonitorStats};
+        let mut stats = MonitorStats::default();
+        for i in 0..600 {
+            let fi = FrameInfo {
+                func_code: 0x03,
+                func_name: "Read".into(),
+                addr: i as u16,
+                values: vec![i as u16],
+                is_tcp: true,
+                is_request: false,
+                unit: 1,
+            };
+            record_frame(&mut stats, &fi);
+        }
+        assert_eq!(stats.total_frames, 600);
+        assert!(stats.history.len() <= 500); // MAX_HISTORY cap
+    }
+
+    // ─── record_reg_change ───
+
+    #[test]
+    fn test_record_reg_change_increases() {
+        use crate::{record_reg_change, AppState};
+        let mut state = AppState::default();
+        // Ensure reg_just_changed/reg_change_direction have enough capacity
+        state.reg_just_changed.resize(10, false);
+        state.reg_change_direction.resize(10, crate::ChangeDirection::Up);
+        record_reg_change(&mut state, 0, 100, 200);
+        assert_eq!(state.reg_change_history.len(), 1);
+        assert_eq!(state.reg_change_direction[0], crate::ChangeDirection::Up);
+        assert_eq!(state.reg_bar_history[0].len(), 1);
+        assert_eq!(state.reg_bar_history[0][0], 200);
+    }
+
+    #[test]
+    fn test_record_reg_change_decreases() {
+        use crate::{record_reg_change, AppState};
+        let mut state = AppState::default();
+        state.reg_just_changed.resize(10, false);
+        state.reg_change_direction.resize(10, crate::ChangeDirection::Up);
+        record_reg_change(&mut state, 0, 200, 100);
+        assert_eq!(state.reg_change_history.len(), 1);
+        assert_eq!(state.reg_change_direction[0], crate::ChangeDirection::Down);
+    }
+
+    #[test]
+    fn test_record_reg_change_no_change_skipped() {
+        use crate::{record_reg_change, AppState};
+        let mut state = AppState::default();
+        record_reg_change(&mut state, 0, 100, 100);
+        assert_eq!(state.reg_change_history.len(), 0); // no change → skipped
+    }
+
+    #[test]
+    fn test_record_reg_change_max_cap() {
+        use crate::{record_reg_change, AppState, BAR_HISTORY_SLOTS};
+        let mut state = AppState::default();
+        for i in 0..600 {
+            record_reg_change(&mut state, 0, i, i + 1);
+        }
+        assert!(state.reg_change_history.len() <= 500);
+        // BAR_HISTORY_SLOTS = 20
+        assert!(state.reg_bar_history[0].len() <= BAR_HISTORY_SLOTS);
+    }
+
+    // ─── RegDataFormat::all_types & short_label ───
+
+    #[test]
+    fn test_all_types_contains_all() {
+        use crate::{RegDataFormat, RegDataType};
+        let all = RegDataFormat::all_types();
+        assert!(all.contains(&RegDataType::Uint));
+        assert!(all.contains(&RegDataType::Int));
+        assert!(all.contains(&RegDataType::Float));
+        assert!(all.contains(&RegDataType::Hex));
+        assert!(all.contains(&RegDataType::Binary));
+        assert!(all.contains(&RegDataType::Ascii));
+    }
+
+    #[test]
+    fn test_short_label_formats() {
+        use crate::{RegDataFormat, RegDataType, RegDataWidth};
+        let f = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        assert_eq!(f.short_label(), "u32");
+        let f = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        assert_eq!(f.short_label(), "hex");
+        let f = RegDataFormat { data_type: RegDataType::Ascii, width: RegDataWidth::Bits16 };
+        assert_eq!(f.short_label(), "ascii");
+    }
+
+    // ─── wrapped_lines ───
+
+    #[test]
+    fn test_wrapped_lines_single_line() {
+        use crate::ui::wrapped_lines;
+        assert_eq!(wrapped_lines("hello", 10), 1);
+        assert_eq!(wrapped_lines("hello", 3), 2); // "hel" + "lo"
+    }
+
+    #[test]
+    fn test_wrapped_lines_multi_line() {
+        use crate::ui::wrapped_lines;
+        let text = "abc\ndef\nghi";
+        assert_eq!(wrapped_lines(text, 10), 3);
+    }
+
+    #[test]
+    fn test_wrapped_lines_zero_width() {
+        use crate::ui::wrapped_lines;
+        assert_eq!(wrapped_lines("hello", 0), 1);
+    }
+
+    #[test]
+    fn test_wrapped_lines_empty_line() {
+        use crate::ui::wrapped_lines;
+        assert_eq!(wrapped_lines("\n\n", 5), 2);
+    }
+
+    // ─── search_match ───
+
+    #[test]
+    fn test_search_match_by_index() {
+        use crate::ui::search_match;
+        assert!(search_match(42, "42", &[], None));
+        assert!(!search_match(42, "43", &[], None));
+    }
+
+    #[test]
+    fn test_search_match_by_label() {
+        use crate::ui::search_match;
+        let labels = vec!["temperature".to_string(), "pressure".to_string()];
+        assert!(search_match(0, "temp", &[], Some(&labels)));
+        assert!(search_match(1, "pressure", &[], Some(&labels)));
+        assert!(!search_match(1, "voltage", &[], Some(&labels)));
+    }
+
+    #[test]
+    fn test_search_match_case_insensitive() {
+        use crate::ui::search_match;
+        let labels = vec!["Temperature".to_string()];
+        // Label is "Temperature" (mixed case), search is "temp" (lowercase) → match via to_lowercase
+        assert!(search_match(0, "temp", &[], Some(&labels)));
+        assert!(!search_match(0, "NOTPRESENT", &[], Some(&labels)));
+    }
+
+    #[test]
+    fn test_search_match_no_labels() {
+        use crate::ui::search_match;
+        assert!(!search_match(99, "abc", &[], None)); // idx doesn't contain 'abc'
+    }
+
+    // ─── pattern_index / index_to_pattern roundtrip ───
+
+    #[test]
+    fn test_pattern_index_roundtrip() {
+        use crate::ui::monitor::{index_to_pattern, pattern_index};
+        use crate::RegChangePattern;
+        for p in &[RegChangePattern::Random, RegChangePattern::UpDown,
+                   RegChangePattern::Sine, RegChangePattern::Square,
+                   RegChangePattern::Triangle] {
+            let idx = pattern_index(p);
+            let back = index_to_pattern(idx);
+            assert_eq!(*p, back, "roundtrip failed for {p:?}");
+        }
+    }
+
+    // ─── format_monitor_history (empty) ───
+
+    #[test]
+    fn test_format_monitor_history_empty() {
+        use crate::ui::monitor::format_monitor_history;
+        use crate::MonitorStats;
+        let m = MonitorStats::default();
+        let text = format_monitor_history(&m, 0);
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn test_format_monitor_history_with_data() {
+        use crate::ui::monitor::format_monitor_history;
+        use crate::{FrameRecord, MonitorStats};
+        use std::time::Instant;
+        let mut m = MonitorStats::default();
+        m.history.push(FrameRecord {
+            timestamp: Instant::now(),
+            human_time: "12:00:00.000".into(),
+            func_code: 0x03,
+            func_name: "Read".into(),
+            addr: 0x100,
+            values: vec![0x1234],
+            is_tcp: true,
+            is_request: false,
+            unit: 1,
+        });
+        let text = format_monitor_history(&m, 0);
+        assert!(text.contains("Read"));
+        assert!(text.contains("0x0100"));
+    }
+
+    // ─── format_monitor_stats ───
+
+    #[test]
+    fn test_format_monitor_stats_empty() {
+        use crate::ui::monitor::format_monitor_stats;
+        use crate::MonitorStats;
+        let m = MonitorStats::default();
+        let text = format_monitor_stats(&m);
+        assert!(text.contains("0"));
+    }
+
+    #[test]
+    fn test_format_monitor_stats_with_counts() {
+        use crate::ui::monitor::format_monitor_stats;
+        use crate::MonitorStats;
+        let mut m = MonitorStats::default();
+        m.total_frames = 10;
+        m.func_count.insert(0x03, 5);
+        m.addr_count.insert(0x0000, 5);
+        let text = format_monitor_stats(&m);
+        assert!(text.contains("10"));
+        assert!(text.contains("0x03"));
+    }
+
+    // ─── csv_log_path ───
+
+    #[test]
+    fn test_csv_log_path_tcp() {
+        use crate::csv_log_path;
+        let path = csv_log_path("tcp-server", 502, "/dev/ttyUSB0");
+        let s = path.to_string_lossy();
+        assert!(s.contains("monitor"));
+        assert!(s.contains("tcp-502"));
+        assert!(s.ends_with(".csv"));
+    }
+
+    #[test]
+    fn test_csv_log_path_rtu() {
+        use crate::csv_log_path;
+        let path = csv_log_path("rtu-client", 0, "/dev/ttyUSB0");
+        let s = path.to_string_lossy();
+        assert!(s.contains("rtu-"));
+        assert!(s.contains("ttyUSB0"));
+        assert!(s.ends_with(".csv"));
+    }
+
+    #[test]
+    fn test_csv_log_path_rtu_sanitized() {
+        use crate::csv_log_path;
+        let path = csv_log_path("rtu-client", 0, "COM1");
+        let s = path.to_string_lossy();
+        assert!(s.contains("COM1"));
+    }
+
+    // ─── parse_reg_format (ui/mod.rs) ───
+
+    #[test]
+    fn test_parse_reg_format_i16() {
+        use crate::ui::parse_reg_format;
+        use crate::{RegDataType, RegDataWidth};
+        let r = parse_reg_format("i16");
+        assert_eq!(r.data_type, RegDataType::Int);
+        assert_eq!(r.width, RegDataWidth::Bits16);
+    }
+
+    #[test]
+    fn test_parse_reg_format_f64_long() {
+        use crate::ui::parse_reg_format;
+        use crate::{RegDataType, RegDataWidth};
+        let r = parse_reg_format("double");
+        assert_eq!(r.data_type, RegDataType::Float);
+        assert_eq!(r.width, RegDataWidth::Bits64);
+    }
+
+    #[test]
+    fn test_parse_reg_format_unknown_returns_default() {
+        use crate::ui::parse_reg_format;
+        let r = parse_reg_format("unknown");
+        assert_eq!(r, crate::RegDataFormat::default());
+    }
 }
