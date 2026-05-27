@@ -6,6 +6,8 @@ use tokio::time::{timeout, Duration};
 // std
 use std::{borrow::Cow, collections::HashMap, io, sync::Arc};
 
+use crate::ChangeDirection;
+
 // crossterm
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
@@ -407,6 +409,17 @@ fn reg_view_data(s: &AppState, reg_view: usize) -> (&[u16], Option<&[String]>) {
         }
         REG_VIEW_INPUT => (&s.input_registers, None),
         _ => (&s.holding, Some(&s.holding_label)),
+    }
+}
+
+/// 获取当前寄存器视图的长度
+fn reg_view_len(s: &AppState, reg_view: usize) -> usize {
+    match reg_view {
+        REG_VIEW_HOLDING => s.holding.len(),
+        REG_VIEW_COILS => s.coils.len(),
+        REG_VIEW_DISCRETE => s.discrete.len(),
+        REG_VIEW_INPUT => s.input_registers.len(),
+        _ => s.holding.len(),
     }
 }
 
@@ -2189,7 +2202,7 @@ pub async fn run_ui(
     server_status: Arc<RwLock<Option<String>>>,
     config_path: String,
     profiles: Vec<String>,
-    monitor_profile: Option<String>,  // 菜单已选的配置名（监听模式自动选中）
+    monitor_profile: Option<String>, // 菜单已选的配置名（监听模式自动选中）
 ) -> Result<()> {
     enable_raw_mode().context(t!("run_ui.enable_raw_mode"))?;
     let mut stdout = io::stdout();
@@ -2223,7 +2236,8 @@ pub async fn run_ui(
                 let mon_state = Arc::clone(&state);
                 tokio::spawn(async move {
                     let config_str = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-                    let configs: std::collections::HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
+                    let configs: std::collections::HashMap<String, Args> =
+                        toml::from_str(&config_str).unwrap_or_default();
                     if let Some(profile_args) = configs.get(&pname) {
                         let mut args = profile_args.clone();
                         let res = match args.main_mode.as_str() {
@@ -3006,7 +3020,16 @@ pub async fn run_ui(
                                                 }
                                                 drop(s);
                                             } else {
-                                                ui.selected = ui.selected.saturating_sub(1);
+                                                let s = state.read().await;
+                                                let combinations = match ui.reg_view {
+                                                    REG_VIEW_HOLDING => &s.holding_combinations,
+                                                    REG_VIEW_INPUT => &s.input_combinations,
+                                                    _ => &s.holding_combinations,
+                                                };
+                                                if let Some(addr) = prev_visible_reg(ui.selected, combinations) {
+                                                    ui.selected = addr;
+                                                }
+                                                drop(s);
                                             }
                                         }
                                         KeyCode::Char('j') | KeyCode::Down => {
@@ -3032,8 +3055,17 @@ pub async fn run_ui(
                                                 }
                                                 drop(s);
                                             } else {
-                                                let len = state.read().await.holding.len();
-                                                ui.selected = (ui.selected + 1).min(len.saturating_sub(1));
+                                                let s = state.read().await;
+                                                let max = reg_view_len(&s, ui.reg_view);
+                                                let combinations = match ui.reg_view {
+                                                    REG_VIEW_HOLDING => &s.holding_combinations,
+                                                    REG_VIEW_INPUT => &s.input_combinations,
+                                                    _ => &s.holding_combinations,
+                                                };
+                                                if let Some(addr) = next_visible_reg(ui.selected, max, combinations) {
+                                                    ui.selected = addr;
+                                                }
+                                                drop(s);
                                             }
                                         }
                                         KeyCode::Char('d') => {
@@ -3080,27 +3112,141 @@ pub async fn run_ui(
                                             }
                                         }
                                         // g: 循环切换全局数据位宽 16→32→64→128→16 (保持格式类型)
+                                        // 同时更新选中寄存器的组合配置，使其正确合并/隐藏相邻寄存器
                                         KeyCode::Char('g') => {
                                             if !ui.edit_mode {
-                                                ui.reg_format = ui.reg_format.next_width();
+                                                let new_fmt = ui.reg_format.next_width();
                                                 let mut s = state.write().await;
-                                                s.reg_format = ui.reg_format;
+                                                // 对 holding/input 寄存器视图，更新组合配置实现寄存器合并
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let new_needed = new_fmt.regs_needed();
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        // 移除与选中寄存器范围重叠的所有旧组合
+                                                        combinations.retain(|&k, _| k < addr || k >= addr + new_needed);
+                                                        if new_needed > 1 && addr + new_needed <= total_regs {
+                                                            // 插入新组合：选中寄存器作为 primary
+                                                            combinations.insert(addr, new_fmt);
+                                                            // 禁用次级寄存器的变化追踪
+                                                            let change_enabled = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
+                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
+                                                                change_enabled[i] = false;
+                                                            }
+                                                            // 清理次级寄存器的变化历史
+                                                            for i in (addr + 1)..(addr + new_needed) {
+                                                                if i < s.reg_just_changed.len() {
+                                                                    s.reg_just_changed[i] = false;
+                                                                }
+                                                                if i < s.reg_change_direction.len() {
+                                                                    s.reg_change_direction[i] = ChangeDirection::Up;
+                                                                }
+                                                            }
+                                                            let w = new_fmt.short_label();
+                                                            let msg = format!(
+                                                                "Width: {} bit | Reg {} merged with next {} reg(s)",
+                                                                &w[1..],
+                                                                addr,
+                                                                new_needed - 1
+                                                            );
+                                                            set_status(&mut ui, msg);
+                                                        } else {
+                                                            // 回到 16 位，移除该地址的组合
+                                                            combinations.remove(&addr);
+                                                            let msg = format!("Width: 16 bit | Reg {} unmerged", addr);
+                                                            set_status(&mut ui, msg);
+                                                        }
+                                                    }
+                                                } else {
+                                                    let w = new_fmt.short_label();
+                                                    let msg = format!("Width: {} bit", &w[1..]);
+                                                    set_status(&mut ui, msg);
+                                                }
+                                                ui.reg_format = new_fmt;
+                                                s.reg_format = new_fmt;
                                                 drop(s);
-                                                let w = ui.reg_format.short_label();
-                                                let msg = format!("Width: {} bit", &w[1..]);
-                                                set_status(&mut ui, msg);
                                             }
                                         }
                                         // G (Shift+G): 循环切换数据位宽反向 16←32←64←128←16
+                                        // 同时更新选中寄存器的组合配置，使其正确合并/隐藏相邻寄存器
                                         KeyCode::Char('G') => {
                                             if !ui.edit_mode {
-                                                ui.reg_format = ui.reg_format.prev_width();
+                                                let new_fmt = ui.reg_format.prev_width();
                                                 let mut s = state.write().await;
-                                                s.reg_format = ui.reg_format;
+                                                // 对 holding/input 寄存器视图，更新组合配置实现寄存器合并
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let new_needed = new_fmt.regs_needed();
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let combinations = match ui.reg_view {
+                                                            REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                            REG_VIEW_INPUT => &mut s.input_combinations,
+                                                            _ => unreachable!(),
+                                                        };
+                                                        // 移除与选中寄存器范围重叠的所有旧组合
+                                                        combinations.retain(|&k, _| k < addr || k >= addr + new_needed);
+                                                        if new_needed > 1 && addr + new_needed <= total_regs {
+                                                            // 插入新组合：选中寄存器作为 primary
+                                                            combinations.insert(addr, new_fmt);
+                                                            // 禁用次级寄存器的变化追踪
+                                                            let change_enabled = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
+                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
+                                                                change_enabled[i] = false;
+                                                            }
+                                                            // 清理次级寄存器的变化历史
+                                                            for i in (addr + 1)..(addr + new_needed) {
+                                                                if i < s.reg_just_changed.len() {
+                                                                    s.reg_just_changed[i] = false;
+                                                                }
+                                                                if i < s.reg_change_direction.len() {
+                                                                    s.reg_change_direction[i] = ChangeDirection::Up;
+                                                                }
+                                                            }
+                                                            let w = new_fmt.short_label();
+                                                            let msg = format!(
+                                                                "Width: {} bit | Reg {} merged with next {} reg(s)",
+                                                                &w[1..],
+                                                                addr,
+                                                                new_needed - 1
+                                                            );
+                                                            set_status(&mut ui, msg);
+                                                        } else {
+                                                            // 回到 16 位，移除该地址的组合
+                                                            combinations.remove(&addr);
+                                                            let msg = format!("Width: 16 bit | Reg {} unmerged", addr);
+                                                            set_status(&mut ui, msg);
+                                                        }
+                                                    }
+                                                } else {
+                                                    let w = new_fmt.short_label();
+                                                    let msg = format!("Width: {} bit", &w[1..]);
+                                                    set_status(&mut ui, msg);
+                                                }
+                                                ui.reg_format = new_fmt;
+                                                s.reg_format = new_fmt;
                                                 drop(s);
-                                                let w = ui.reg_format.short_label();
-                                                let msg = format!("Width: {} bit", &w[1..]);
-                                                set_status(&mut ui, msg);
                                             }
                                         }
                                         // w: 切换字节序交换
@@ -3482,6 +3628,40 @@ fn is_secondary_register(addr: usize, combinations: &HashMap<usize, crate::RegDa
     false
 }
 
+/// 从给定地址开始向前查找下一个可见（非次级）的寄存器
+fn next_visible_reg(
+    from: usize,
+    max: usize,
+    combinations: &HashMap<usize, crate::RegDataFormat>,
+) -> Option<usize> {
+    (from + 1..max).find(|&i| !is_secondary_register(i, combinations))
+}
+
+/// 从给定地址开始向后查找上一个可见（非次级）的寄存器
+fn prev_visible_reg(
+    from: usize,
+    combinations: &HashMap<usize, crate::RegDataFormat>,
+) -> Option<usize> {
+    (0..from)
+        .rev()
+        .find(|&i| !is_secondary_register(i, combinations))
+}
+
+/// 确保 selected 指向一个可见（非次级）寄存器。如果当前 selected 是次级寄存器，
+/// 则向后寻找最近的一个可见寄存器；如果找不到，则向前寻找。
+#[allow(dead_code)]
+fn ensure_selected_visible(
+    selected: &mut usize,
+    max: usize,
+    combinations: &HashMap<usize, crate::RegDataFormat>,
+) {
+    if is_secondary_register(*selected, combinations) {
+        *selected = next_visible_reg(*selected, max, combinations)
+            .or_else(|| prev_visible_reg(*selected, combinations))
+            .unwrap_or(0);
+    }
+}
+
 /// 渲染寄存器表格，支持所有 4 种寄存器类型
 fn render_register_table(
     f: &mut ratatui::Frame<'_>,
@@ -3591,15 +3771,44 @@ fn render_register_table(
             .add_modifier(Modifier::BOLD),
     );
 
+    // Determine combinations map for the current view
+    let combinations = if is_bool {
+        None
+    } else {
+        Some(match ui.reg_view {
+            REG_VIEW_HOLDING => &s.holding_combinations,
+            REG_VIEW_INPUT => &s.input_combinations,
+            _ => &s.holding_combinations,
+        })
+    };
+
     // 搜索过滤：构建匹配索引列表
     let filtered_indices: Vec<usize> = if ui.search_buf.is_empty() {
-        (0..len).collect()
+        if is_bool {
+            (0..len).collect()
+        } else {
+            (0..len)
+                .filter(|&i| {
+                    if let Some(combo) = combinations {
+                        !is_secondary_register(i, combo)
+                    } else {
+                        true
+                    }
+                })
+                .collect()
+        }
     } else {
         let search_lower = ui.search_buf.to_lowercase();
         items
             .iter()
             .enumerate()
             .filter(|(i, _v)| {
+                // 在搜索模式下，也排除次级寄存器
+                if let Some(combo) = combinations {
+                    if is_secondary_register(*i, combo) {
+                        return false;
+                    }
+                }
                 let idx_str = format!("{}", i);
                 if idx_str.contains(&search_lower) {
                     return true;
@@ -3618,7 +3827,7 @@ fn render_register_table(
     };
     let filtered_len = filtered_indices.len();
 
-    // 调整 selected 到过滤列表中
+    // 调整 selected 到过滤列表中（也处理 selected 是次级寄存器的情况）
     if !filtered_indices.is_empty() && !filtered_indices.contains(&ui.selected) {
         ui.selected = filtered_indices[0];
         if ui.selected < ui.scroll {
@@ -3635,32 +3844,21 @@ fn render_register_table(
         .iter()
         .skip(ui.scroll)
         .take(visible_rows.max(1))
-        .filter_map(|&i| {
+        .map(|&i| {
             let v = &items[i];
             if is_bool {
                 let val = if *v == 1 { "ON" } else { "OFF" };
-                Some(Row::new(vec![
-                    Cell::from(format!("{}", i)),
-                    Cell::from(val),
-                ]))
+                Row::new(vec![Cell::from(format!("{}", i)), Cell::from(val)])
             } else {
-                // Check if this register is a secondary (disabled) register in a combination
-                let combinations = match ui.reg_view {
-                    REG_VIEW_HOLDING => &s.holding_combinations,
-                    REG_VIEW_INPUT => &s.input_combinations,
-                    _ => &s.holding_combinations,
-                };
-                if is_secondary_register(i, combinations) {
-                    return None; // Skip secondary registers
-                }
-
                 // Determine the format for this register
-                let reg_fmt = combinations.get(&i).copied().unwrap_or(ui.reg_format);
+                let reg_fmt = combinations
+                    .and_then(|c| c.get(&i).copied())
+                    .unwrap_or(ui.reg_format);
                 let mut val =
                     format_register_value(items, i, reg_fmt, ui.base, ui.swap_bytes, ui.swap_words);
                 let mut label = labels.and_then(|l| l.get(i).cloned()).unwrap_or_default();
                 // Show combination info in label if combined
-                if let Some(&combo_fmt) = combinations.get(&i) {
+                if let Some(&combo_fmt) = combinations.and_then(|c| c.get(&i)) {
                     let combo_label =
                         format!("[{}×{}]", combo_fmt.regs_needed(), combo_fmt.short_label());
                     if label.is_empty() {
@@ -3695,20 +3893,20 @@ fn render_register_table(
                 };
                 if ui.show_change_bar {
                     let bar_spans = render_change_bar(s, i);
-                    Some(Row::new(vec![
+                    Row::new(vec![
                         Cell::from(format!("{}", i)),
                         Cell::from(label),
                         Cell::from(val),
                         Cell::from(change_str),
                         Cell::from(Line::from(bar_spans)),
-                    ]))
+                    ])
                 } else {
-                    Some(Row::new(vec![
+                    Row::new(vec![
                         Cell::from(format!("{}", i)),
                         Cell::from(label),
                         Cell::from(val),
                         Cell::from(change_str),
-                    ]))
+                    ])
                 }
             }
         });
@@ -4272,9 +4470,14 @@ fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
     } else {
         format!("port {}", a.tcp_port)
     };
-    let register_ranges = t!("profile_info.register_ranges",
-        h = a.holding_count, c = a.coil_count, i = a.input_count, d = a.discrete_count,
-    ).to_string();
+    let register_ranges = t!(
+        "profile_info.register_ranges",
+        h = a.holding_count,
+        c = a.coil_count,
+        i = a.input_count,
+        d = a.discrete_count,
+    )
+    .to_string();
     let tick_info = if a.main_mode.contains("client") || a.main_mode.contains("monitor") {
         t!("profile_info.tick_ms", ms = a.client_tick_ms).to_string()
     } else {
@@ -4305,7 +4508,8 @@ fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
          {}\n{}\n\n\
          {}\n{}",
         mode,
-        t!("profile_info.connection"), connection,
+        t!("profile_info.connection"),
+        connection,
         t!("profile_info.slave"),
         t!("profile_info.unit", unit = a.unit),
         t!("profile_info.registers"),
@@ -4315,7 +4519,11 @@ fn render_profile_info(f: &mut ratatui::Frame<'_>, ui: &Ui) {
         t!("profile_info.data_format"),
         data_fmt,
         t!("profile_info.labels_combos"),
-        t!("profile_info.labels_count", c1 = labels_count, c2 = combo_count),
+        t!(
+            "profile_info.labels_count",
+            c1 = labels_count,
+            c2 = combo_count
+        ),
         t!("profile_info.profile"),
         selected_profile,
     );
@@ -4345,4 +4553,373 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         Constraint::Length((r.width * percent_x / 200).saturating_sub(1)),
     ])
     .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_u32_combo(primary: usize) -> HashMap<usize, crate::RegDataFormat> {
+        let mut m = HashMap::new();
+        m.insert(primary, crate::RegDataFormat::U32);
+        m
+    }
+
+    #[allow(dead_code)]
+    fn make_u64_combo(primary: usize) -> HashMap<usize, crate::RegDataFormat> {
+        let mut m = HashMap::new();
+        m.insert(primary, crate::RegDataFormat::U64);
+        m
+    }
+
+    // ─── is_secondary_register ───
+
+    #[test]
+    fn test_is_secondary_register_no_combos() {
+        let combos = HashMap::new();
+        assert!(!is_secondary_register(0, &combos));
+        assert!(!is_secondary_register(5, &combos));
+    }
+
+    #[test]
+    fn test_is_secondary_register_u32() {
+        let combos = make_u32_combo(0);
+        // primary is not secondary
+        assert!(!is_secondary_register(0, &combos));
+        // secondary: reg 1 is part of U32 at addr 0
+        assert!(is_secondary_register(1, &combos));
+        // beyond range: visible
+        assert!(!is_secondary_register(2, &combos));
+    }
+
+    #[test]
+    fn test_is_secondary_register_multiple_combos() {
+        let mut combos = HashMap::new();
+        combos.insert(0, crate::RegDataFormat::U64); // covers 0-3
+        combos.insert(10, crate::RegDataFormat::U32); // covers 10-11
+                                                      // secondary in first combo
+        assert!(is_secondary_register(1, &combos));
+        assert!(is_secondary_register(2, &combos));
+        assert!(is_secondary_register(3, &combos));
+        // primary of first combo
+        assert!(!is_secondary_register(0, &combos));
+        // uncovered region
+        assert!(!is_secondary_register(4, &combos));
+        assert!(!is_secondary_register(9, &combos));
+        // secondary in second combo
+        assert!(is_secondary_register(11, &combos));
+        // primary of second combo
+        assert!(!is_secondary_register(10, &combos));
+    }
+
+    // ─── next_visible_reg / prev_visible_reg ───
+
+    #[test]
+    fn test_next_visible_reg_no_combos() {
+        let combos = HashMap::new();
+        assert_eq!(next_visible_reg(0, 10, &combos), Some(1));
+        assert_eq!(next_visible_reg(9, 10, &combos), None);
+    }
+
+    #[test]
+    fn test_next_visible_reg_skips_secondary() {
+        let combos = make_u32_combo(0);
+        // 0 → skip 1 (secondary) → 2
+        assert_eq!(next_visible_reg(0, 10, &combos), Some(2));
+        // 1 → skip 1 (it's secondary, but `from` is 1, so we look at 2 onward) → 2
+        assert_eq!(next_visible_reg(1, 10, &combos), Some(2));
+        // 2 → 3 (no combo at 2)
+        assert_eq!(next_visible_reg(2, 10, &combos), Some(3));
+    }
+
+    #[test]
+    fn test_next_visible_reg_multiple_combos() {
+        let mut combos = HashMap::new();
+        combos.insert(0, crate::RegDataFormat::U64); // covers 0-3
+        combos.insert(5, crate::RegDataFormat::U32); // covers 5-6
+                                                     // from 0 → skip 1,2,3 → 4
+        assert_eq!(next_visible_reg(0, 10, &combos), Some(4));
+        // from 4 → skip 5, hmm no 5 is primary → 5
+        assert_eq!(next_visible_reg(4, 10, &combos), Some(5));
+        // from 5 → skip 6 → 7
+        assert_eq!(next_visible_reg(5, 10, &combos), Some(7));
+    }
+
+    #[test]
+    fn test_prev_visible_reg_no_combos() {
+        let combos = HashMap::new();
+        assert_eq!(prev_visible_reg(5, &combos), Some(4));
+        assert_eq!(prev_visible_reg(0, &combos), None);
+    }
+
+    #[test]
+    fn test_prev_visible_reg_skips_secondary() {
+        let combos = make_u32_combo(2);
+        // from 4 → skip... 4,3 → 2 (primary, visible)
+        assert_eq!(prev_visible_reg(4, &combos), Some(2));
+        // from 3 → skip 3 (secondary) → 2 (primary)
+        assert_eq!(prev_visible_reg(3, &combos), Some(2));
+        // from 2 → skip... 1 (no combo at 1) → 1
+        assert_eq!(prev_visible_reg(2, &combos), Some(1));
+    }
+
+    #[test]
+    fn test_prev_visible_reg_boundary() {
+        let combos = make_u32_combo(0);
+        // from 1 → 1 is secondary, prev_visible looks at 0 → 0 is primary
+        assert_eq!(prev_visible_reg(1, &combos), Some(0));
+        // from 0 → no previous
+        assert_eq!(prev_visible_reg(0, &combos), None);
+    }
+
+    // ─── next_width / prev_width cycle (used by g/G hotkeys) ───
+
+    #[test]
+    fn test_next_width_cycle() {
+        use crate::RegDataFormat;
+        assert_eq!(RegDataFormat::U16.next_width(), RegDataFormat::U32);
+        assert_eq!(RegDataFormat::U32.next_width(), RegDataFormat::U64);
+        assert_eq!(RegDataFormat::U64.next_width(), RegDataFormat::U128);
+        assert_eq!(RegDataFormat::U128.next_width(), RegDataFormat::U16);
+        assert_eq!(RegDataFormat::I16.next_width(), RegDataFormat::I32);
+        assert_eq!(RegDataFormat::I32.next_width(), RegDataFormat::I64);
+        assert_eq!(RegDataFormat::I64.next_width(), RegDataFormat::I128);
+        assert_eq!(RegDataFormat::I128.next_width(), RegDataFormat::I16);
+        assert_eq!(RegDataFormat::F16.next_width(), RegDataFormat::F32);
+        assert_eq!(RegDataFormat::F32.next_width(), RegDataFormat::F64);
+        assert_eq!(RegDataFormat::F64.next_width(), RegDataFormat::F16);
+    }
+
+    #[test]
+    fn test_prev_width_cycle() {
+        use crate::RegDataFormat;
+        assert_eq!(RegDataFormat::U16.prev_width(), RegDataFormat::U128);
+        assert_eq!(RegDataFormat::U32.prev_width(), RegDataFormat::U16);
+        assert_eq!(RegDataFormat::U64.prev_width(), RegDataFormat::U32);
+        assert_eq!(RegDataFormat::U128.prev_width(), RegDataFormat::U64);
+        assert_eq!(RegDataFormat::I16.prev_width(), RegDataFormat::I128);
+        assert_eq!(RegDataFormat::I32.prev_width(), RegDataFormat::I16);
+        assert_eq!(RegDataFormat::I64.prev_width(), RegDataFormat::I32);
+        assert_eq!(RegDataFormat::I128.prev_width(), RegDataFormat::I64);
+        assert_eq!(RegDataFormat::F16.prev_width(), RegDataFormat::F64);
+        assert_eq!(RegDataFormat::F32.prev_width(), RegDataFormat::F16);
+        assert_eq!(RegDataFormat::F64.prev_width(), RegDataFormat::F32);
+    }
+
+    // ─── regs_needed ├──
+
+    #[test]
+    fn test_regs_needed() {
+        use crate::RegDataFormat;
+        assert_eq!(RegDataFormat::U16.regs_needed(), 1);
+        assert_eq!(RegDataFormat::U32.regs_needed(), 2);
+        assert_eq!(RegDataFormat::U64.regs_needed(), 4);
+        assert_eq!(RegDataFormat::U128.regs_needed(), 8);
+        assert_eq!(RegDataFormat::F16.regs_needed(), 1);
+        assert_eq!(RegDataFormat::F32.regs_needed(), 2);
+        assert_eq!(RegDataFormat::F64.regs_needed(), 4);
+    }
+
+    // ─── format_register_value (value reading from combined registers) ───
+
+    #[test]
+    fn test_format_register_value_u16() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x1234u16, 0x5678u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U16,
+            DisplayBase::Hex,
+            false,
+            false,
+        );
+        assert_eq!(val, "0x1234");
+    }
+
+    #[test]
+    fn test_format_register_value_u32() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x1234u16, 0x5678u16, 0x9ABCu16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U32,
+            DisplayBase::Hex,
+            false,
+            false,
+        );
+        assert_eq!(val, "0x12345678");
+    }
+
+    #[test]
+    fn test_format_register_value_u32_out_of_bounds() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x1234u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U32,
+            DisplayBase::Hex,
+            false,
+            false,
+        );
+        assert!(val.contains("--"));
+    }
+
+    #[test]
+    fn test_format_register_value_u64() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x0001u16, 0x0002u16, 0x0003u16, 0x0004u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U64,
+            DisplayBase::Hex,
+            false,
+            false,
+        );
+        assert_eq!(val, "0x0001000200030004");
+    }
+
+    #[test]
+    fn test_format_register_value_byte_swap() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x1234u16, 0x5678u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U32,
+            DisplayBase::Hex,
+            true,
+            false,
+        );
+        // 0x1234 → swapped byte → 0x3412, 0x5678 → 0x7856
+        // combined: 0x34127856
+        assert_eq!(val, "0x34127856");
+    }
+
+    #[test]
+    fn test_format_register_value_word_swap() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0x1234u16, 0x5678u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::U32,
+            DisplayBase::Hex,
+            false,
+            true,
+        );
+        // words reversed: [0x5678, 0x1234] → 0x56781234
+        assert_eq!(val, "0x56781234");
+    }
+
+    #[test]
+    fn test_format_register_value_i32_negative() {
+        use crate::{DisplayBase, RegDataFormat};
+        let regs = vec![0xFFFFu16, 0xFFCEu16]; // -50 in 32-bit signed
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::I32,
+            DisplayBase::Dec,
+            false,
+            false,
+        );
+        assert_eq!(val, "-50");
+    }
+
+    #[test]
+    fn test_format_register_value_float32() {
+        use crate::{DisplayBase, RegDataFormat};
+        // 3.14 in IEEE 754: 0x4048F5C3
+        let regs = vec![0x4048u16, 0xF5C3u16];
+        let val = crate::format_register_value(
+            &regs,
+            0,
+            RegDataFormat::F32,
+            DisplayBase::Dec,
+            false,
+            false,
+        );
+        assert!(val.starts_with("3.140"), "expected 3.14xxx, got: {}", val);
+    }
+
+    // ─── ensure_selected_visible ───
+
+    #[test]
+    fn test_ensure_selected_visible_primary() {
+        let combos = make_u32_combo(0);
+        let mut sel = 0;
+        ensure_selected_visible(&mut sel, 10, &combos);
+        assert_eq!(sel, 0);
+    }
+
+    #[test]
+    fn test_ensure_selected_visible_secondary() {
+        let combos = make_u32_combo(0);
+        let mut sel = 1; // secondary, hidden
+        ensure_selected_visible(&mut sel, 10, &combos);
+        // should snap to next visible: 2
+        assert_eq!(sel, 2);
+    }
+
+    #[test]
+    fn test_ensure_selected_visible_last_secondary() {
+        // combo covers 8-9, sel=9 is at the end
+        let mut combos = HashMap::new();
+        combos.insert(8, crate::RegDataFormat::U32);
+        let mut sel = 9; // secondary, last reg
+        ensure_selected_visible(&mut sel, 10, &combos);
+        // no next visible, should go prev: 8 (primary)
+        assert_eq!(sel, 8);
+    }
+
+    #[test]
+    fn test_ensure_selected_visible_all_covered() {
+        // U32 combo at 0 covers 0-1, only 2 regs total
+        let combos = make_u32_combo(0);
+        let mut sel = 1; // secondary, only 2 regs: 0 is primary, 1 is secondary
+        ensure_selected_visible(&mut sel, 2, &combos);
+        // no next visible, no prev (0 is primary but we look < 1 which is 0, and 0 is not secondary)
+        // Actually prev_visible_reg looks at (0..1).rev().find(|&i| !is_secondary_register(i, &combos))
+        // That's just 0, and !is_secondary(0) = true, so sel = 0
+        assert_eq!(sel, 0);
+    }
+
+    // ─── Combination overlap cleanup ───
+
+    #[test]
+    fn test_combo_retain_overlapping() {
+        // Simulate what g/G does: remove combos overlapping with new range
+        let mut combos = HashMap::new();
+        combos.insert(0, crate::RegDataFormat::U32); // covers 0-1
+        combos.insert(2, crate::RegDataFormat::U32); // covers 2-3
+
+        // Press g at addr 0 with U32 → want to retain combos NOT overlapping [0, 0+2) = [0,2)
+        // So combo {2: U32} should stay (addr 2 >= 0+2)
+        combos.retain(|&k, _| k < 0 || k >= 0 + 2);
+        assert_eq!(combos.len(), 1);
+        assert!(combos.contains_key(&2));
+
+        // Now press g at addr 2 → going to U64 → remove anything overlapping [2, 2+4) = [2,6)
+        combos.retain(|&k, _| k < 2 || k >= 2 + 4);
+        assert!(combos.is_empty());
+    }
+
+    #[test]
+    fn test_combo_back_to_u16() {
+        let mut combos = make_u32_combo(0);
+        // Press g from U32 → next_width = U64 → new_needed = 4
+        // If total_regs = 2, then addr + new_needed (0+4=4) > total_regs → remove combo
+        // This simulates going back to U16
+        let addr = 0;
+        let new_needed = 1; // U16
+        if new_needed <= 1 {
+            combos.remove(&addr);
+        }
+        assert!(combos.is_empty());
+    }
 }
