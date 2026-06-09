@@ -806,6 +806,28 @@ struct ProfileField {
     apply: Box<dyn Fn(&mut Args, &str) -> Result<(), String>>,
 }
 
+/// 返回有固定选项的字段的可选值列表
+fn get_field_options(name_key: &str) -> Option<&'static [&'static str]> {
+    match name_key {
+        "main_mode" => Some(&[
+            "tcp-server",
+            "tcp-client",
+            "tcp-monitor",
+            "rtu-server",
+            "rtu-client",
+            "rtu-monitor",
+        ]),
+        "baudrate" => Some(&[
+            "9600", "19200", "38400", "57600", "115200", "230400", "460800",
+        ]),
+        "parity" => Some(&["n", "e", "o"]),
+        "flow" => Some(&["none", "hardware", "software"]),
+        "databits" => Some(&["5", "6", "7", "8"]),
+        "stopbits" => Some(&["1", "2"]),
+        _ => None,
+    }
+}
+
 /// 返回所有可编辑字段的列表
 fn profile_fields() -> Vec<ProfileField> {
     fn main_mode_display(a: &Args) -> String {
@@ -1060,75 +1082,132 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::raw("")),
-            Line::from(Span::styled(
-                format!("> {}", ui.field_edit_buf),
-                Style::default().fg(Color::Cyan),
-            )),
-            Line::from(Span::raw("")),
         ];
 
-        // 如果是 device 字段编辑，显示可用串口列表
-        if field.name_key == "device" && !ui.serial_ports.is_empty() {
-            edit_lines.push(Line::from(Span::styled(
-                t!("profile_edit.device_port_list"),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for port in ui.serial_ports.iter() {
-                let selected_port = &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
-                if port == selected_port {
-                    edit_lines.push(Line::from(vec![
-                        Span::styled(" ● ", Style::default().fg(Color::Cyan)),
+        // 检查是否有预定义的选项（下拉选择）
+        let is_baudrate = field.name_key == "baudrate";
+        if let Some(options) = get_field_options(field.name_key) {
+            // 如果是波特率，允许手动输入，显示当前输入值
+            if is_baudrate {
+                edit_lines.push(Line::from(Span::styled(
+                    format!("> {}", ui.field_edit_buf),
+                    Style::default().fg(Color::Cyan),
+                )));
+                edit_lines.push(Line::from(Span::raw("")));
+            }
+            // 找到当前选中值在选项中的索引
+            let cur_val = ui.field_edit_buf.as_str();
+            let sel_idx = options
+                .iter()
+                .position(|o| *o == cur_val)
+                .unwrap_or(usize::MAX);
+            // 渲染选项列表
+            for (i, opt) in options.iter().enumerate() {
+                let is_cur = i == sel_idx;
+                let line = if is_cur {
+                    Line::from(vec![
+                        Span::styled(" ◄ ", Style::default().fg(Color::Cyan)),
                         Span::styled(
-                            port.clone(),
+                            *opt,
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(Color::Black)
+                                .bg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                    ]));
+                        Span::styled(" ► ", Style::default().fg(Color::Cyan)),
+                    ])
                 } else {
-                    edit_lines.push(Line::from(vec![
-                        Span::raw(" ○ "),
-                        Span::styled(port.clone(), Style::default().fg(Color::DarkGray)),
-                    ]));
-                }
+                    Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(*opt, Style::default().fg(Color::DarkGray)),
+                    ])
+                };
+                edit_lines.push(line);
             }
             edit_lines.push(Line::from(Span::raw("")));
+            if is_baudrate {
+                edit_lines.push(Line::from(Span::styled(
+                    "输入数字或 ← → ↑ ↓ Tab 选择常见波特率  Enter 确认  Esc 取消",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else {
+                edit_lines.push(Line::from(Span::styled(
+                    "← → ↑ ↓ Tab 切换选项  Enter 确认  Esc 取消",
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        } else {
+            // 普通文本编辑
             edit_lines.push(Line::from(Span::styled(
-                t!("profile_edit.serial_hint"),
-                Style::default().fg(Color::DarkGray),
-            )));
-        } else if field.name_key == "device" && ui.serial_ports.is_empty() {
-            edit_lines.push(Line::from(Span::styled(
-                t!("profile_edit.device_no_ports"),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
+                format!("> {}", ui.field_edit_buf),
+                Style::default().fg(Color::Cyan),
             )));
             edit_lines.push(Line::from(Span::raw("")));
-        }
 
-        // 如有校验提示，添加提示信息
-        let hint = match field.name_key {
-            "main_mode" => "ts/tc/tm/rs/rc/rm 或 tcp-client/tcp-server/tcp-monitor/rtu-client/rtu-server/rtu-monitor",
-            "parity" => "n(even) / e(ven) / o(dd)",
-            "flow" => "none / hard(ware) / soft(ware)",
-            "databits" => "5 / 6 / 7 / 8",
-            "stopbits" => "1 / 2",
-            _ => "",
-        };
-        if !hint.is_empty() {
+            // 如果是 device 字段编辑，显示可用串口列表
+            if field.name_key == "device" && !ui.serial_ports.is_empty() {
+                edit_lines.push(Line::from(Span::styled(
+                    t!("profile_edit.device_port_list"),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for port in ui.serial_ports.iter() {
+                    let selected_port =
+                        &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
+                    if port == selected_port {
+                        edit_lines.push(Line::from(vec![
+                            Span::styled(" ● ", Style::default().fg(Color::Cyan)),
+                            Span::styled(
+                                port.clone(),
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                    } else {
+                        edit_lines.push(Line::from(vec![
+                            Span::raw(" ○ "),
+                            Span::styled(port.clone(), Style::default().fg(Color::DarkGray)),
+                        ]));
+                    }
+                }
+                edit_lines.push(Line::from(Span::raw("")));
+                edit_lines.push(Line::from(Span::styled(
+                    t!("profile_edit.serial_hint"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            } else if field.name_key == "device" && ui.serial_ports.is_empty() {
+                edit_lines.push(Line::from(Span::styled(
+                    t!("profile_edit.device_no_ports"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                )));
+                edit_lines.push(Line::from(Span::raw("")));
+            }
+
+            // 如有校验提示，添加提示信息
+            let hint = match field.name_key {
+                "main_mode" => "ts/tc/tm/rs/rc/rm 或 tcp-client/tcp-server/tcp-monitor/rtu-client/rtu-server/rtu-monitor",
+                "parity" => "n(even) / e(ven) / o(dd)",
+                "flow" => "none / hard(ware) / soft(ware)",
+                "databits" => "5 / 6 / 7 / 8",
+                "stopbits" => "1 / 2",
+                _ => "",
+            };
+            if !hint.is_empty() {
+                edit_lines.push(Line::from(Span::styled(
+                    hint,
+                    Style::default().fg(Color::DarkGray),
+                )));
+                edit_lines.push(Line::from(Span::raw("")));
+            }
             edit_lines.push(Line::from(Span::styled(
-                hint,
+                t!("profile_edit.edit_help"),
                 Style::default().fg(Color::DarkGray),
             )));
-            edit_lines.push(Line::from(Span::raw("")));
         }
-        edit_lines.push(Line::from(Span::styled(
-            t!("profile_edit.edit_help"),
-            Style::default().fg(Color::DarkGray),
-        )));
         Paragraph::new(edit_lines).wrap(Wrap { trim: false })
     } else {
         // 导航模式显示提示
@@ -1192,6 +1271,10 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
 
     if ui.field_edit_mode {
         // 字段值编辑模式
+        let field_idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
+        let field = &fields[field_idx];
+        let has_options = get_field_options(field.name_key).is_some();
+
         match code {
             KeyCode::Esc => {
                 ui.field_edit_mode = false;
@@ -1199,10 +1282,9 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
                 set_status(ui, t!("profile_edit.edit_cancelled"));
             }
             KeyCode::Enter => {
-                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
                 let val = ui.field_edit_buf.clone();
                 if let Some(ref mut args) = ui.edit_args {
-                    match (fields[idx].apply)(args, &val) {
+                    match (fields[field_idx].apply)(args, &val) {
                         Ok(()) => {
                             ui.field_edit_mode = false;
                             ui.field_edit_buf.clear();
@@ -1214,29 +1296,44 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
                     }
                 }
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if !has_options || field.name_key == "baudrate" => {
                 ui.field_edit_buf.pop();
             }
-            KeyCode::Tab | KeyCode::Down => {
-                // 在 device 字段编辑时，Tab/↓ 切换到下一个可用串口
-                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
-                if fields[idx].name_key == "device" && !ui.serial_ports.is_empty() {
+            KeyCode::Char(ch)
+                if !has_options || (field.name_key == "baudrate" && ch.is_ascii_digit()) =>
+            {
+                ui.field_edit_buf.push(ch);
+            }
+            // 对 device 字段保持现有的串口循环行为
+            KeyCode::Tab | KeyCode::Down | KeyCode::Right => {
+                if field.name_key == "device" && !ui.serial_ports.is_empty() {
                     let len = ui.serial_ports.len();
                     ui.serial_port_idx = (ui.serial_port_idx + 1) % len;
                     ui.field_edit_buf = ui.serial_ports[ui.serial_port_idx].clone();
+                } else if has_options {
+                    // 选项字段：循环到下一个选项
+                    if let Some(options) = get_field_options(field.name_key) {
+                        let cur = ui.field_edit_buf.as_str();
+                        let idx = options.iter().position(|o| *o == cur).unwrap_or(0);
+                        let next = (idx + 1) % options.len();
+                        ui.field_edit_buf = options[next].to_string();
+                    }
                 }
             }
-            KeyCode::Up => {
-                // 在 device 字段编辑时，↑ 切换到上一个可用串口
-                let idx = ui.menu_list_idx.min(field_count.saturating_sub(1));
-                if fields[idx].name_key == "device" && !ui.serial_ports.is_empty() {
+            KeyCode::Up | KeyCode::Left => {
+                if field.name_key == "device" && !ui.serial_ports.is_empty() {
                     let len = ui.serial_ports.len();
                     ui.serial_port_idx = (ui.serial_port_idx + len - 1) % len;
                     ui.field_edit_buf = ui.serial_ports[ui.serial_port_idx].clone();
+                } else if has_options {
+                    // 选项字段：循环到上一个选项
+                    if let Some(options) = get_field_options(field.name_key) {
+                        let cur = ui.field_edit_buf.as_str();
+                        let idx = options.iter().position(|o| *o == cur).unwrap_or(0);
+                        let prev = (idx + options.len() - 1) % options.len();
+                        ui.field_edit_buf = options[prev].to_string();
+                    }
                 }
-            }
-            KeyCode::Char(ch) => {
-                ui.field_edit_buf.push(ch);
             }
             _ => {}
         }
