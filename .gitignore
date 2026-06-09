@@ -1,5 +1,6 @@
 /target
 .atomcode/
+.atomecode/graphic.bin
 
 # AtomCode local-scope configs (machine-specific)
 .atomcode/local/
