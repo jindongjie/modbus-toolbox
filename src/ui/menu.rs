@@ -35,8 +35,6 @@ pub fn load_profile_args(config_path: &str, name: &str) -> Option<(String, Args)
     configs.remove(name).map(|a| (name.to_string(), a))
 }
 
-
-
 // ─────────────────────────────────────────
 // 菜单渲染与事件处理
 // ─────────────────────────────────────────
@@ -176,7 +174,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // 渲染 5 个模式菜单项
+    // 渲染 6 个模式菜单项
     for (i, &(key, _mode)) in menu_items.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
         let count = counts.get(i).copied().unwrap_or(0);
@@ -197,8 +195,26 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
         lines.push(Line::from(Span::raw(""))); // spacer
     }
 
+    // 渲染 RTU 报文构造项
+    let i = menu_items.len(); // = 6
+    let is_selected = i == ui.menu_list_idx;
+    let c_style = if is_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let prefix = if is_selected { " ▸ " } else { "   " };
+    lines.push(Line::from(Span::styled(
+        format!("{}[{}] {}", prefix, i + 1, t!("main_menu.rtu_construct")),
+        c_style,
+    )));
+    lines.push(Line::from(Span::raw(""))); // spacer
+
     // 渲染 Profile Settings 项
-    let i = menu_items.len();
+    let i = menu_items.len() + 1; // = 7
     let is_selected = i == ui.menu_list_idx;
     let p_style = if is_selected {
         Style::default()
@@ -210,7 +226,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
     };
     let prefix = if is_selected { " ▸ " } else { "   " };
     lines.push(Line::from(Span::styled(
-        format!("{}[7] {}", prefix, t!("main_menu.profile_settings")),
+        format!("{}[8] {}", prefix, t!("main_menu.profile_settings")),
         p_style,
     )));
 
@@ -223,10 +239,7 @@ fn render_main_menu(f: &mut Frame<'_>, ui: &Ui) {
         .as_deref()
         .map(std::borrow::Cow::Borrowed)
         .unwrap_or_else(|| t!("main_menu.none"));
-    let status = t!(
-        "main_menu.info_bar",
-        selected = selected
-    );
+    let status = t!("main_menu.info_bar", selected = selected);
     f.render_widget(
         Paragraph::new(status)
             .block(
@@ -394,7 +407,12 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
-                    t!("profile_pick.preview_ranges", c = args.coil_count, d = args.discrete_count, i = args.input_count)
+                    t!(
+                        "profile_pick.preview_ranges",
+                        c = args.coil_count,
+                        d = args.discrete_count,
+                        i = args.input_count
+                    )
                 ),
                 Style::default().fg(Color::DarkGray),
             )));
@@ -513,7 +531,11 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
             )));
             preview_lines.push(Line::from(Span::raw("")));
             preview_lines.push(Line::from(Span::styled(
-                format!("{}: {}", t!("profile_edit.holding_count"), args.holding_count),
+                format!(
+                    "{}: {}",
+                    t!("profile_edit.holding_count"),
+                    args.holding_count
+                ),
                 Style::default().fg(Color::DarkGray),
             )));
             preview_lines.push(Line::from(Span::styled(
@@ -551,7 +573,7 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
 }
 
 fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
-    const ITEM_COUNT: usize = 7; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), TCP Monitor(4), RTU Monitor(5), Profile Settings(6)
+    const ITEM_COUNT: usize = 8; // TCP Server(0), TCP Client(1), RTU Server(2), RTU Client(3), TCP Monitor(4), RTU Monitor(5), RTU Construct(6), Profile Settings(7)
 
     fn enter_pick(ui: &mut Ui, config_path: &str, mode: MainMode) {
         ui.pending_mode = Some(mode);
@@ -581,6 +603,11 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
                 4 => enter_pick(ui, config_path, MainMode::TcpMonitor),
                 5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
                 6 => {
+                    ui.menu_screen = MenuScreen::FrameConstruct;
+                    ui.construct_focus = 0;
+                    ui.construct_edit_mode = false;
+                }
+                7 => {
                     ui.menu_screen = MenuScreen::ProfileSet;
                     ui.menu_list_idx = 0;
                 }
@@ -595,6 +622,12 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
             4 => enter_pick(ui, config_path, MainMode::TcpMonitor),
             5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
             6 => {
+                // RTU 报文构造
+                ui.menu_screen = MenuScreen::FrameConstruct;
+                ui.construct_focus = 0;
+                ui.construct_edit_mode = false;
+            }
+            7 => {
                 // Profile Settings
                 ui.menu_screen = MenuScreen::ProfileSet;
                 ui.menu_list_idx = 0;
@@ -1403,6 +1436,336 @@ fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 }
 
 // ─────────────────────────────────────────
+// RTU 报文构造页面
+// ─────────────────────────────────────────
+
+/// 根据当前参数构造 Modbus RTU 请求帧字节
+fn construct_rtu_frame(slave_id: u8, func_code: u8, addr: u16, count: u16) -> Vec<u8> {
+    use crate::modbus::calc_crc16;
+    let mut frame = Vec::with_capacity(8);
+    frame.push(slave_id);
+    frame.push(func_code);
+    frame.push((addr >> 8) as u8);
+    frame.push((addr & 0xFF) as u8);
+    frame.push((count >> 8) as u8);
+    frame.push((count & 0xFF) as u8);
+    let crc = calc_crc16(&frame);
+    frame.push((crc & 0xFF) as u8);
+    frame.push((crc >> 8) as u8);
+    frame
+}
+
+/// 获取功能码名称
+fn func_code_name(code: u8) -> &'static str {
+    match code {
+        0x01 => "Read Coils",
+        0x02 => "Read Discrete Inputs",
+        0x03 => "Read Holding Registers",
+        0x04 => "Read Input Registers",
+        0x05 => "Write Single Coil",
+        0x06 => "Write Single Register",
+        0x0F => "Write Multiple Coils",
+        0x10 => "Write Multiple Registers",
+        _ => "Unknown",
+    }
+}
+
+fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
+    let area = f.area();
+    let vert = Layout::vertical([
+        Constraint::Length(3), // 标题栏（含边框）
+        Constraint::Length(8), // 输入字段区
+        Constraint::Min(4),    // 帧预览和解析
+        Constraint::Length(3), // 帮助信息栏（含边框）
+    ])
+    .split(area);
+
+    // ── 标题栏 ──
+    let title_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let title_inner = title_block.inner(vert[0]);
+    f.render_widget(title_block, vert[0]);
+    // 在标题框内居中显示标题文字
+    let title_text = Line::from(Span::styled(
+        t!("construct.title"),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ));
+    f.render_widget(
+        Paragraph::new(title_text).alignment(ratatui::layout::Alignment::Center),
+        title_inner,
+    );
+
+    // ── 参数字段区 ──
+    let fields = [
+        (
+            t!("construct.slave_id"),
+            format!("{}", ui.construct_slave_id),
+        ),
+        (
+            t!("construct.func_code"),
+            format!(
+                "0x{:02X} ({})",
+                ui.construct_func_code,
+                func_code_name(ui.construct_func_code)
+            ),
+        ),
+        (
+            t!("construct.addr"),
+            format!("0x{:04X} ({})", ui.construct_addr, ui.construct_addr),
+        ),
+        (t!("construct.count"), format!("{}", ui.construct_count)),
+    ];
+
+    let field_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" ⚙ {} ", t!("construct.title")))
+        .border_style(Style::default().fg(Color::Green));
+    let inner = field_block.inner(vert[1]);
+    f.render_widget(field_block, vert[1]);
+
+    let mut field_lines: Vec<Line> = Vec::new();
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let is_focused = i == ui.construct_focus && !ui.construct_edit_mode;
+        let editing = i == ui.construct_focus && ui.construct_edit_mode;
+        let val_style = if editing {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::SLOW_BLINK)
+        } else if is_focused {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let label_style = Style::default().fg(Color::Green);
+        let arrow = if is_focused || editing {
+            " ▸ "
+        } else {
+            "   "
+        };
+        let display_val = if editing {
+            format!("[{}]", ui.construct_edit_buf)
+        } else {
+            value.clone()
+        };
+        field_lines.push(Line::from(vec![
+            Span::styled(format!("{}{}: ", arrow, label), label_style),
+            Span::styled(display_val, val_style),
+        ]));
+    }
+    f.render_widget(Paragraph::new(field_lines), inner);
+
+    // ── 帧预览 + 解析 ──
+    let frame_bytes = construct_rtu_frame(
+        ui.construct_slave_id,
+        ui.construct_func_code,
+        ui.construct_addr,
+        ui.construct_count,
+    );
+
+    let preview_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" 📦 {} ", t!("construct.frame_title")))
+        .border_style(Style::default().fg(Color::Magenta));
+    let preview_inner = preview_block.inner(vert[2]);
+    f.render_widget(preview_block, vert[2]);
+
+    let hex_str: Vec<String> = frame_bytes.iter().map(|b| format!("{:02X}", b)).collect();
+    let hex_line = format!("[ {} ]", hex_str.join("  "));
+
+    let ascii_line: String = frame_bytes
+        .iter()
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+
+    let mut breakdown = Vec::new();
+    let header_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let hex_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let ascii_style = Style::default().fg(Color::DarkGray);
+    let breakdown_style = Style::default().fg(Color::Green);
+    let dim_style = Style::default().fg(Color::DarkGray);
+
+    breakdown.push(Line::from(vec![
+        Span::styled("Hex: ", header_style),
+        Span::styled(hex_line.clone(), hex_style),
+    ]));
+    breakdown.push(Line::from(vec![
+        Span::styled("ASC: ", header_style),
+        Span::styled(ascii_line, ascii_style),
+    ]));
+    breakdown.push(Line::from(Span::styled(
+        "─".repeat(preview_inner.width.saturating_sub(2) as usize),
+        dim_style,
+    )));
+
+    // 字节解析
+    let crc_val = (frame_bytes[6] as u16) | ((frame_bytes[7] as u16) << 8);
+    let annotations = [
+        (
+            format!("{:02X}", frame_bytes[0]),
+            format!("{} = {}", t!("construct.byte_slave"), ui.construct_slave_id),
+        ),
+        (
+            format!("{:02X}", frame_bytes[1]),
+            format!(
+                "{} = 0x{:02X} ({})",
+                t!("construct.byte_func"),
+                ui.construct_func_code,
+                func_code_name(ui.construct_func_code)
+            ),
+        ),
+        (
+            format!("{:02X} {:02X}", frame_bytes[2], frame_bytes[3]),
+            format!(
+                "{} = 0x{:04X} ({})",
+                t!("construct.byte_addr"),
+                ui.construct_addr,
+                ui.construct_addr
+            ),
+        ),
+        (
+            format!("{:02X} {:02X}", frame_bytes[4], frame_bytes[5]),
+            format!("{} = {}", t!("construct.byte_count"), ui.construct_count),
+        ),
+        (
+            format!("{:02X} {:02X}", frame_bytes[6], frame_bytes[7]),
+            format!("{} = 0x{:04X}", t!("construct.byte_crc"), crc_val),
+        ),
+    ];
+    for (hex_part, desc) in &annotations {
+        breakdown.push(Line::from(vec![
+            Span::styled(format!("  {}", hex_part), hex_style),
+            Span::styled("  →  ", dim_style),
+            Span::styled(desc.clone(), breakdown_style),
+        ]));
+    }
+
+    f.render_widget(Paragraph::new(breakdown), preview_inner);
+
+    // ── 底部帮助信息栏 ──
+    let help = if ui.construct_edit_mode {
+        t!("construct.help_edit")
+    } else {
+        t!("construct.help_nav")
+    };
+    let help_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let help_inner = help_block.inner(vert[3]);
+    f.render_widget(help_block, vert[3]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            help,
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
+        help_inner,
+    );
+}
+
+fn handle_frame_construct_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
+    const FIELD_COUNT: usize = 4;
+
+    if ui.construct_edit_mode {
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                ui.construct_edit_buf.push(c);
+            }
+            KeyCode::Backspace => {
+                ui.construct_edit_buf.pop();
+            }
+            KeyCode::Enter => {
+                // 提交编辑
+                let val = ui.construct_edit_buf.trim().parse::<u32>();
+                if let Ok(v) = val {
+                    match ui.construct_focus {
+                        0 if (1..=247).contains(&v) => {
+                            ui.construct_slave_id = v as u8;
+                        }
+                        1 if (1..=16).contains(&v) => {
+                            ui.construct_func_code = v as u8;
+                        }
+                        2 if v <= 65535 => {
+                            ui.construct_addr = v as u16;
+                        }
+                        3 if (1..=2000).contains(&v) => {
+                            ui.construct_count = v as u16;
+                        }
+                        _ => {
+                            // 无效值：重置缓冲
+                            let msg = match ui.construct_focus {
+                                0 => t!("construct.invalid_slave"),
+                                1 => t!("construct.invalid_func"),
+                                2 => t!("construct.invalid_addr"),
+                                3 => t!("construct.invalid_count"),
+                                _ => unreachable!(),
+                            };
+                            set_status(ui, msg);
+                        }
+                    }
+                }
+                ui.construct_edit_mode = false;
+                ui.construct_edit_buf.clear();
+            }
+            KeyCode::Esc => {
+                ui.construct_edit_mode = false;
+                ui.construct_edit_buf.clear();
+            }
+            _ => {}
+        }
+    } else {
+        match code {
+            KeyCode::Up => {
+                ui.construct_focus = ui.construct_focus.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                if ui.construct_focus + 1 < FIELD_COUNT {
+                    ui.construct_focus += 1;
+                }
+            }
+            KeyCode::Enter => {
+                ui.construct_edit_mode = true;
+                // 预填当前值
+                ui.construct_edit_buf = match ui.construct_focus {
+                    0 => format!("{}", ui.construct_slave_id),
+                    1 => format!("{}", ui.construct_func_code),
+                    2 => format!("{}", ui.construct_addr),
+                    3 => format!("{}", ui.construct_count),
+                    _ => String::new(),
+                };
+            }
+            KeyCode::Esc => {
+                ui.menu_screen = MenuScreen::Main;
+            }
+            KeyCode::Char('q') => {
+                return Some(MenuSelection {
+                    main_mode: MainMode::TcpClient,
+                    profile_name: None,
+                    quit: true,
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+// ─────────────────────────────────────────
 // 菜单主循环
 // ─────────────────────────────────────────
 
@@ -1473,6 +1836,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
                     MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
                     MenuScreen::NamePrompt => render_name_prompt(f, &ui),
+                    MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
                 });
                 continue;
             }
@@ -1489,6 +1853,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => handle_profile_set_key(&mut ui, code, config_path),
                     MenuScreen::ProfileEdit => handle_profile_edit_key(&mut ui, code, config_path),
                     MenuScreen::NamePrompt => handle_name_prompt_key(&mut ui, code, config_path),
+                    MenuScreen::FrameConstruct => handle_frame_construct_key(&mut ui, code),
                 };
                 if let Some(sel) = sel {
                     break Ok(sel);
@@ -1501,6 +1866,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
                     MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
                     MenuScreen::NamePrompt => render_name_prompt(f, &ui),
+                    MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
                 });
             }
             _ => {}
@@ -1513,6 +1879,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
             MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
             MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
             MenuScreen::NamePrompt => render_name_prompt(f, &ui),
+            MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
         });
     };
 

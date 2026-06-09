@@ -1,9 +1,9 @@
 use super::{
-    apply_pattern_dialog, centered_rect, format_byte_panel,
-    format_monitor_history, format_monitor_stats, format_protocol_analysis, parse_reg_format,
-    pattern_index, reg_view_data, reg_view_len, render_csv_picker, render_monitor_profile_pick,
-    search_match, set_status, wrapped_lines, Ui, REG_VIEW_COILS, REG_VIEW_DISCRETE,
-    REG_VIEW_HOLDING, REG_VIEW_INPUT, UI_TIMEOUT,
+    apply_pattern_dialog, centered_rect, format_byte_panel, format_monitor_history,
+    format_monitor_stats, format_protocol_analysis, parse_reg_format, pattern_index, reg_view_data,
+    reg_view_len, render_csv_picker, render_monitor_profile_pick, search_match, set_status,
+    wrapped_lines, Ui, REG_VIEW_COILS, REG_VIEW_DISCRETE, REG_VIEW_HOLDING, REG_VIEW_INPUT,
+    UI_TIMEOUT,
 };
 use crate::{
     csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,

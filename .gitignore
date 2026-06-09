@@ -1,2 +1,5 @@
 /target
 .atomcode/
+
+# AtomCode local-scope configs (machine-specific)
+.atomcode/local/

@@ -77,11 +77,12 @@ const UI_TIMEOUT: Duration = Duration::from_secs(5);
 /// 菜单屏幕状态
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuScreen {
-    Main,        // 主菜单
-    ProfilePick, // 选择配置（Server/Client 子菜单）
-    ProfileSet,  // 配置管理设置
-    ProfileEdit, // 编辑配置字段
-    NamePrompt,  // 输入新增/克隆的配置名
+    Main,           // 主菜单
+    ProfilePick,    // 选择配置（Server/Client 子菜单）
+    ProfileSet,     // 配置管理设置
+    ProfileEdit,    // 编辑配置字段
+    NamePrompt,     // 输入新增/克隆的配置名
+    FrameConstruct, // RTU 主站报文构造
 }
 
 /// 菜单选择结果，返回给 main.rs
@@ -222,6 +223,22 @@ pub struct Ui {
     pub show_profile_info: bool,
     /// 当前配置的完整参数（用于弹窗显示）
     pub args: Args,
+
+    // --- RTU 报文构造 ---
+    /// 从站地址
+    pub construct_slave_id: u8,
+    /// 功能码
+    pub construct_func_code: u8,
+    /// 起始地址
+    pub construct_addr: u16,
+    /// 读取数量
+    pub construct_count: u16,
+    /// 当前焦点字段索引 (0=slave_id, 1=func_code, 2=addr, 3=count)
+    pub construct_focus: usize,
+    /// 字段编辑缓冲
+    pub construct_edit_buf: String,
+    /// 是否在编辑模式
+    pub construct_edit_mode: bool,
 }
 
 /// 伪随机数生成（线性同余），用于 logo 动画，不依赖 rand crate
@@ -353,6 +370,15 @@ impl Ui {
             reg_format,
             show_profile_info: false,
             args: crate::Args::default(),
+
+            // RTU 报文构造
+            construct_slave_id: 1,
+            construct_func_code: 3,
+            construct_addr: 0,
+            construct_count: 10,
+            construct_focus: 0,
+            construct_edit_buf: String::new(),
+            construct_edit_mode: false,
         }
     }
 }

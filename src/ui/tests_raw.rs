@@ -972,7 +972,10 @@ mod tests {
         let result = format_register_value(&regs, 0, fmt, false, false);
         // Should produce a valid f64 string
         assert!(result.contains('.'), "expected float string, got: {result}");
-        assert!(!result.starts_with("--"), "unexpected out-of-bounds: {result}");
+        assert!(
+            !result.starts_with("--"),
+            "unexpected out-of-bounds: {result}"
+        );
     }
 
     #[test]
@@ -983,7 +986,10 @@ mod tests {
             data_type: RegDataType::Float,
             width: RegDataWidth::Bits16,
         };
-        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "1.000000");
+        assert_eq!(
+            format_register_value(&regs, 0, fmt, false, false),
+            "1.000000"
+        );
     }
 
     #[test]
@@ -994,7 +1000,10 @@ mod tests {
             data_type: RegDataType::Float,
             width: RegDataWidth::Bits16,
         };
-        assert_eq!(format_register_value(&regs, 0, fmt, false, false), "0.000000");
+        assert_eq!(
+            format_register_value(&regs, 0, fmt, false, false),
+            "0.000000"
+        );
     }
 
     #[test]
@@ -1012,8 +1021,10 @@ mod tests {
     #[test]
     fn test_format_register_value_u128_hex() {
         use crate::format_register_value;
-        let regs = [0xDEAD_u16, 0xBEEF_u16, 0x0000_u16, 0x0000_u16,
-                    0x0000_u16, 0x0000_u16, 0x0000_u16, 0x0001_u16];
+        let regs = [
+            0xDEAD_u16, 0xBEEF_u16, 0x0000_u16, 0x0000_u16, 0x0000_u16, 0x0000_u16, 0x0000_u16,
+            0x0001_u16,
+        ];
         let fmt = RegDataFormat {
             data_type: RegDataType::Hex,
             width: RegDataWidth::Bits128,
@@ -1121,7 +1132,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_u16() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits16,
+        };
         let result = parse_register_value("42", fmt, false, false).unwrap();
         assert_eq!(result, vec![42]);
     }
@@ -1129,7 +1143,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_u32() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits32,
+        };
         let result = parse_register_value("70000", fmt, false, false).unwrap();
         // 70000 = 0x0001_1170 => hi=0x0001, lo=0x1170
         assert_eq!(result, vec![0x0001, 0x1170]);
@@ -1138,7 +1155,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_i32_negative() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Int, width: RegDataWidth::Bits32 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Int,
+            width: RegDataWidth::Bits32,
+        };
         let result = parse_register_value("-70000", fmt, false, false).unwrap();
         // -70000 as u32 = 0xFFFE_EE90 => hi=0xFFFE, lo=0xEE90
         assert_eq!(result, vec![0xFFFE, 0xEE90]);
@@ -1147,7 +1167,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_u64() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits64 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits64,
+        };
         let result = parse_register_value("0xDEADBEEF00000001", fmt, false, false).unwrap();
         assert_eq!(result, vec![0xDEAD, 0xBEEF, 0x0000, 0x0001]);
     }
@@ -1155,7 +1178,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_hex16() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Hex,
+            width: RegDataWidth::Bits16,
+        };
         let result = parse_register_value("FF", fmt, false, false).unwrap();
         assert_eq!(result, vec![0x00FF]);
     }
@@ -1163,7 +1189,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_binary() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Binary, width: RegDataWidth::Bits16 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Binary,
+            width: RegDataWidth::Bits16,
+        };
         let result = parse_register_value("0b1010", fmt, false, false).unwrap();
         assert_eq!(result, vec![0b1010]);
     }
@@ -1171,7 +1200,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_f32() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits32 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataWidth::Bits32,
+        };
         let result = parse_register_value("3.14", fmt, false, false).unwrap();
         // f32 bits of 3.14 = 0x4048F5C3 => hi=0x4048, lo=0xF5C3
         assert_eq!(result, vec![0x4048, 0xF5C3]);
@@ -1180,7 +1212,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_f64() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Float, width: RegDataWidth::Bits64 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Float,
+            width: RegDataWidth::Bits64,
+        };
         let result = parse_register_value("3.14", fmt, false, false).unwrap();
         // f64 bits of 3.14 = 0x40091EB8_51EB851F
         assert_eq!(result.len(), 4);
@@ -1190,7 +1225,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_empty_error() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits16 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits16,
+        };
         assert!(parse_register_value("", fmt, false, false).is_err());
         assert!(parse_register_value("  ", fmt, false, false).is_err());
     }
@@ -1198,7 +1236,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_swap_bytes() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Hex,
+            width: RegDataWidth::Bits16,
+        };
         let result = parse_register_value("0x1234", fmt, true, false).unwrap();
         assert_eq!(result, vec![0x3412]); // byte-swapped
     }
@@ -1206,7 +1247,10 @@ mod tests {
     #[test]
     fn test_parse_register_value_swap_words() {
         use crate::parse_register_value;
-        let fmt = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let fmt = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits32,
+        };
         let result = parse_register_value("0x12345678", fmt, false, true).unwrap();
         assert_eq!(result, vec![0x5678, 0x1234]); // word-swapped
     }
@@ -1405,7 +1449,9 @@ mod tests {
         let mut state = AppState::default();
         // Ensure reg_just_changed/reg_change_direction have enough capacity
         state.reg_just_changed.resize(10, false);
-        state.reg_change_direction.resize(10, crate::ChangeDirection::Up);
+        state
+            .reg_change_direction
+            .resize(10, crate::ChangeDirection::Up);
         record_reg_change(&mut state, 0, 100, 200);
         assert_eq!(state.reg_change_history.len(), 1);
         assert_eq!(state.reg_change_direction[0], crate::ChangeDirection::Up);
@@ -1418,7 +1464,9 @@ mod tests {
         use crate::{record_reg_change, AppState};
         let mut state = AppState::default();
         state.reg_just_changed.resize(10, false);
-        state.reg_change_direction.resize(10, crate::ChangeDirection::Up);
+        state
+            .reg_change_direction
+            .resize(10, crate::ChangeDirection::Up);
         record_reg_change(&mut state, 0, 200, 100);
         assert_eq!(state.reg_change_history.len(), 1);
         assert_eq!(state.reg_change_direction[0], crate::ChangeDirection::Down);
@@ -1461,11 +1509,20 @@ mod tests {
     #[test]
     fn test_short_label_formats() {
         use crate::{RegDataFormat, RegDataType, RegDataWidth};
-        let f = RegDataFormat { data_type: RegDataType::Uint, width: RegDataWidth::Bits32 };
+        let f = RegDataFormat {
+            data_type: RegDataType::Uint,
+            width: RegDataWidth::Bits32,
+        };
         assert_eq!(f.short_label(), "u32");
-        let f = RegDataFormat { data_type: RegDataType::Hex, width: RegDataWidth::Bits16 };
+        let f = RegDataFormat {
+            data_type: RegDataType::Hex,
+            width: RegDataWidth::Bits16,
+        };
         assert_eq!(f.short_label(), "hex");
-        let f = RegDataFormat { data_type: RegDataType::Ascii, width: RegDataWidth::Bits16 };
+        let f = RegDataFormat {
+            data_type: RegDataType::Ascii,
+            width: RegDataWidth::Bits16,
+        };
         assert_eq!(f.short_label(), "ascii");
     }
 
@@ -1536,9 +1593,13 @@ mod tests {
     fn test_pattern_index_roundtrip() {
         use crate::ui::monitor::{index_to_pattern, pattern_index};
         use crate::RegChangePattern;
-        for p in &[RegChangePattern::Random, RegChangePattern::UpDown,
-                   RegChangePattern::Sine, RegChangePattern::Square,
-                   RegChangePattern::Triangle] {
+        for p in &[
+            RegChangePattern::Random,
+            RegChangePattern::UpDown,
+            RegChangePattern::Sine,
+            RegChangePattern::Square,
+            RegChangePattern::Triangle,
+        ] {
             let idx = pattern_index(p);
             let back = index_to_pattern(idx);
             assert_eq!(*p, back, "roundtrip failed for {p:?}");

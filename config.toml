@@ -1,82 +1,3 @@
-[test]
-main_mode = "tcp-client"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-reg_format = ""
-
-[test.labels]
-
-[test.reg_combinations]
-
-[test.swap_bytes_reg]
-
-[test.swap_words_reg]
-
-[tcp-master]
-main_mode = "ts"
-tcp_port = 10688
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-reg_format = ""
-
-[tcp-master.labels]
-
-[tcp-master.reg_combinations]
-
-[tcp-master.swap_bytes_reg]
-
-[tcp-master.swap_words_reg]
-
-[1]
-main_mode = "rtu-monitor"
-tcp_port = 502
-unit = 1
-holding_count = 512
-coil_count = 512
-discrete_count = 512
-input_count = 512
-client_tick_ms = 200
-ui_tick_ms = 10
-device = "dev/null"
-baudrate = 9600
-databits = 8
-parity = "n"
-stopbits = 1
-flow = "none"
-reg_format = ""
-
-[1.labels]
-0 = "???"
-
-[1.reg_combinations]
-
-[1.swap_bytes_reg]
-
-[1.swap_words_reg]
-
 [tcp-client]
 main_mode = "tcp-client"
 tcp_port = 10688
@@ -104,6 +25,58 @@ reg_format = ""
 
 [tcp-client.swap_words_reg]
 
+[tcp-master]
+main_mode = "ts"
+tcp_port = 10688
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[tcp-master.labels]
+
+[tcp-master.reg_combinations]
+
+[tcp-master.swap_bytes_reg]
+
+[tcp-master.swap_words_reg]
+
+[hello]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[hello.labels]
+
+[hello.reg_combinations]
+
+[hello.swap_bytes_reg]
+
+[hello.swap_words_reg]
+
 [__default__]
 main_mode = "tcp-client"
 tcp_port = 502
@@ -129,6 +102,32 @@ reg_format = "u16"
 [__default__.swap_bytes_reg]
 
 [__default__.swap_words_reg]
+
+[tcp-server]
+main_mode = "tcp-server"
+tcp_port = 10699
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[tcp-server.labels]
+
+[tcp-server.reg_combinations]
+
+[tcp-server.swap_bytes_reg]
+
+[tcp-server.swap_words_reg]
 
 [tcp-client2]
 main_mode = "tcp-client"
@@ -182,7 +181,7 @@ reg_format = ""
 
 ["hahaha 你是谁啊".swap_words_reg]
 
-[hello]
+[test]
 main_mode = "tcp-client"
 tcp_port = 502
 unit = 1
@@ -200,17 +199,17 @@ stopbits = 1
 flow = "none"
 reg_format = ""
 
-[hello.labels]
+[test.labels]
 
-[hello.reg_combinations]
+[test.reg_combinations]
 
-[hello.swap_bytes_reg]
+[test.swap_bytes_reg]
 
-[hello.swap_words_reg]
+[test.swap_words_reg]
 
-[tcp-server]
-main_mode = "tcp-server"
-tcp_port = 10699
+[1]
+main_mode = "rtu-monitor"
+tcp_port = 502
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -226,10 +225,37 @@ stopbits = 1
 flow = "none"
 reg_format = ""
 
-[tcp-server.labels]
+[1.labels]
+0 = "???"
 
-[tcp-server.reg_combinations]
+[1.reg_combinations]
 
-[tcp-server.swap_bytes_reg]
+[1.swap_bytes_reg]
 
-[tcp-server.swap_words_reg]
+[1.swap_words_reg]
+
+[testss]
+main_mode = "tcp-client"
+tcp_port = 502
+unit = 1
+holding_count = 512
+coil_count = 512
+discrete_count = 512
+input_count = 512
+client_tick_ms = 200
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = "u16"
+
+[testss.labels]
+
+[testss.reg_combinations]
+
+[testss.swap_bytes_reg]
+
+[testss.swap_words_reg]
