@@ -243,6 +243,10 @@ struct Args {
     #[arg(short = 'p', long, default_value_t = 502)]
     tcp_port: u16,
 
+    /// TCP 目标主机地址 (客户端模式连接的目标 IP)
+    #[arg(long, default_value = "127.0.0.1")]
+    tcp_host: String,
+
     /// 从设备地址/标识符（1~247)
     #[arg(short = 'u', long, default_value_t = 1)]
     unit: u8,
@@ -332,6 +336,7 @@ impl Default for Args {
             profile: None,
             main_mode: "tcp-client".into(),
             tcp_port: 502,
+            tcp_host: "127.0.0.1".into(),
             unit: 1,
             holding_count: 512,
             coil_count: 512,

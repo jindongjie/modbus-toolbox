@@ -86,7 +86,11 @@ pub async fn run_ui(
                         }
                     }
                 });
+            } else {
+                ui.monitor_picking = true;
             }
+        } else {
+            ui.monitor_picking = true;
         }
     }
 
@@ -468,7 +472,7 @@ pub async fn run_ui(
                                     break Ok(());
                                 }
 
-                                let is_monitor_mode = args.main_mode == "monitor";
+                                let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
 
                                 // --- 显式关闭各对话框 ---
                                 if ui.pattern_dialog_open {

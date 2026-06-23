@@ -1012,12 +1012,7 @@ pub async fn run_modbus_tcp_client(
     state: Arc<RwLock<AppState>>,
     rx: mpsc::UnboundedReceiver<RegCmd>,
 ) -> Result<()> {
-    let host = if args.device == "dev/null" {
-        "127.0.0.1".to_string()
-    } else {
-        args.device.clone()
-    };
-    let addr = format!("{}:{}", host, args.tcp_port);
+    let addr = format!("{}:{}", args.tcp_host, args.tcp_port);
     let stream = timeout(IO_TIMEOUT, tokio::net::TcpStream::connect(&addr))
         .await
         .context("连接 TCP 超时")?
@@ -1133,12 +1128,7 @@ pub async fn run_modbus_rtu_server(
 
 /// Modbus 监听模式（TCP）：连接目标设备并轮询寄存器，记录所有帧
 pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) -> Result<()> {
-    let host = if args.device == "dev/null" {
-        "127.0.0.1".to_string()
-    } else {
-        args.device.clone()
-    };
-    let addr = format!("{}:{}", host, args.tcp_port);
+    let addr = format!("{}:{}", args.tcp_host, args.tcp_port);
     let stream = timeout(IO_TIMEOUT, tokio::net::TcpStream::connect(&addr))
         .await
         .context("连接 TCP 超时")?

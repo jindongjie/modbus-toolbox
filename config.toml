@@ -1,6 +1,7 @@
 [tcp-client]
 main_mode = "tcp-client"
 tcp_port = 10688
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -28,6 +29,7 @@ reg_format = ""
 [tcp-master]
 main_mode = "ts"
 tcp_port = 10688
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -54,6 +56,7 @@ reg_format = ""
 [hello]
 main_mode = "tcp-client"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -80,6 +83,7 @@ reg_format = ""
 [__default__]
 main_mode = "tcp-client"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -106,6 +110,7 @@ reg_format = "u16"
 [tcp-server]
 main_mode = "tcp-server"
 tcp_port = 10699
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -132,6 +137,7 @@ reg_format = ""
 [tcp-client2]
 main_mode = "tcp-client"
 tcp_port = 10699
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -158,6 +164,7 @@ reg_format = ""
 ["hahaha 你是谁啊"]
 main_mode = "rtu-client"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -184,6 +191,7 @@ reg_format = ""
 [test]
 main_mode = "tcp-client"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -210,6 +218,7 @@ reg_format = ""
 [1]
 main_mode = "rtu-monitor"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -237,6 +246,7 @@ reg_format = ""
 [testss]
 main_mode = "tcp-client"
 tcp_port = 502
+tcp_host = "127.0.0.1"
 unit = 1
 holding_count = 512
 coil_count = 512
@@ -259,3 +269,30 @@ reg_format = "u16"
 [testss.swap_bytes_reg]
 
 [testss.swap_words_reg]
+
+[my-monitor]
+main_mode = "tcp-monitor"
+tcp_port = 502
+tcp_host = "127.0.0.1"
+unit = 1
+holding_count = 64
+coil_count = 64
+discrete_count = 64
+input_count = 64
+client_tick_ms = 500
+ui_tick_ms = 10
+device = "dev/null"
+baudrate = 9600
+databits = 8
+parity = "n"
+stopbits = 1
+flow = "none"
+reg_format = ""
+
+[my-monitor.labels]
+
+[my-monitor.reg_combinations]
+
+[my-monitor.swap_bytes_reg]
+
+[my-monitor.swap_words_reg]

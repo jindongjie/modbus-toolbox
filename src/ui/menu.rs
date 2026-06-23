@@ -60,8 +60,8 @@ pub(crate) fn profile_pick_brief(args: &Args) -> String {
     let unit = format!("slv {}", args.unit);
     if args.main_mode.to_ascii_lowercase().contains("tcp") {
         format!(
-            "{} | port {} | {} | hld {}",
-            mode_short, args.tcp_port, unit, args.holding_count
+            "{} | {}:{} | {} | hld {}",
+            mode_short, args.tcp_host, args.tcp_port, unit, args.holding_count
         )
     } else {
         let parity = args.parity.to_uppercase();
@@ -387,6 +387,13 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                     ),
                     Style::default(),
                 )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        t!("profile_pick.preview_host", host = args.tcp_host)
+                    ),
+                    Style::default(),
+                )));
             } else {
                 lines.push(Line::from(Span::styled(
                     format!(
@@ -514,6 +521,10 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
             )));
             preview_lines.push(Line::from(Span::styled(
                 format!("  {}: {}", t!("profile_edit.tcp_port"), args.tcp_port),
+                Style::default().fg(Color::DarkGray),
+            )));
+            preview_lines.push(Line::from(Span::styled(
+                format!("  {}: {}", t!("profile_edit.tcp_host"), args.tcp_host),
                 Style::default().fg(Color::DarkGray),
             )));
             preview_lines.push(Line::from(Span::styled(
@@ -879,6 +890,12 @@ fn profile_fields() -> Vec<ProfileField> {
             mode: "tcp",
             display: num_display(|a: &Args| a.tcp_port),
             apply: num_apply(|a: &mut Args, v| a.tcp_port = v, "TCP端口"),
+        },
+        ProfileField {
+            name_key: "tcp_host",
+            mode: "tcp",
+            display: Box::new(|a: &Args| a.tcp_host.clone()),
+            apply: str_apply(|a: &mut Args, v| a.tcp_host = v),
         },
         ProfileField {
             name_key: "unit",

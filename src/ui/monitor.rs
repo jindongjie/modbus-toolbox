@@ -1,7 +1,7 @@
 use super::{centered_rect, Ui};
 use crate::ui::menu::profile_monitor_mode_label;
 use crate::ui::profile_pick_brief;
-use crate::{Args, MainMode, MonitorStats};
+use crate::{Args, MonitorStats};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -32,34 +32,17 @@ pub(crate) fn render_monitor_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_pa
         vert[0],
     );
 
-    // 过滤配置列表：只显示与当前监听模式传输层匹配的配置
+    // 过滤配置列表：按照 ui.profiles 顺序显示（与键盘处理一致）
     let config_str = std::fs::read_to_string(_config_path).unwrap_or_default();
     let configs: HashMap<String, Args> = toml::from_str(&config_str).unwrap_or_default();
-    let all_names: Vec<&String> = configs.keys().filter(|k| *k != "__default__").collect();
-    let mut entries: Vec<(String, String)> = all_names
+    let entries: Vec<(String, String)> = ui
+        .profiles
         .iter()
-        .filter(|n| {
-            // 根据 pending_mode 过滤传输层
-            if let Some(args) = configs.get(n.as_str()) {
-                match ui.pending_mode {
-                    Some(MainMode::TcpMonitor) => {
-                        args.main_mode.to_ascii_lowercase().contains("tcp")
-                    }
-                    Some(MainMode::RtuMonitor) => {
-                        args.main_mode.to_ascii_lowercase().contains("rtu")
-                    }
-                    _ => true, // 未知模式不过滤
-                }
-            } else {
-                true
-            }
-        })
         .map(|n| {
-            let brief = configs.get(*n).map(profile_pick_brief).unwrap_or_default();
-            ((*n).clone(), brief)
+            let brief = configs.get(n).map(profile_pick_brief).unwrap_or_default();
+            (n.clone(), brief)
         })
         .collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut items: Vec<Line> = Vec::new();
     for (i, (name, brief)) in entries.iter().enumerate() {
