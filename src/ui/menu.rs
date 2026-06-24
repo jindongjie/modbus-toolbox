@@ -1583,44 +1583,77 @@ fn fc_name(fc: u8) -> &'static str {
 }
 
 fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
-    let a=f.area();
-    let v=Layout::vertical([Constraint::Length(3),Constraint::Min(10),Constraint::Length(4)]).split(a);
-    f.render_widget(Paragraph::new(Line::from(Span::styled(t!("construct.title"),Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))).alignment(ratatui::layout::Alignment::Center),v[0]);
-    let m=Layout::horizontal([Constraint::Percentage(50),Constraint::Percentage(50)]).split(v[1]);
-    let fields=[
-        (t!("construct.mode"),format!("{}",MDS[ui.construct_mode.min(3)as usize])),
-        (t!("construct.func_code"),format!("0x{:02X} {}",ui.construct_func_code,fc_name(ui.construct_func_code))),
-        (t!("construct.slave_id"),format!("{}",ui.construct_slave_id)),
-        (t!("construct.addr"),format!("{}",ui.construct_addr)),
-        (t!("construct.count"),format!("{}",ui.construct_count)),
-    ];
-    f.render_widget(Block::default().borders(Borders::ALL).title(format!(" ⚙ {} ",t!("construct.title"))).border_style(Style::default().fg(Color::Cyan)),m[0]);
-    let mut lines=Vec::new();
-    for(i,(lb,val))in fields.iter().enumerate(){
-        let sel=i==ui.construct_focus&&!ui.construct_edit_mode;
-        let ed=i==ui.construct_focus&&ui.construct_edit_mode;
-        let vs=if ed{Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)}else if sel{Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)}else{Style::default().fg(Color::Green)};
-        let ar=if sel||ed{" ▸ "}else{"   "};
-        let dv=if ed{format!("[{}]",ui.construct_edit_buf)}else{val.clone()};
-        lines.push(Line::from(vec![Span::styled(format!("{}{}: ",ar,lb),Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),Span::styled(dv,vs)]));
-    }
-    f.render_widget(Paragraph::new(lines),m[0]);
+    let a = f.area();
+    let v = Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Min(4), Constraint::Length(4)]).split(a);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(t!("construct.title"), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
+            .alignment(ratatui::layout::Alignment::Center),
+        v[0],
+    );
 
-    let b=construct_frame(ui.construct_mode.min(3),ui.construct_slave_id,ui.construct_func_code,ui.construct_addr,ui.construct_count);
-    f.render_widget(Block::default().borders(Borders::ALL).title(format!(" 📦 {} ",t!("construct.frame_title"))).border_style(Style::default().fg(Color::Magenta)),m[1]);
-    let hex:Vec<String>=b.iter().map(|x|format!("{:02X}",x)).collect();
-    let mut pl=vec![Line::from(Span::styled(format!("[ {} ]",hex.join("  ")),Style::default().fg(Color::Cyan))),Line::from(Span::raw("")),Line::from(Span::styled(t!("construct.byte_breakdown"),Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)))];
-    let tcp=ui.construct_mode==0||ui.construct_mode==1;
-    if tcp&&b.len()>=8{
-        pl.push(Line::from(Span::styled(format!("0-1 {:04X}  Transaction ID",u16::from_be_bytes([b[0],b[1]])),Style::default().fg(Color::DarkGray))));
-        let l=u16::from_be_bytes([b[4],b[5]]);pl.push(Line::from(Span::styled(format!("4-5 {:04X}  Length={}",l,l),Style::default().fg(Color::DarkGray))));
-        pl.push(Line::from(Span::styled(format!("6     {:02X}    Unit",b[6]),Style::default().fg(Color::DarkGray))));
-    }else if b.len()>=2{
-        pl.push(Line::from(Span::styled(format!("0     {:02X}    Slave",b[0]),Style::default().fg(Color::DarkGray))));
-        let c=u16::from_le_bytes([b[b.len()-2],b[b.len()-1]]);pl.push(Line::from(Span::styled(format!("{}-{} {:04X}  CRC16",b.len()-2,b.len()-1,c),Style::default().fg(Color::DarkGray))));
+    // Fields list
+    let fields = [
+        (t!("construct.mode"), MDS[ui.construct_mode.min(3) as usize].to_string()),
+        (t!("construct.func_code"), format!("0x{:02X} {}", ui.construct_func_code, fc_name(ui.construct_func_code))),
+        (t!("construct.slave_id"), format!("{}", ui.construct_slave_id)),
+        (t!("construct.addr"), format!("{}", ui.construct_addr)),
+        (t!("construct.count"), format!("{}", ui.construct_count)),
+    ];
+
+    let block = Block::default().borders(Borders::ALL).title(t!("construct.title")).border_style(Style::default().fg(Color::Cyan));
+    f.render_widget(block, v[1]);
+    let mut lines = Vec::new();
+    for (i, (lb, val)) in fields.iter().enumerate() {
+        let sel = i == ui.construct_focus && !ui.construct_edit_mode;
+        let ed = i == ui.construct_focus && ui.construct_edit_mode;
+        let arrow = if sel || ed { " ▸ " } else { "   " };
+        let (lbl_style, val_style) = if ed {
+            (Style::default().add_modifier(Modifier::BOLD), Style::default().fg(Color::Yellow).bg(Color::Black))
+        } else if sel {
+            (Style::default().add_modifier(Modifier::BOLD), Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD))
+        } else {
+            (Style::default(), Style::default().fg(Color::Green))
+        };
+        let dv = if ed { format!("[{}]", ui.construct_edit_buf) } else { val.clone() };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}{}:", arrow, lb), lbl_style),
+            Span::raw(" "),
+            Span::styled(dv, val_style),
+        ]));
     }
-    f.render_widget(Paragraph::new(pl),m[1]);
-    f.render_widget(Paragraph::new(Line::from(Span::styled(t!("construct.help_nav"),Style::default().fg(Color::DarkGray)))).block(Block::default().borders(Borders::ALL)),v[2]);
+    f.render_widget(Paragraph::new(lines), v[1]);
+
+    // Bottom: frame preview — wrap hex across multiple lines
+    let b = construct_frame(ui.construct_mode.min(3), ui.construct_slave_id, ui.construct_func_code, ui.construct_addr, ui.construct_count);
+    let pblock = Block::default().borders(Borders::ALL).title(t!("construct.frame_title")).border_style(Style::default().fg(Color::Cyan));
+    let inner_w = pblock.inner(v[2]).width as usize;
+    let hex: Vec<String> = b.iter().map(|x| format!("{:02X}", x)).collect();
+    let chunk_sz = ((inner_w.saturating_sub(3)) / 3).max(1).min(hex.len()); // "XX " per byte
+    let mut pl = Vec::new();
+    for chunk in hex.chunks(chunk_sz) {
+        pl.push(Line::from(Span::styled(chunk.join(" "), Style::default().fg(Color::Cyan))));
+    }
+    pl.push(Line::from(Span::raw("")));
+    pl.push(Line::from(Span::styled(t!("construct.byte_breakdown"), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))));
+    let tcp = ui.construct_mode == 0 || ui.construct_mode == 1;
+    if tcp && b.len() >= 8 {
+        let l = u16::from_be_bytes([b[4], b[5]]);
+        pl.push(Line::from(Span::styled(format!("0-1 {:04X}  Transaction ID", u16::from_be_bytes([b[0], b[1]])), Style::default())));
+        pl.push(Line::from(Span::styled(format!("4-5 {:04X}  Length={}", l, l), Style::default())));
+        pl.push(Line::from(Span::styled(format!("6 {:02X}  Unit  7 {:02X}  FC={}", b[6], b[7], fc_name(b[7])), Style::default())));
+    } else if b.len() >= 2 {
+        pl.push(Line::from(Span::styled(format!("0 {:02X}  Slave  1 {:02X}  FC={}", b[0], b[1], fc_name(b[1])), Style::default())));
+        if b.len() >= 4 {
+            let c = u16::from_le_bytes([b[b.len() - 2], b[b.len() - 1]]);
+            pl.push(Line::from(Span::styled(format!("{}-{}  {:04X}  CRC16", b.len() - 2, b.len() - 1, c), Style::default())));
+        }
+    }
+    f.render_widget(Paragraph::new(pl), v[2]);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(t!("construct.help_nav"), Style::default().fg(Color::DarkGray)))).block(Block::default().borders(Borders::ALL)),
+        v[3],
+    );
 }
 
 fn handle_frame_construct_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
