@@ -1550,330 +1550,118 @@ fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
 }
 
 // ─────────────────────────────────────────
-// RTU 报文构造页面
+// Statement Builder (TCP/RTU × 请求/响应)
 // ─────────────────────────────────────────
 
-/// 根据当前参数构造 Modbus RTU 请求帧字节
-fn construct_rtu_frame(slave_id: u8, func_code: u8, addr: u16, count: u16) -> Vec<u8> {
+/// Build frame (mode: 0=TCP-REQ, 1=TCP-RSP, 2=RTU-REQ, 3=RTU-RSP)
+fn construct_frame(mode: u8, slave: u8, fc: u8, addr: u16, count: u16) -> Vec<u8> {
     use crate::modbus::calc_crc16;
-    let mut frame = Vec::with_capacity(8);
-    frame.push(slave_id);
-    frame.push(func_code);
-    frame.push((addr >> 8) as u8);
-    frame.push((addr & 0xFF) as u8);
-    frame.push((count >> 8) as u8);
-    frame.push((count & 0xFF) as u8);
-    let crc = calc_crc16(&frame);
-    frame.push((crc & 0xFF) as u8);
-    frame.push((crc >> 8) as u8);
-    frame
+    let mut f = Vec::new();
+    let tcp = mode == 0 || mode == 1;
+    let req = mode == 0 || mode == 2;
+    if tcp {
+        f.extend_from_slice(&[0, 1, 0, 0, 0, 0]);
+        let lp = f.len();
+        f.push(slave); f.push(fc);
+        if req { f.extend_from_slice(&[(addr>>8)as u8,(addr&0xFF)as u8,(count>>8)as u8,(count&0xFF)as u8]); }
+        else { let bc=(count*2).min(252)as u8; f.push(bc); for i in 0..bc/2{let v=addr.wrapping_add(i as u16);f.extend_from_slice(&[(v>>8)as u8,(v&0xFF)as u8]);} }
+        let len=f.len()-6; f[lp-2]=((len>>8)&0xFF)as u8; f[lp-1]=(len&0xFF)as u8;
+    } else {
+        f.push(slave); f.push(fc);
+        if req { f.extend_from_slice(&[(addr>>8)as u8,(addr&0xFF)as u8,(count>>8)as u8,(count&0xFF)as u8]); }
+        else { let bc=(count*2).min(252)as u8; f.push(bc); for i in 0..bc/2{let v=addr.wrapping_add(i as u16);f.extend_from_slice(&[(v>>8)as u8,(v&0xFF)as u8]);} }
+        let c=calc_crc16(&f); f.push((c&0xFF)as u8); f.push((c>>8)as u8);
+    }
+    f
 }
 
-/// 获取功能码名称
-fn func_code_name(code: u8) -> &'static str {
-    match code {
-        0x01 => "Read Coils",
-        0x02 => "Read Discrete Inputs",
-        0x03 => "Read Holding Registers",
-        0x04 => "Read Input Registers",
-        0x05 => "Write Single Coil",
-        0x06 => "Write Single Register",
-        0x0F => "Write Multiple Coils",
-        0x10 => "Write Multiple Registers",
-        _ => "Unknown",
-    }
+const MDS: [&str;4]=["TCP-REQ","TCP-RSP","RTU-REQ","RTU-RSP"];
+const FCS: [u8;8]=[1,2,3,4,5,6,15,16];
+
+fn fc_name(fc: u8) -> &'static str {
+    match fc {1=>"Coils",2=>"Discrete",3=>"Holding",4=>"Input",5=>"W-Coil",6=>"W-Reg",15=>"W-M-Coils",16=>"W-M-Reg",_=>"?"}
 }
 
 fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
-    let area = f.area();
-    let vert = Layout::vertical([
-        Constraint::Length(3), // 标题栏（含边框）
-        Constraint::Length(8), // 输入字段区
-        Constraint::Min(4),    // 帧预览和解析
-        Constraint::Length(3), // 帮助信息栏（含边框）
-    ])
-    .split(area);
-
-    // ── 标题栏 ──
-    let title_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-    let title_inner = title_block.inner(vert[0]);
-    f.render_widget(title_block, vert[0]);
-    // 在标题框内居中显示标题文字
-    let title_text = Line::from(Span::styled(
-        t!("construct.title"),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
-    f.render_widget(
-        Paragraph::new(title_text).alignment(ratatui::layout::Alignment::Center),
-        title_inner,
-    );
-
-    // ── 参数字段区 ──
-    let fields = [
-        (
-            t!("construct.slave_id"),
-            format!("{}", ui.construct_slave_id),
-        ),
-        (
-            t!("construct.func_code"),
-            format!(
-                "0x{:02X} ({})",
-                ui.construct_func_code,
-                func_code_name(ui.construct_func_code)
-            ),
-        ),
-        (
-            t!("construct.addr"),
-            format!("0x{:04X} ({})", ui.construct_addr, ui.construct_addr),
-        ),
-        (t!("construct.count"), format!("{}", ui.construct_count)),
+    let a=f.area();
+    let v=Layout::vertical([Constraint::Length(3),Constraint::Min(10),Constraint::Length(4)]).split(a);
+    f.render_widget(Paragraph::new(Line::from(Span::styled(t!("construct.title"),Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))).alignment(ratatui::layout::Alignment::Center),v[0]);
+    let m=Layout::horizontal([Constraint::Percentage(50),Constraint::Percentage(50)]).split(v[1]);
+    let fields=[
+        (t!("construct.mode"),format!("{}",MDS[ui.construct_mode.min(3)as usize])),
+        (t!("construct.func_code"),format!("0x{:02X} {}",ui.construct_func_code,fc_name(ui.construct_func_code))),
+        (t!("construct.slave_id"),format!("{}",ui.construct_slave_id)),
+        (t!("construct.addr"),format!("{}",ui.construct_addr)),
+        (t!("construct.count"),format!("{}",ui.construct_count)),
     ];
-
-    let field_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" ⚙ {} ", t!("construct.title")))
-        .border_style(Style::default().fg(Color::Green));
-    let inner = field_block.inner(vert[1]);
-    f.render_widget(field_block, vert[1]);
-
-    let mut field_lines: Vec<Line> = Vec::new();
-    for (i, (label, value)) in fields.iter().enumerate() {
-        let is_focused = i == ui.construct_focus && !ui.construct_edit_mode;
-        let editing = i == ui.construct_focus && ui.construct_edit_mode;
-        let val_style = if editing {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::SLOW_BLINK)
-        } else if is_focused {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let label_style = Style::default().fg(Color::Green);
-        let arrow = if is_focused || editing {
-            " ▸ "
-        } else {
-            "   "
-        };
-        let display_val = if editing {
-            format!("[{}]", ui.construct_edit_buf)
-        } else {
-            value.clone()
-        };
-        field_lines.push(Line::from(vec![
-            Span::styled(format!("{}{}: ", arrow, label), label_style),
-            Span::styled(display_val, val_style),
-        ]));
+    f.render_widget(Block::default().borders(Borders::ALL).title(format!(" ⚙ {} ",t!("construct.title"))).border_style(Style::default().fg(Color::Cyan)),m[0]);
+    let mut lines=Vec::new();
+    for(i,(lb,val))in fields.iter().enumerate(){
+        let sel=i==ui.construct_focus&&!ui.construct_edit_mode;
+        let ed=i==ui.construct_focus&&ui.construct_edit_mode;
+        let vs=if ed{Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)}else if sel{Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)}else{Style::default().fg(Color::Green)};
+        let ar=if sel||ed{" ▸ "}else{"   "};
+        let dv=if ed{format!("[{}]",ui.construct_edit_buf)}else{val.clone()};
+        lines.push(Line::from(vec![Span::styled(format!("{}{}: ",ar,lb),Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),Span::styled(dv,vs)]));
     }
-    f.render_widget(Paragraph::new(field_lines), inner);
+    f.render_widget(Paragraph::new(lines),m[0]);
 
-    // ── 帧预览 + 解析 ──
-    let frame_bytes = construct_rtu_frame(
-        ui.construct_slave_id,
-        ui.construct_func_code,
-        ui.construct_addr,
-        ui.construct_count,
-    );
-
-    let preview_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" 📦 {} ", t!("construct.frame_title")))
-        .border_style(Style::default().fg(Color::Magenta));
-    let preview_inner = preview_block.inner(vert[2]);
-    f.render_widget(preview_block, vert[2]);
-
-    let hex_str: Vec<String> = frame_bytes.iter().map(|b| format!("{:02X}", b)).collect();
-    let hex_line = format!("[ {} ]", hex_str.join("  "));
-
-    let ascii_line: String = frame_bytes
-        .iter()
-        .map(|&b| {
-            if b.is_ascii_graphic() || b == b' ' {
-                b as char
-            } else {
-                '.'
-            }
-        })
-        .collect();
-
-    let mut breakdown = Vec::new();
-    let header_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let hex_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let ascii_style = Style::default().fg(Color::DarkGray);
-    let breakdown_style = Style::default().fg(Color::Green);
-    let dim_style = Style::default().fg(Color::DarkGray);
-
-    breakdown.push(Line::from(vec![
-        Span::styled("Hex: ", header_style),
-        Span::styled(hex_line.clone(), hex_style),
-    ]));
-    breakdown.push(Line::from(vec![
-        Span::styled("ASC: ", header_style),
-        Span::styled(ascii_line, ascii_style),
-    ]));
-    breakdown.push(Line::from(Span::styled(
-        "─".repeat(preview_inner.width.saturating_sub(2) as usize),
-        dim_style,
-    )));
-
-    // 字节解析
-    let crc_val = (frame_bytes[6] as u16) | ((frame_bytes[7] as u16) << 8);
-    let annotations = [
-        (
-            format!("{:02X}", frame_bytes[0]),
-            format!("{} = {}", t!("construct.byte_slave"), ui.construct_slave_id),
-        ),
-        (
-            format!("{:02X}", frame_bytes[1]),
-            format!(
-                "{} = 0x{:02X} ({})",
-                t!("construct.byte_func"),
-                ui.construct_func_code,
-                func_code_name(ui.construct_func_code)
-            ),
-        ),
-        (
-            format!("{:02X} {:02X}", frame_bytes[2], frame_bytes[3]),
-            format!(
-                "{} = 0x{:04X} ({})",
-                t!("construct.byte_addr"),
-                ui.construct_addr,
-                ui.construct_addr
-            ),
-        ),
-        (
-            format!("{:02X} {:02X}", frame_bytes[4], frame_bytes[5]),
-            format!("{} = {}", t!("construct.byte_count"), ui.construct_count),
-        ),
-        (
-            format!("{:02X} {:02X}", frame_bytes[6], frame_bytes[7]),
-            format!("{} = 0x{:04X}", t!("construct.byte_crc"), crc_val),
-        ),
-    ];
-    for (hex_part, desc) in &annotations {
-        breakdown.push(Line::from(vec![
-            Span::styled(format!("  {}", hex_part), hex_style),
-            Span::styled("  →  ", dim_style),
-            Span::styled(desc.clone(), breakdown_style),
-        ]));
+    let b=construct_frame(ui.construct_mode.min(3),ui.construct_slave_id,ui.construct_func_code,ui.construct_addr,ui.construct_count);
+    f.render_widget(Block::default().borders(Borders::ALL).title(format!(" 📦 {} ",t!("construct.frame_title"))).border_style(Style::default().fg(Color::Magenta)),m[1]);
+    let hex:Vec<String>=b.iter().map(|x|format!("{:02X}",x)).collect();
+    let mut pl=vec![Line::from(Span::styled(format!("[ {} ]",hex.join("  ")),Style::default().fg(Color::Cyan))),Line::from(Span::raw("")),Line::from(Span::styled(t!("construct.byte_breakdown"),Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)))];
+    let tcp=ui.construct_mode==0||ui.construct_mode==1;
+    if tcp&&b.len()>=8{
+        pl.push(Line::from(Span::styled(format!("0-1 {:04X}  Transaction ID",u16::from_be_bytes([b[0],b[1]])),Style::default().fg(Color::DarkGray))));
+        let l=u16::from_be_bytes([b[4],b[5]]);pl.push(Line::from(Span::styled(format!("4-5 {:04X}  Length={}",l,l),Style::default().fg(Color::DarkGray))));
+        pl.push(Line::from(Span::styled(format!("6     {:02X}    Unit",b[6]),Style::default().fg(Color::DarkGray))));
+    }else if b.len()>=2{
+        pl.push(Line::from(Span::styled(format!("0     {:02X}    Slave",b[0]),Style::default().fg(Color::DarkGray))));
+        let c=u16::from_le_bytes([b[b.len()-2],b[b.len()-1]]);pl.push(Line::from(Span::styled(format!("{}-{} {:04X}  CRC16",b.len()-2,b.len()-1,c),Style::default().fg(Color::DarkGray))));
     }
-
-    f.render_widget(Paragraph::new(breakdown), preview_inner);
-
-    // ── 底部帮助信息栏 ──
-    let help = if ui.construct_edit_mode {
-        t!("construct.help_edit")
-    } else {
-        t!("construct.help_nav")
-    };
-    let help_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-    let help_inner = help_block.inner(vert[3]);
-    f.render_widget(help_block, vert[3]);
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            help,
-            Style::default().fg(Color::DarkGray),
-        )))
-        .alignment(ratatui::layout::Alignment::Center),
-        help_inner,
-    );
+    f.render_widget(Paragraph::new(pl),m[1]);
+    f.render_widget(Paragraph::new(Line::from(Span::styled(t!("construct.help_nav"),Style::default().fg(Color::DarkGray)))).block(Block::default().borders(Borders::ALL)),v[2]);
 }
 
 fn handle_frame_construct_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
-    const FIELD_COUNT: usize = 4;
-
+    const NF:usize=5;
     if ui.construct_edit_mode {
         match code {
-            KeyCode::Char(c) if c.is_ascii_digit() => {
-                ui.construct_edit_buf.push(c);
-            }
-            KeyCode::Backspace => {
-                ui.construct_edit_buf.pop();
-            }
-            KeyCode::Enter => {
-                // 提交编辑
-                let val = ui.construct_edit_buf.trim().parse::<u32>();
-                if let Ok(v) = val {
-                    match ui.construct_focus {
-                        0 if (1..=247).contains(&v) => {
-                            ui.construct_slave_id = v as u8;
-                        }
-                        1 if (1..=16).contains(&v) => {
-                            ui.construct_func_code = v as u8;
-                        }
-                        2 if v <= 65535 => {
-                            ui.construct_addr = v as u16;
-                        }
-                        3 if (1..=2000).contains(&v) => {
-                            ui.construct_count = v as u16;
-                        }
-                        _ => {
-                            // 无效值：重置缓冲
-                            let msg = match ui.construct_focus {
-                                0 => t!("construct.invalid_slave"),
-                                1 => t!("construct.invalid_func"),
-                                2 => t!("construct.invalid_addr"),
-                                3 => t!("construct.invalid_count"),
-                                _ => unreachable!(),
-                            };
-                            set_status(ui, msg);
-                        }
+            KeyCode::Char(c) if c.is_ascii_digit()=>ui.construct_edit_buf.push(c),
+            KeyCode::Backspace=>{ui.construct_edit_buf.pop();}
+            KeyCode::Enter=>{
+                if let Ok(v)=ui.construct_edit_buf.trim().parse::<u32>(){
+                    match ui.construct_focus{
+                        2 if(1..=247).contains(&v)=>ui.construct_slave_id=v as u8,
+                        3 if v<=65535=>ui.construct_addr=v as u16,
+                        4 if(1..=2000).contains(&v)=>ui.construct_count=v as u16,
+                        _=>set_status(ui,t!("main.invalid_input_value",err="range")),
                     }
                 }
-                ui.construct_edit_mode = false;
-                ui.construct_edit_buf.clear();
+                ui.construct_edit_mode=false;ui.construct_edit_buf.clear();
             }
-            KeyCode::Esc => {
-                ui.construct_edit_mode = false;
-                ui.construct_edit_buf.clear();
-            }
-            _ => {}
+            KeyCode::Esc=>{ui.construct_edit_mode=false;ui.construct_edit_buf.clear();}
+            _=>{}
         }
     } else {
         match code {
-            KeyCode::Up => {
-                ui.construct_focus = ui.construct_focus.saturating_sub(1);
+            KeyCode::Up|KeyCode::Char('k')=>ui.construct_focus=ui.construct_focus.saturating_sub(1),
+            KeyCode::Down|KeyCode::Char('j')=>{if ui.construct_focus+1<NF{ui.construct_focus+=1;}}
+            KeyCode::Enter=>match ui.construct_focus{
+                0=>ui.construct_mode=(ui.construct_mode+1)%4,
+                1=>{let p=FCS.iter().position(|&c|c==ui.construct_func_code).unwrap_or(0);ui.construct_func_code=FCS[(p+1)%FCS.len()];}
+                2|3|4=>{ui.construct_edit_mode=true;ui.construct_edit_buf=match ui.construct_focus{2=>format!("{}",ui.construct_slave_id),3=>format!("{}",ui.construct_addr),_=>format!("{}",ui.construct_count)};}
+                _=>{}
+            },
+            KeyCode::Char('c')|KeyCode::Char('C')=>{
+                let b=construct_frame(ui.construct_mode.min(3),ui.construct_slave_id,ui.construct_func_code,ui.construct_addr,ui.construct_count);
+                let s:Vec<String>=b.iter().map(|x|format!("{:02X}",x)).collect();let h=s.join(" ");
+                let _=std::process::Command::new("sh").arg("-c").arg(format!("echo -n '{}'|xclip -sel clip 2>/dev/null||echo -n '{}'|pbcopy 2>/dev/null||true",h,h)).output();
+                set_status(ui,format!("{}: [ {} ]",t!("construct.copied"),h));
             }
-            KeyCode::Down => {
-                if ui.construct_focus + 1 < FIELD_COUNT {
-                    ui.construct_focus += 1;
-                }
-            }
-            KeyCode::Enter => {
-                ui.construct_edit_mode = true;
-                // 预填当前值
-                ui.construct_edit_buf = match ui.construct_focus {
-                    0 => format!("{}", ui.construct_slave_id),
-                    1 => format!("{}", ui.construct_func_code),
-                    2 => format!("{}", ui.construct_addr),
-                    3 => format!("{}", ui.construct_count),
-                    _ => String::new(),
-                };
-            }
-            KeyCode::Esc => {
-                ui.menu_screen = MenuScreen::Main;
-            }
-            KeyCode::Char('q') => {
-                return Some(MenuSelection {
-                    main_mode: MainMode::TcpClient,
-                    profile_name: None,
-                    quit: true,
-                });
-            }
-            _ => {}
+            KeyCode::Esc=>ui.menu_screen=MenuScreen::Main,
+            KeyCode::Char('q')=>return Some(MenuSelection{main_mode:MainMode::TcpClient,profile_name:None,quit:true}),
+            _=>{}
         }
     }
     None
