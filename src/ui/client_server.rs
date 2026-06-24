@@ -1,9 +1,9 @@
 use super::{
-    apply_pattern_dialog, centered_rect, format_byte_panel, format_monitor_history,
-    format_monitor_stats, format_protocol_analysis, parse_reg_format, pattern_index, reg_view_data,
-    reg_view_len, render_csv_picker, render_monitor_profile_pick, search_match, set_status,
-    wrapped_lines, Ui, REG_VIEW_COILS, REG_VIEW_DISCRETE, REG_VIEW_HOLDING, REG_VIEW_INPUT,
-    UI_TIMEOUT,
+    apply_pattern_dialog, centered_rect, format_monitor_history,
+    format_monitor_register_stats, format_monitor_stats, format_protocol_analysis,
+    parse_reg_format, pattern_index, reg_view_data, reg_view_len, render_csv_picker,
+    render_monitor_profile_pick, search_match, set_status, wrapped_lines, Ui, REG_VIEW_COILS,
+    REG_VIEW_DISCRETE, REG_VIEW_HOLDING, REG_VIEW_INPUT, UI_TIMEOUT,
 };
 use crate::{
     csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,
@@ -194,7 +194,12 @@ pub async fn run_ui(
                                         monitor_split[0],
                                     );
 
-                                    // 右面板：统计一览
+                                    // 右面板：统计一览（上下分割，上为概要，下为寄存器统计）
+                                    let right_split = Layout::vertical([
+                                        Constraint::Percentage(50),
+                                        Constraint::Percentage(50),
+                                    ]).split(monitor_split[1]);
+
                                     let stats_text = format_monitor_stats(&s.monitor);
                                     let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
                                     f.render_widget(
@@ -205,7 +210,19 @@ pub async fn run_ui(
                                                 .border_style(Style::default().fg(stats_style))
                                             )
                                             .style(Style::default().fg(Color::Green)),
-                                        monitor_split[1],
+                                        right_split[0],
+                                    );
+
+                                    let reg_stats_text = format_monitor_register_stats(&s.monitor);
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(reg_stats_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_reg_stats_title"))
+                                                .border_style(Style::default().fg(Color::Cyan))
+                                            )
+                                            .style(Style::default().fg(Color::Cyan)),
+                                        right_split[1],
                                     );
                                 }
 
@@ -243,23 +260,14 @@ pub async fn run_ui(
                                         Constraint::Min(20),
                                     ]).split(*top_area);
 
-                                    // 字节流面板
-                                    if let Some(ref fi) = s.last_frame {
-                                        let panel_text = format_byte_panel(fi);
-                                        f.render_widget(
-                                            ratatui::widgets::Paragraph::new(panel_text)
-                                                .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
-                                                .style(Style::default().fg(Color::Cyan)),
-                                            top[0],
-                                        );
-                                    } else {
-                                        f.render_widget(
-                                            ratatui::widgets::Paragraph::new(t!("run_ui.no_data"))
-                                                .block(Block::default().borders(Borders::ALL).title(t!("run_ui.byte_panel_title")))
-                                                .style(Style::default().fg(Color::DarkGray)),
-                                            top[0],
-                                        );
-                                    }
+                                    // 用历史面板替代字节流面板
+                                    let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(history_text)
+                                            .block(Block::default().borders(Borders::ALL).title(t!("run_ui.monitor_history_title")))
+                                            .style(Style::default().fg(Color::Cyan)),
+                                        top[0],
+                                    );
 
                                     render_register_table(f, &s, &mut ui, top[1]);
                                 } else {
@@ -287,6 +295,12 @@ pub async fn run_ui(
                                         monitor_split[0],
                                     );
 
+                                    // 右面板：统计一览（上下分割，上为概要，下为寄存器统计）
+                                    let right_split = Layout::vertical([
+                                        Constraint::Percentage(50),
+                                        Constraint::Percentage(50),
+                                    ]).split(monitor_split[1]);
+
                                     let stats_text = format_monitor_stats(&s.monitor);
                                     let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
                                     f.render_widget(
@@ -297,7 +311,19 @@ pub async fn run_ui(
                                                 .border_style(Style::default().fg(stats_style))
                                             )
                                             .style(Style::default().fg(Color::Green)),
-                                        monitor_split[1],
+                                        right_split[0],
+                                    );
+
+                                    let reg_stats_text = format_monitor_register_stats(&s.monitor);
+                                    f.render_widget(
+                                        ratatui::widgets::Paragraph::new(reg_stats_text)
+                                            .block(Block::default()
+                                                .borders(Borders::ALL)
+                                                .title(t!("run_ui.monitor_reg_stats_title"))
+                                                .border_style(Style::default().fg(Color::Cyan))
+                                            )
+                                            .style(Style::default().fg(Color::Cyan)),
+                                        right_split[1],
                                     );
                                 }
                             }
@@ -1187,17 +1213,12 @@ pub async fn run_ui(
                                                                 }
                                                             }
                                                             let w = new_fmt.short_label();
-                                                            let msg = format!(
-                                                                "Width: {} bit | Reg {} merged with next {} reg(s)",
-                                                                &w[1..],
-                                                                addr,
-                                                                new_needed - 1
-                                                            );
+                                                            let msg = t!("run_ui.width_merged", bit = &w[1..], addr = addr, count = new_needed - 1);
                                                             set_status(&mut ui, msg);
                                                         } else {
                                                             // 回到 16 位，移除该地址的组合
                                                             combinations.remove(&addr);
-                                                            let msg = format!("Width: 16 bit | Reg {} unmerged", addr);
+                                                            let msg = t!("run_ui.width_unmerged", addr = addr);
                                                             set_status(&mut ui, msg);
                                                         }
                                                     }
@@ -1254,17 +1275,12 @@ pub async fn run_ui(
                                                                 }
                                                             }
                                                             let w = new_fmt.short_label();
-                                                            let msg = format!(
-                                                                "Width: {} bit | Reg {} merged with next {} reg(s)",
-                                                                &w[1..],
-                                                                addr,
-                                                                new_needed - 1
-                                                            );
+                                                            let msg = t!("run_ui.width_merged", bit = &w[1..], addr = addr, count = new_needed - 1);
                                                             set_status(&mut ui, msg);
                                                         } else {
                                                             // 回到 16 位，移除该地址的组合
                                                             combinations.remove(&addr);
-                                                            let msg = format!("Width: 16 bit | Reg {} unmerged", addr);
+                                                            let msg = t!("run_ui.width_unmerged", addr = addr);
                                                             set_status(&mut ui, msg);
                                                         }
                                                     }
@@ -1289,8 +1305,8 @@ pub async fn run_ui(
                                                 }
                                                 let sel = ui.selected;
                                                 drop(s);
-                                                if new_val { set_status(&mut ui, format!("Byte swap: ON for addr {}", sel)); }
-                                                else { set_status(&mut ui, format!("Byte swap: OFF for addr {}", sel)); }
+                                                if new_val { set_status(&mut ui, t!("run_ui.swap_byte_on", addr = sel)); }
+                                                else { set_status(&mut ui, t!("run_ui.swap_byte_off", addr = sel)); }
                                             }
                                         }
                                         // W (Shift+W): 切换当前选中地址的字序交换
@@ -1310,8 +1326,8 @@ pub async fn run_ui(
                                                 }
                                                 let sel = ui.selected;
                                                 drop(s);
-                                                if new_val { set_status(&mut ui, format!("Word swap: ON for addr {}", sel)); }
-                                                else { set_status(&mut ui, format!("Word swap: OFF for addr {}", sel)); }
+                                                if new_val { set_status(&mut ui, t!("run_ui.swap_word_on", addr = sel)); }
+                                                else { set_status(&mut ui, t!("run_ui.swap_word_off", addr = sel)); }
                                             }
                                         }
                                         // E (Shift+E): 导出当前寄存器到 JSON 文件
@@ -1409,9 +1425,9 @@ pub async fn run_ui(
                                         KeyCode::Char('B') => {
                                             ui.show_byte_panel = !ui.show_byte_panel;
                                             if ui.show_byte_panel {
-                                                set_status(&mut ui, t!("run_ui.byte_panel_shown"));
+                                                set_status(&mut ui, t!("run_ui.history_panel_shown"));
                                             } else {
-                                                set_status(&mut ui, t!("run_ui.byte_panel_hidden"));
+                                                set_status(&mut ui, t!("run_ui.history_panel_hidden"));
                                             }
                                         }
                                         KeyCode::Char('M') => {
@@ -1425,10 +1441,14 @@ pub async fn run_ui(
                                             }
                                         }
                                         KeyCode::Char('P') => {
-                                            if is_monitor_mode && !ui.profiles.is_empty() {
-                                                ui.monitor_picking = !ui.monitor_picking;
-                                                if ui.monitor_picking {
-                                                    set_status(&mut ui, t!("run_ui.monitor_picking"));
+                                            if is_monitor_mode {
+                                                if ui.profiles.is_empty() {
+                                                    set_status(&mut ui, t!("run_ui.monitor_no_profiles"));
+                                                } else {
+                                                    ui.monitor_picking = !ui.monitor_picking;
+                                                    if ui.monitor_picking {
+                                                        set_status(&mut ui, t!("run_ui.monitor_picking"));
+                                                    }
                                                 }
                                             }
                                         }

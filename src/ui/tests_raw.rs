@@ -1635,8 +1635,8 @@ mod tests {
             unit: 1,
         });
         let text = format_monitor_history(&m, 0);
-        assert!(text.contains("Read"));
-        assert!(text.contains("0x0100"));
+        assert!(text.contains("1234"));
+        assert!(text.contains("RSP")); // PDU type = Response
     }
 
     // ─── format_monitor_stats ───
@@ -1718,5 +1718,59 @@ mod tests {
         use crate::ui::parse_reg_format;
         let r = parse_reg_format("unknown");
         assert_eq!(r, crate::RegDataFormat::default());
+    }
+
+    // ─── format_monitor_register_stats ───
+
+    #[test]
+    fn test_format_monitor_register_stats_empty() {
+        use crate::ui::monitor::format_monitor_register_stats;
+        use crate::MonitorStats;
+        let m = MonitorStats::default();
+        let text = format_monitor_register_stats(&m);
+        assert!(!text.is_empty());
+    }
+
+    #[test]
+    fn test_format_monitor_register_stats_with_data() {
+        use crate::ui::monitor::format_monitor_register_stats;
+        use crate::{MonitorStats, RegisterStat};
+        use std::collections::HashMap;
+        let mut m = MonitorStats::default();
+        m.register_stats.insert(
+            (1, 3, 0x100),
+            RegisterStat {
+                call_count: 5,
+                last_values: vec![0x1234, 0x5678],
+            },
+        );
+        let text = format_monitor_register_stats(&m);
+        assert!(text.contains("01")); // slave
+        assert!(text.contains("03")); // FC
+        assert!(text.contains("1234"));
+        assert!(text.contains("5"));
+    }
+
+    // ─── record_frame register_stats ───
+
+    #[test]
+    fn test_record_frame_register_stats_populated() {
+        use crate::{FrameInfo, MonitorStats};
+        let mut m = MonitorStats::default();
+        let fi = FrameInfo {
+            is_tcp: false,
+            unit: 1,
+            func_code: 3,
+            func_name: "Read".into(),
+            addr: 0x100,
+            values: vec![0xABCD],
+            is_request: true,
+        };
+        crate::record_frame(&mut m, &fi);
+        assert_eq!(m.register_stats.len(), 1);
+        let key = (1u8, 3u8, 0x100u16);
+        let stat = m.register_stats.get(&key).unwrap();
+        assert_eq!(stat.call_count, 1);
+        assert_eq!(stat.last_values, vec![0xABCD]);
     }
 }

@@ -449,6 +449,15 @@ pub struct MonitorStats {
     pub addr_count: HashMap<u16, usize>,
     /// 总帧数
     pub total_frames: usize,
+    /// 每寄存器统计: (slave, fc, addr) → (call_count, [last_values])
+    pub register_stats: HashMap<(u8, u8, u16), RegisterStat>,
+}
+
+/// 每寄存器调用统计（类似 Web 应用统计表）
+#[derive(Clone, Debug)]
+pub struct RegisterStat {
+    pub call_count: usize,
+    pub last_values: Vec<u16>,
 }
 
 impl Default for MonitorStats {
@@ -458,7 +467,19 @@ impl Default for MonitorStats {
             func_count: HashMap::new(),
             addr_count: HashMap::new(),
             total_frames: 0,
+            register_stats: HashMap::new(),
         }
+    }
+}
+
+impl MonitorStats {
+    /// 清空所有历史记录和统计，用于新轮次开始前
+    pub fn reset(&mut self) {
+        self.history.clear();
+        self.func_count.clear();
+        self.addr_count.clear();
+        self.register_stats.clear();
+        self.total_frames = 0;
     }
 }
 
@@ -593,6 +614,19 @@ pub fn record_frame(monitor: &mut MonitorStats, fi: &FrameInfo) {
     *monitor.func_count.entry(fi.func_code).or_insert(0) += 1;
     *monitor.addr_count.entry(fi.addr).or_insert(0) += 1;
     monitor.total_frames += 1;
+
+    // 填充逐寄存器统计（仅对带地址的帧有效）
+    if !fi.values.is_empty() {
+        let key = (fi.unit, fi.func_code, fi.addr);
+        let stat = monitor.register_stats.entry(key).or_insert(RegisterStat {
+            call_count: 0,
+            last_values: Vec::new(),
+        });
+        stat.call_count += 1;
+        if fi.is_request || stat.last_values.is_empty() {
+            stat.last_values = fi.values.clone();
+        }
+    }
 }
 
 fn format_system_time(t: std::time::SystemTime) -> String {

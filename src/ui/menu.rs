@@ -614,7 +614,7 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
                 4 => enter_pick(ui, config_path, MainMode::TcpMonitor),
                 5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
                 6 => {
-                    ui.menu_screen = MenuScreen::FrameConstruct;
+                    ui.menu_screen = MenuScreen::Construct;
                     ui.construct_focus = 0;
                     ui.construct_edit_mode = false;
                 }
@@ -634,7 +634,7 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
             5 => enter_pick(ui, config_path, MainMode::RtuMonitor),
             6 => {
                 // RTU 报文构造
-                ui.menu_screen = MenuScreen::FrameConstruct;
+                ui.menu_screen = MenuScreen::Construct;
                 ui.construct_focus = 0;
                 ui.construct_edit_mode = false;
             }
@@ -1950,7 +1950,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
                     MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
                     MenuScreen::NamePrompt => render_name_prompt(f, &ui),
-                    MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
+                    MenuScreen::Construct => render_frame_construct(f, &ui),
                 });
                 continue;
             }
@@ -1967,7 +1967,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => handle_profile_set_key(&mut ui, code, config_path),
                     MenuScreen::ProfileEdit => handle_profile_edit_key(&mut ui, code, config_path),
                     MenuScreen::NamePrompt => handle_name_prompt_key(&mut ui, code, config_path),
-                    MenuScreen::FrameConstruct => handle_frame_construct_key(&mut ui, code),
+                    MenuScreen::Construct => handle_frame_construct_key(&mut ui, code),
                 };
                 if let Some(sel) = sel {
                     break Ok(sel);
@@ -1980,7 +1980,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
                     MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
                     MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
                     MenuScreen::NamePrompt => render_name_prompt(f, &ui),
-                    MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
+                    MenuScreen::Construct => render_frame_construct(f, &ui),
                 });
             }
             _ => {}
@@ -1993,7 +1993,7 @@ pub async fn run_menu(config_path: &str, profiles: Vec<String>) -> Result<MenuSe
             MenuScreen::ProfileSet => render_profile_settings(f, &ui, config_path),
             MenuScreen::ProfileEdit => render_profile_edit(f, &ui, config_path),
             MenuScreen::NamePrompt => render_name_prompt(f, &ui),
-            MenuScreen::FrameConstruct => render_frame_construct(f, &ui),
+            MenuScreen::Construct => render_frame_construct(f, &ui),
         });
     };
 

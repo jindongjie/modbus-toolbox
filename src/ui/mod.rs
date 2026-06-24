@@ -82,7 +82,7 @@ pub enum MenuScreen {
     ProfileSet,     // 配置管理设置
     ProfileEdit,    // 编辑配置字段
     NamePrompt,     // 输入新增/克隆的配置名
-    FrameConstruct, // RTU 主站报文构造
+    Construct, // RTU 主站报文构造 / Statement Builder
 }
 
 /// 菜单选择结果，返回给 main.rs
@@ -225,6 +225,12 @@ pub struct Ui {
     pub args: Args,
 
     // --- RTU 报文构造 ---
+    /// 协议模式：0=RTU, 1=TCP
+    pub construct_mode: u8,
+    /// true=请求帧, false=响应帧
+    pub construct_is_request: bool,
+    /// TCP 事务标识符
+    pub construct_transaction_id: u16,
     /// 从站地址
     pub construct_slave_id: u8,
     /// 功能码
@@ -372,6 +378,9 @@ impl Ui {
             args: crate::Args::default(),
 
             // RTU 报文构造
+            construct_mode: 0,
+            construct_is_request: true,
+            construct_transaction_id: 0,
             construct_slave_id: 1,
             construct_func_code: 3,
             construct_addr: 0,
@@ -772,6 +781,7 @@ pub(crate) use menu::profile_monitor_mode_label;
 pub(crate) use menu::{profile_pick_brief, run_menu};
 #[allow(unused_imports)]
 pub(crate) use monitor::{
-    apply_pattern_dialog, format_monitor_history, format_monitor_stats, index_to_pattern,
-    pattern_index, render_csv_picker, render_monitor_profile_pick,
+    apply_pattern_dialog, format_monitor_history, format_monitor_register_stats,
+    format_monitor_stats, index_to_pattern, pattern_index, render_csv_picker,
+    render_monitor_profile_pick,
 };

@@ -213,7 +213,7 @@ pub(crate) fn render_csv_picker(f: &mut Frame<'_>, ui: &Ui) {
     f.render_widget(Paragraph::new(items).block(block), dialog_area);
 }
 pub(crate) fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String {
-    const MAX_LINES: usize = 8;
+    const MAX_LINES: usize = 10;
     let total = m.history.len();
     let start = if total > scroll + MAX_LINES {
         total - MAX_LINES - scroll
@@ -221,12 +221,56 @@ pub(crate) fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String 
         0
     };
     let mut text = String::new();
-    for rec in m.history.iter().skip(start).rev().take(MAX_LINES) {
-        let dir = if rec.is_request { "⇒" } else { "⇐" };
-        let tag = if rec.is_tcp { "TCP" } else { "RTU" };
+    // i18n header — matches web app columns
+    text.push_str(&format!(
+        "{:<3} {:<9} {:<4} {:<4} {:<4} {:>5} {:<6} {:<20} {}\n",
+        t!("run_ui.monitor_col_index"),
+        t!("run_ui.monitor_col_time"),
+        t!("run_ui.monitor_col_type"),
+        t!("run_ui.monitor_col_slave"),
+        t!("run_ui.monitor_col_fc"),
+        t!("run_ui.monitor_col_addr"),
+        t!("run_ui.monitor_col_qty"),
+        t!("run_ui.monitor_col_regs"),
+        t!("run_ui.monitor_col_crc"),
+    ));
+    text.push_str(&"─".repeat(60.min(total.saturating_mul(2))));
+    text.push('\n');
+    for (i, rec) in m.history.iter().skip(start).rev().take(MAX_LINES).enumerate() {
+        let idx = total - start - i;
+        let pdu_type = if rec.is_request { "REQ" } else { "RSP" };
+        // Compute CRC validity for RTU frames
+        let crc_str = if !rec.is_tcp && rec.values.len() <= 120 {
+            // Reconstruct bytes for CRC check (approximate)
+            let mut bytes = vec![rec.unit, rec.func_code];
+            bytes.extend_from_slice(&rec.addr.to_be_bytes());
+            let qty = rec.values.len() as u16;
+            bytes.extend_from_slice(&qty.to_be_bytes());
+            let calc = crate::modbus::calc_crc16(&bytes);
+            format!("{:04X}", calc)
+        } else {
+            "TCP".to_string()
+        };
+        let qty_str = if rec.values.is_empty() {
+            "-".to_string()
+        } else {
+            rec.values.len().to_string()
+        };
+        let val_str = if rec.values.is_empty() {
+            "-".to_string()
+        } else if rec.values.len() <= 6 {
+            rec.values
+                .iter()
+                .map(|v| format!("{:04X}", v))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            let hexes: Vec<String> = rec.values.iter().take(6).map(|v| format!("{:04X}", v)).collect();
+            format!("{}...", hexes.join(" "))
+        };
         text.push_str(&format!(
-            "{} {} {} {} addr=0x{:04X}\n",
-            rec.human_time, dir, tag, rec.func_name, rec.addr
+            "{:<3} {:<9} {:<4} {:02X}    {:02X} {:>5} {:<6} {:<20} {}\n",
+            idx, rec.human_time, pdu_type, rec.unit, rec.func_code, rec.addr, qty_str, val_str, crc_str
         ));
     }
     if text.is_empty() {
@@ -235,7 +279,7 @@ pub(crate) fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String 
     text
 }
 
-/// 格式化监听统计一览
+/// 格式化监听统计一览（保留原功能码/地址统计）
 pub(crate) fn format_monitor_stats(m: &MonitorStats) -> String {
     let mut text = String::new();
     text.push_str(&format!(
@@ -262,6 +306,51 @@ pub(crate) fn format_monitor_stats(m: &MonitorStats) -> String {
         for (addr, count) in addrs.iter().take(10) {
             text.push_str(&format!("  0x{:04X}: {}\n", addr, count));
         }
+    }
+    text
+}
+
+/// 格式化逐寄存器统计表（类似 Web 应用的 Statistics 表格）
+pub(crate) fn format_monitor_register_stats(m: &MonitorStats) -> String {
+    let mut text = String::new();
+    text.push_str(&format!(
+        "{} {}\n\n",
+        t!("run_ui.monitor_total_frames"),
+        m.total_frames
+    ));
+    if m.register_stats.is_empty() {
+        text.push_str(&format!("  {}\n", t!("run_ui.no_data")));
+        return text;
+    }
+    // Header
+    text.push_str(&format!(
+        "{:<5} {:<4} {:<6} {:<10} {:<24}\n",
+        "Slave", "FC", "Addr", "Call Cnt", "Last Values"
+    ));
+    text.push_str(&"─".repeat(56));
+    text.push('\n');
+
+    let mut stats: Vec<_> = m.register_stats.iter().collect();
+    stats.sort_by_key(|b| std::cmp::Reverse(b.1.call_count));
+
+    for ((slave, fc, addr), stat) in stats.iter().take(20) {
+        let val_str = if stat.last_values.is_empty() {
+            "-".to_string()
+        } else if stat.last_values.len() <= 6 {
+            stat.last_values
+                .iter()
+                .map(|v| format!("{:04X}", v))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            let head: Vec<String> =
+                stat.last_values.iter().take(4).map(|v| format!("{:04X}", v)).collect();
+            format!("{}...({})", head.join(" "), stat.last_values.len())
+        };
+        text.push_str(&format!(
+            "{:02X}    {:02X}   {:>4}   {:>8}   {:<24}\n",
+            slave, fc, addr, stat.call_count, val_str
+        ));
     }
     text
 }
