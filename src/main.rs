@@ -1522,12 +1522,10 @@ pub(crate) fn format_register_value(
     }
 
     match (format.data_type, format.width) {
-        (RegDataType::Uint, RegDataWidth::Bits16)
-        | (RegDataType::Hex, _)
-        | (RegDataType::Binary, _)
+        (RegDataType::Uint | RegDataType::Hex | RegDataType::Binary, RegDataWidth::Bits16)
         | (RegDataType::Ascii, _) => format_u16(words[0], format),
         (RegDataType::Int, RegDataWidth::Bits16) => format_i16(words[0] as i16, format),
-        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits32) => {
+        (RegDataType::Uint | RegDataType::Int | RegDataType::Hex | RegDataType::Binary, RegDataWidth::Bits32) => {
             let v = (words[0] as u32) << 16 | words[1] as u32;
             if format.data_type == RegDataType::Int {
                 format_i32(v as i32, format)
@@ -1535,7 +1533,7 @@ pub(crate) fn format_register_value(
                 format_u32(v, format)
             }
         }
-        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits64) => {
+        (RegDataType::Uint | RegDataType::Int | RegDataType::Hex | RegDataType::Binary, RegDataWidth::Bits64) => {
             let v = (words[0] as u64) << 48
                 | (words[1] as u64) << 32
                 | (words[2] as u64) << 16
@@ -1546,7 +1544,7 @@ pub(crate) fn format_register_value(
                 format_u64(v, format)
             }
         }
-        (RegDataType::Uint | RegDataType::Int, RegDataWidth::Bits128) => {
+        (RegDataType::Uint | RegDataType::Int | RegDataType::Hex | RegDataType::Binary, RegDataWidth::Bits128) => {
             let v = (words[0] as u128) << 112
                 | (words[1] as u128) << 96
                 | (words[2] as u128) << 80

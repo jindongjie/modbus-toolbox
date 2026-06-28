@@ -776,6 +776,8 @@ pub async fn client_read_write_loop(
                             }
                         }
                     }
+                    // 恢复原始从站地址，防止后续读写使用错误的 ID
+                    ctx.set_slave(Slave(args.unit));
                     let _ = resp.send(results);
                 }
                 _ => {}

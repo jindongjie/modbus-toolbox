@@ -111,6 +111,7 @@ pub async fn run_ui(
                         ui.reg_format = s.reg_format;
                         let server_err = server_status.read().await.clone();
                         let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
+                        let is_client_mode = args.main_mode.to_ascii_lowercase().contains("client");
                     terminal.draw(|f| {
 
                         // --- 预计算帮助文本（用于动态高度和值变化状态指示） ---
@@ -122,6 +123,18 @@ pub async fn run_ui(
                             let mut h = t!("run_ui.help_monitoring").into_owned();
                             if ui.monitor_logging {
                                 h.push_str(" | [LOG●]");
+                            }
+                            h
+                        } else if is_client_mode {
+                            // 客户端模式：从帮助文本中移除 "l scan"（扫描从设备）提示
+                            let mut h = t!("run_ui.help_normal").into_owned();
+                            if let Some(start) = h.find("| l ") {
+                                // 找到下一个 "|" 分隔符一并移除
+                                if let Some(end) = h[start + 1..].find('|') {
+                                    h.replace_range(start..start + 1 + end, "");
+                                } else {
+                                    h.truncate(start.saturating_sub(1));
+                                }
                             }
                             h
                         } else {
@@ -425,6 +438,7 @@ pub async fn run_ui(
                                 }
 
                                 let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
+                                let is_client_mode = args.main_mode.to_ascii_lowercase().contains("client");
 
                                 // --- 显式关闭各对话框 ---
                                 if ui.pattern_dialog_open {
@@ -896,8 +910,8 @@ pub async fn run_ui(
                                                 }
                                             }
                                         }
-                                        // i: 设置类型为 Int（保持当前位宽）
-                                        KeyCode::Char('i') => {
+                                        // s: 设置类型为 Int（保持当前位宽）
+                                        KeyCode::Char('s') => {
                                             if !ui.edit_mode && !is_monitor_mode {
                                                 let mut s = state.write().await;
                                                 if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
@@ -919,62 +933,6 @@ pub async fn run_ui(
                                                             .unwrap_or(ui.reg_format);
                                                         let new_fmt = current_fmt.to_int();
                                                         combinations.insert(addr, new_fmt);
-                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
-                                                        set_status(&mut ui, msg);
-                                                        drop(s);
-                                                    } else {
-                                                        drop(s);
-                                                    }
-                                                } else {
-                                                    drop(s);
-                                                }
-                                            }
-                                        }
-                                        // f / F: 循环数据类型（Uint→Int→Float→Hex→Binary→Uint），绝不改变位宽
-                                        KeyCode::Char('f') | KeyCode::Char('F') => {
-                                            if !ui.edit_mode && !is_monitor_mode {
-                                                let mut s = state.write().await;
-                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
-                                                    let addr = ui.selected;
-                                                    let total_regs = match ui.reg_view {
-                                                        REG_VIEW_HOLDING => s.holding.len(),
-                                                        REG_VIEW_INPUT => s.input_registers.len(),
-                                                        _ => unreachable!(),
-                                                    };
-                                                    if addr < total_regs {
-                                                        let new_fmt = {
-                                                            let combinations = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                                REG_VIEW_INPUT => &mut s.input_combinations,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            let current_fmt = combinations
-                                                                .get(&addr)
-                                                                .copied()
-                                                                .unwrap_or(ui.reg_format);
-                                                            let old_needed = current_fmt.regs_needed();
-                                                            combinations.retain(|&k, _| k < addr || k >= addr + old_needed);
-                                                            current_fmt.next_type()
-                                                        };
-                                                        let new_needed = new_fmt.regs_needed();
-                                                        if new_needed > 1 && addr + new_needed <= total_regs {
-                                                            let change_enabled = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
-                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
-                                                                change_enabled[i] = false;
-                                                            }
-                                                        }
-                                                        {
-                                                            let combinations = match ui.reg_view {
-                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
-                                                                REG_VIEW_INPUT => &mut s.input_combinations,
-                                                                _ => unreachable!(),
-                                                            };
-                                                            combinations.insert(addr, new_fmt);
-                                                        }
                                                         let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
                                                         set_status(&mut ui, msg);
                                                         drop(s);
@@ -1011,6 +969,62 @@ pub async fn run_ui(
                                                             let old_needed = current_fmt.regs_needed();
                                                             combinations.retain(|&k, _| k < addr || k >= addr + old_needed);
                                                             current_fmt.to_hex()
+                                                        };
+                                                        let new_needed = new_fmt.regs_needed();
+                                                        if new_needed > 1 && addr + new_needed <= total_regs {
+                                                            let change_enabled = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_change_enabled,
+                                                                REG_VIEW_INPUT => &mut s.input_change_enabled,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            for i in (addr + 1)..(addr + new_needed).min(change_enabled.len()) {
+                                                                change_enabled[i] = false;
+                                                            }
+                                                        }
+                                                        {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            combinations.insert(addr, new_fmt);
+                                                        }
+                                                        let msg = format!("Format: {} @ reg {}", new_fmt.short_label(), addr);
+                                                        set_status(&mut ui, msg);
+                                                        drop(s);
+                                                    } else {
+                                                        drop(s);
+                                                    }
+                                                } else {
+                                                    drop(s);
+                                                }
+                                            }
+                                        }
+                                        // b: 设置类型为 Binary，保持当前位宽
+                                        KeyCode::Char('b') => {
+                                            if !ui.edit_mode && !is_monitor_mode {
+                                                let mut s = state.write().await;
+                                                if ui.reg_view == REG_VIEW_HOLDING || ui.reg_view == REG_VIEW_INPUT {
+                                                    let addr = ui.selected;
+                                                    let total_regs = match ui.reg_view {
+                                                        REG_VIEW_HOLDING => s.holding.len(),
+                                                        REG_VIEW_INPUT => s.input_registers.len(),
+                                                        _ => unreachable!(),
+                                                    };
+                                                    if addr < total_regs {
+                                                        let new_fmt = {
+                                                            let combinations = match ui.reg_view {
+                                                                REG_VIEW_HOLDING => &mut s.holding_combinations,
+                                                                REG_VIEW_INPUT => &mut s.input_combinations,
+                                                                _ => unreachable!(),
+                                                            };
+                                                            let current_fmt = combinations
+                                                                .get(&addr)
+                                                                .copied()
+                                                                .unwrap_or(ui.reg_format);
+                                                            let old_needed = current_fmt.regs_needed();
+                                                            combinations.retain(|&k, _| k < addr || k >= addr + old_needed);
+                                                            current_fmt.to_binary()
                                                         };
                                                         let new_needed = new_fmt.regs_needed();
                                                         if new_needed > 1 && addr + new_needed <= total_regs {
@@ -1437,7 +1451,7 @@ pub async fn run_ui(
                                         }
                                         // 从设备扫描：l（小写 L）
                                         KeyCode::Char('l') => {
-                                            if !is_monitor_mode && !ui.edit_mode {
+                                            if !is_monitor_mode && !ui.edit_mode && !is_client_mode {
                                                 let s = state.read().await;
                                                 if s.slave_scan_running {
                                                     drop(s);
