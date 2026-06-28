@@ -1146,8 +1146,13 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
             Ok(v) => v,
             Err(e) => {
                 let fi = FrameInfo {
-                    is_tcp: true, unit: 0, func_code: 0, func_name: format!("accept error: {e}"),
-                    addr: 0, values: vec![], is_request: false,
+                    is_tcp: true,
+                    unit: 0,
+                    func_code: 0,
+                    func_name: format!("accept error: {e}"),
+                    addr: 0,
+                    values: vec![],
+                    is_request: false,
                 };
                 let mut s = state.write().await;
                 record_frame(&mut s.monitor, &fi);
@@ -1161,9 +1166,13 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
             let mut s = state.write().await;
             s.monitor.reset();
             let fi = FrameInfo {
-                is_tcp: true, unit: 0, func_code: 0,
+                is_tcp: true,
+                unit: 0,
+                func_code: 0,
                 func_name: format!("TCP connected from {peer}"),
-                addr: 0, values: vec![], is_request: false,
+                addr: 0,
+                values: vec![],
+                is_request: false,
             };
             record_frame(&mut s.monitor, &fi);
             s.last_frame = Some(fi);
@@ -1181,7 +1190,8 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
                     // 多个帧可能粘在一起，尝试分割
                     let mut offset = 0usize;
                     while offset + 8 <= raw.len() {
-                        let len_field = u16::from_be_bytes([raw[offset + 4], raw[offset + 5]]) as usize;
+                        let len_field =
+                            u16::from_be_bytes([raw[offset + 4], raw[offset + 5]]) as usize;
                         let frame_len = 6 + len_field; // MBAP header(6) + unit(1) + PDU
                         if offset + frame_len > raw.len() {
                             break;
@@ -1197,25 +1207,41 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
                         } else {
                             0
                         };
-                        let values: Vec<u16> = if (fc == 3 || fc == 4) && !is_request && pdu.len() >= 3 {
-                            let bc = pdu[1] as usize;
-                            let data = &pdu[2..(2 + bc).min(pdu.len())];
-                            data.chunks(2).filter_map(|c| {
-                                if c.len() == 2 { Some(u16::from_be_bytes([c[0], c[1]])) } else { None }
-                            }).collect()
-                        } else {
-                            vec![]
-                        };
+                        let values: Vec<u16> =
+                            if (fc == 3 || fc == 4) && !is_request && pdu.len() >= 3 {
+                                let bc = pdu[1] as usize;
+                                let data = &pdu[2..(2 + bc).min(pdu.len())];
+                                data.chunks(2)
+                                    .filter_map(|c| {
+                                        if c.len() == 2 {
+                                            Some(u16::from_be_bytes([c[0], c[1]]))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
                         let func_name = match fc {
-                            1 => "Read Coils", 2 => "Read Discrete", 3 => "Read Holding",
-                            4 => "Read Input", 5 => "Write Coil", 6 => "Write Reg",
-                            15 => "Write Multi Coils", 16 => "Write Multi Reg",
+                            1 => "Read Coils",
+                            2 => "Read Discrete",
+                            3 => "Read Holding",
+                            4 => "Read Input",
+                            5 => "Write Coil",
+                            6 => "Write Reg",
+                            15 => "Write Multi Coils",
+                            16 => "Write Multi Reg",
                             _ => "Unknown",
                         };
                         let fi = FrameInfo {
-                            is_tcp: true, unit, func_code: fc,
+                            is_tcp: true,
+                            unit,
+                            func_code: fc,
                             func_name: func_name.to_string(),
-                            addr: addr, values, is_request,
+                            addr: addr,
+                            values,
+                            is_request,
                         };
                         let mut s = state.write().await;
                         record_frame(&mut s.monitor, &fi);
@@ -1224,9 +1250,13 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
                     }
                     if offset < n {
                         let fi = FrameInfo {
-                            is_tcp: true, unit: 0, func_code: 0xFF,
+                            is_tcp: true,
+                            unit: 0,
+                            func_code: 0xFF,
                             func_name: format!("{} unknown bytes discarded", n - offset),
-                            addr: 0, values: vec![], is_request: false,
+                            addr: 0,
+                            values: vec![],
+                            is_request: false,
                         };
                         let mut s = state.write().await;
                         record_frame(&mut s.monitor, &fi);
@@ -1240,9 +1270,13 @@ pub async fn run_modbus_monitor_tcp(args: Args, state: Arc<RwLock<AppState>>) ->
         // 连接断开
         {
             let fi = FrameInfo {
-                is_tcp: true, unit: 0, func_code: 0,
+                is_tcp: true,
+                unit: 0,
+                func_code: 0,
                 func_name: format!("TCP disconnected from {peer}"),
-                addr: 0, values: vec![], is_request: false,
+                addr: 0,
+                values: vec![],
+                is_request: false,
             };
             let mut s = state.write().await;
             record_frame(&mut s.monitor, &fi);
@@ -1274,9 +1308,13 @@ pub async fn run_modbus_monitor_rtu(args: Args, state: Arc<RwLock<AppState>>) ->
         s.is_tcp = false;
         s.monitor.reset();
         let fi = FrameInfo {
-            is_tcp: false, unit: 0, func_code: 0,
+            is_tcp: false,
+            unit: 0,
+            func_code: 0,
             func_name: "RTU serial monitor started".to_string(),
-            addr: 0, values: vec![], is_request: false,
+            addr: 0,
+            values: vec![],
+            is_request: false,
         };
         record_frame(&mut s.monitor, &fi);
         s.last_frame = Some(fi);
@@ -1299,7 +1337,10 @@ pub async fn run_modbus_monitor_rtu(args: Args, state: Arc<RwLock<AppState>>) ->
                     for frame_end in (4..=raw_buf.len().min(256)).rev() {
                         let candidate = &raw_buf[..frame_end];
                         let calc = calc_crc16(&candidate[..candidate.len() - 2]);
-                        let stored = u16::from_le_bytes([candidate[candidate.len() - 2], candidate[candidate.len() - 1]]);
+                        let stored = u16::from_le_bytes([
+                            candidate[candidate.len() - 2],
+                            candidate[candidate.len() - 1],
+                        ]);
                         if calc == stored {
                             // 有效帧
                             let slave = candidate[0];
@@ -1312,24 +1353,42 @@ pub async fn run_modbus_monitor_rtu(args: Args, state: Arc<RwLock<AppState>>) ->
                             };
                             let is_request = fc & 0x80 == 0;
                             let func_name = match fc & 0x7F {
-                                1 => "Read Coils", 2 => "Read Discrete", 3 => "Read Holding",
-                                4 => "Read Input", 5 => "Write Coil", 6 => "Write Reg",
-                                15 => "Write Multi Coils", 16 => "Write Multi Reg",
+                                1 => "Read Coils",
+                                2 => "Read Discrete",
+                                3 => "Read Holding",
+                                4 => "Read Input",
+                                5 => "Write Coil",
+                                6 => "Write Reg",
+                                15 => "Write Multi Coils",
+                                16 => "Write Multi Reg",
                                 _ => "Unknown",
                             };
-                            let values: Vec<u16> = if (fc & 0x7F == 3 || fc & 0x7F == 4) && !is_request && pdu.len() >= 3 {
+                            let values: Vec<u16> = if (fc & 0x7F == 3 || fc & 0x7F == 4)
+                                && !is_request
+                                && pdu.len() >= 3
+                            {
                                 let bc = pdu[1] as usize;
                                 let data = &pdu[2..(2 + bc).min(pdu.len())];
-                                data.chunks(2).filter_map(|c| {
-                                    if c.len() == 2 { Some(u16::from_be_bytes([c[0], c[1]])) } else { None }
-                                }).collect()
+                                data.chunks(2)
+                                    .filter_map(|c| {
+                                        if c.len() == 2 {
+                                            Some(u16::from_be_bytes([c[0], c[1]]))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
                             } else {
                                 vec![]
                             };
                             let fi = FrameInfo {
-                                is_tcp: false, unit: slave, func_code: fc & 0x7F,
+                                is_tcp: false,
+                                unit: slave,
+                                func_code: fc & 0x7F,
                                 func_name: func_name.to_string(),
-                                addr: addr, values, is_request,
+                                addr: addr,
+                                values,
+                                is_request,
                             };
                             let mut s = state.write().await;
                             record_frame(&mut s.monitor, &fi);

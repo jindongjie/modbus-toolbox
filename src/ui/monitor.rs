@@ -236,7 +236,14 @@ pub(crate) fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String 
     ));
     text.push_str(&"─".repeat(60.min(total.saturating_mul(2))));
     text.push('\n');
-    for (i, rec) in m.history.iter().skip(start).rev().take(MAX_LINES).enumerate() {
+    for (i, rec) in m
+        .history
+        .iter()
+        .skip(start)
+        .rev()
+        .take(MAX_LINES)
+        .enumerate()
+    {
         let idx = total - start - i;
         let pdu_type = if rec.is_request { "REQ" } else { "RSP" };
         // Compute CRC validity for RTU frames
@@ -265,12 +272,25 @@ pub(crate) fn format_monitor_history(m: &MonitorStats, scroll: usize) -> String 
                 .collect::<Vec<_>>()
                 .join(" ")
         } else {
-            let hexes: Vec<String> = rec.values.iter().take(6).map(|v| format!("{:04X}", v)).collect();
+            let hexes: Vec<String> = rec
+                .values
+                .iter()
+                .take(6)
+                .map(|v| format!("{:04X}", v))
+                .collect();
             format!("{}...", hexes.join(" "))
         };
         text.push_str(&format!(
             "{:<3} {:<9} {:<4} {:02X}    {:02X} {:>5} {:<6} {:<20} {}\n",
-            idx, rec.human_time, pdu_type, rec.unit, rec.func_code, rec.addr, qty_str, val_str, crc_str
+            idx,
+            rec.human_time,
+            pdu_type,
+            rec.unit,
+            rec.func_code,
+            rec.addr,
+            qty_str,
+            val_str,
+            crc_str
         ));
     }
     if text.is_empty() {
@@ -343,8 +363,12 @@ pub(crate) fn format_monitor_register_stats(m: &MonitorStats) -> String {
                 .collect::<Vec<_>>()
                 .join(" ")
         } else {
-            let head: Vec<String> =
-                stat.last_values.iter().take(4).map(|v| format!("{:04X}", v)).collect();
+            let head: Vec<String> = stat
+                .last_values
+                .iter()
+                .take(4)
+                .map(|v| format!("{:04X}", v))
+                .collect();
             format!("{}...({})", head.join(" "), stat.last_values.len())
         };
         text.push_str(&format!(

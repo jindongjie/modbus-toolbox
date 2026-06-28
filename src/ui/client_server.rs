@@ -1,14 +1,13 @@
 use super::{
-    apply_pattern_dialog, centered_rect, format_monitor_history,
-    format_monitor_register_stats, format_monitor_stats, format_protocol_analysis,
-    parse_reg_format, pattern_index, reg_view_data, reg_view_len, render_csv_picker,
-    render_monitor_profile_pick, search_match, set_status, wrapped_lines, Ui, REG_VIEW_COILS,
-    REG_VIEW_DISCRETE, REG_VIEW_HOLDING, REG_VIEW_INPUT, UI_TIMEOUT,
+    apply_pattern_dialog, centered_rect, format_monitor_history, format_monitor_register_stats,
+    format_monitor_stats, format_protocol_analysis, parse_reg_format, pattern_index, reg_view_data,
+    reg_view_len, render_csv_picker, render_monitor_profile_pick, search_match, set_status,
+    wrapped_lines, Ui, REG_VIEW_COILS, REG_VIEW_DISCRETE, REG_VIEW_HOLDING, REG_VIEW_INPUT,
 };
 use crate::{
     csv_log_append, csv_log_header, csv_log_path, export_registers_to_json, format_register_value,
-    format_u16, list_csv_logs, load_csv_into_monitor, parse_u16_str, AppState, Args,
-    ChangeDirection, RegCmd, BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
+    format_u16, list_csv_logs, load_csv_into_monitor, AppState, Args, ChangeDirection, RegCmd,
+    BAR_HISTORY_SLOTS, MONITOR_LOG_DIR,
 };
 use anyhow::{anyhow, Context, Result};
 use crossterm::{
@@ -27,7 +26,7 @@ use ratatui::{
 };
 use std::{collections::HashMap, io, sync::Arc};
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 pub async fn run_ui(
     state: Arc<RwLock<AppState>>,
@@ -49,11 +48,6 @@ pub async fn run_ui(
     let mut ui = Ui::new(reg_format, profiles);
     ui.config_path = config_path;
     ui.args = args.clone();
-
-    // Monitor 模式默认开启监听面板
-    if args.main_mode.contains("monitor") {
-        ui.show_monitor = true;
-    }
 
     // 如果菜单已选了配置，自动选中并启动监听任务
     if args.main_mode.contains("monitor") {
@@ -117,25 +111,22 @@ pub async fn run_ui(
                         ui.reg_format = s.reg_format;
                         let server_err = server_status.read().await.clone();
                         let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
-                        terminal.draw(|f| {
-                            let monitor_active = is_monitor_mode || ui.show_monitor;
+                    terminal.draw(|f| {
 
-                            // --- 预计算帮助文本（用于动态高度和值变化状态指示） ---
-                            let mut help = if ui.edit_mode {
-                                t!("run_ui.help_edit", buf = &ui.edit_buf).into_owned()
-                            } else if s.stability_test_running {
-                                t!("run_ui.help_stability").into_owned()
-                            } else if is_monitor_mode {
-                                let mut h = t!("run_ui.help_monitoring").into_owned();
-                                if ui.monitor_logging {
-                                    h.push_str(" | [LOG●]");
-                                }
-                                h
-                            } else if monitor_active {
-                                t!("run_ui.help_monitor").into_owned()
-                            } else {
-                                t!("run_ui.help_normal").into_owned()
-                            };
+                        // --- 预计算帮助文本（用于动态高度和值变化状态指示） ---
+                        let mut help = if ui.edit_mode {
+                            t!("run_ui.help_edit", buf = &ui.edit_buf).into_owned()
+                        } else if s.stability_test_running {
+                            t!("run_ui.help_stability").into_owned()
+                        } else if is_monitor_mode {
+                            let mut h = t!("run_ui.help_monitoring").into_owned();
+                            if ui.monitor_logging {
+                                h.push_str(" | [LOG●]");
+                            }
+                            h
+                        } else {
+                            t!("run_ui.help_normal").into_owned()
+                        };
                             // 追加启用值变化模拟的寄存器数量
                             let enabled_holding = s.holding_change_enabled.iter().filter(|&&e| e).count();
                             let enabled_input = s.input_change_enabled.iter().filter(|&&e| e).count();
@@ -146,19 +137,9 @@ pub async fn run_ui(
                             let panel_width = term_width.saturating_sub(2).max(1) as usize;
                             let help_lines = (wrapped_lines(&help, panel_width) + 2).max(3) as u16;
 
-                            // 纯监听模式：仅显示监听面板；否则显示寄存器表 + 可选的监听覆盖层
-                            let (monitor_constraint, keep) = if is_monitor_mode {
-                                (Constraint::Min(3), false)
-                            } else if monitor_active {
-                                (Constraint::Length(12), true)
-                            } else {
-                                (Constraint::Length(0), false) // 不显示
-                            };
-
+                            // 布局：监听模式全屏监听面板，客户端模式寄存器表
                             let constraints: Vec<Constraint> = if is_monitor_mode {
-                                vec![monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
-                            } else if keep {
-                                vec![Constraint::Min(3), monitor_constraint, Constraint::Length(3), Constraint::Length(help_lines)]
+                                vec![Constraint::Min(3), Constraint::Length(3), Constraint::Length(help_lines)]
                             } else {
                                 vec![Constraint::Min(5), Constraint::Length(3), Constraint::Length(help_lines)]
                             };
@@ -273,59 +254,6 @@ pub async fn run_ui(
                                 } else {
                                     render_register_table(f, &s, &mut ui, *top_area);
                                 }
-
-                                // 监听覆盖层
-                                if monitor_active {
-                                    let monitor_area = areas[area_idx]; area_idx += 1;
-                                    let monitor_split = Layout::horizontal([
-                                        Constraint::Percentage(55),
-                                        Constraint::Percentage(45),
-                                    ]).split(monitor_area);
-
-                                    let history_text = format_monitor_history(&s.monitor, ui.monitor_scroll);
-                                    let history_style = if ui.monitor_focus_history { Color::Yellow } else { Color::Green };
-                                    f.render_widget(
-                                        ratatui::widgets::Paragraph::new(history_text)
-                                            .block(Block::default()
-                                                .borders(Borders::ALL)
-                                                .title(t!("run_ui.monitor_history_title"))
-                                                .border_style(Style::default().fg(history_style))
-                                            )
-                                            .style(Style::default().fg(Color::Green)),
-                                        monitor_split[0],
-                                    );
-
-                                    // 右面板：统计一览（上下分割，上为概要，下为寄存器统计）
-                                    let right_split = Layout::vertical([
-                                        Constraint::Percentage(50),
-                                        Constraint::Percentage(50),
-                                    ]).split(monitor_split[1]);
-
-                                    let stats_text = format_monitor_stats(&s.monitor);
-                                    let stats_style = if !ui.monitor_focus_history { Color::Yellow } else { Color::Green };
-                                    f.render_widget(
-                                        ratatui::widgets::Paragraph::new(stats_text)
-                                            .block(Block::default()
-                                                .borders(Borders::ALL)
-                                                .title(t!("run_ui.monitor_stats_title"))
-                                                .border_style(Style::default().fg(stats_style))
-                                            )
-                                            .style(Style::default().fg(Color::Green)),
-                                        right_split[0],
-                                    );
-
-                                    let reg_stats_text = format_monitor_register_stats(&s.monitor);
-                                    f.render_widget(
-                                        ratatui::widgets::Paragraph::new(reg_stats_text)
-                                            .block(Block::default()
-                                                .borders(Borders::ALL)
-                                                .title(t!("run_ui.monitor_reg_stats_title"))
-                                                .border_style(Style::default().fg(Color::Cyan))
-                                            )
-                                            .style(Style::default().fg(Color::Cyan)),
-                                        right_split[1],
-                                    );
-                                }
                             }
 
                             let status_bar_index = area_idx; area_idx += 1;
@@ -351,8 +279,6 @@ pub async fn run_ui(
                                 t!("run_ui.status_stability", total = total, ok = ok, fail = fail)
                             } else if is_monitor_mode {
                                 t!("run_ui.status_monitoring", frames = s.monitor.total_frames)
-                            } else if s.monitor.total_frames > 0 && ui.show_monitor {
-                                t!("run_ui.status_monitor", frames = s.monitor.total_frames)
                             } else if !s.reg_change_history.is_empty() {
                                 let changes = s.reg_change_history.len();
                                 let last = s.reg_change_history.last().unwrap();
@@ -659,53 +585,6 @@ pub async fn run_ui(
                                             ui.status_msg = None;
                                         }
 
-                                        KeyCode::Char('m') => {
-                                            if ui.edit_is_label || ui.edit_is_profile {
-                                                ui.edit_buf.push('m');
-                                            } else {
-                                                match parse_u16_str(&ui.edit_buf, ui.reg_format) {
-                                                    Ok(new_val) => {
-                                                        let (resp_tx, resp_rx) = oneshot::channel();
-                                                        let values = vec![new_val; 100];
-                                                        let _ = tx.send(RegCmd::WriteMultipleHolding {
-                                                            addr: ui.selected,
-                                                            values,
-                                                            resp: resp_tx,
-                                                        });
-
-                                                        match timeout(UI_TIMEOUT, resp_rx).await {
-                                                            Ok(Ok(Ok(()))) => {
-                                                                ui.edit_mode = false;
-                                                                ui.edit_buf.clear();
-                                                                ui.status_msg = None;
-                                                            }
-                                                            Ok(Ok(Err(ex))) => set_status(
-                                                                &mut ui,
-                                                                t!("run_ui.modbus_exception", ex = format!("{:?}", ex)),
-                                                            ),
-                                                            Ok(Err(_)) => set_status(
-                                                                &mut ui,
-                                                                t!("run_ui.worker_disconnected"),
-                                                            ),
-                                                            Err(_) => {
-                                                                set_status(
-                                                                    &mut ui,
-                                                                    t!("run_ui.write_timeout"),
-                                                                );
-                                                                ui.edit_mode = false;
-                                                                ui.edit_buf.clear();
-                                                                ui.status_msg = None;
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => set_status(
-                                                        &mut ui,
-                                                        t!("run_ui.invalid_value", err = e),
-                                                    ),
-                                                }
-                                            }
-                                        }
-
                                         KeyCode::Char(ch) => {
                                             ui.status_msg = None;
                                                 ui.edit_buf.push(ch);
@@ -911,7 +790,7 @@ pub async fn run_ui(
                                         KeyCode::Char('k') | KeyCode::Up => {
                                             if is_monitor_mode && ui.monitor_picking {
                                                 ui.menu_list_idx = ui.menu_list_idx.saturating_sub(1);
-                                            } else if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                            } else if is_monitor_mode {
                                                 ui.monitor_scroll = ui.monitor_scroll.saturating_sub(1);
                                             } else if ui.search_mode && !ui.search_buf.is_empty() {
                                                 // 搜索模式下：跳到上一个匹配的地址
@@ -944,7 +823,7 @@ pub async fn run_ui(
                                             if is_monitor_mode && ui.monitor_picking {
                                                 let len = ui.profiles.len();
                                                 ui.menu_list_idx = (ui.menu_list_idx + 1).min(len.saturating_sub(1));
-                                            } else if is_monitor_mode || (ui.show_monitor && ui.monitor_focus_history) {
+                                            } else if is_monitor_mode {
                                                 let len = state.read().await.monitor.history.len();
                                                 if ui.monitor_scroll + 1 < len.saturating_sub(8) {
                                                     ui.monitor_scroll += 1;
@@ -1430,16 +1309,6 @@ pub async fn run_ui(
                                                 set_status(&mut ui, t!("run_ui.history_panel_hidden"));
                                             }
                                         }
-                                        KeyCode::Char('M') => {
-                                            if !is_monitor_mode {
-                                                ui.show_monitor = !ui.show_monitor;
-                                                if ui.show_monitor {
-                                                    set_status(&mut ui, t!("run_ui.monitor_shown"));
-                                                } else {
-                                                    set_status(&mut ui, t!("run_ui.monitor_hidden"));
-                                                }
-                                            }
-                                        }
                                         KeyCode::Char('P') => {
                                             if is_monitor_mode {
                                                 if ui.profiles.is_empty() {
@@ -1454,10 +1323,9 @@ pub async fn run_ui(
                                         }
                                         // L: Toggle CSV logging
                                         KeyCode::Char('L') => {
-                                            if is_monitor_mode || ui.show_monitor {
+                                            if is_monitor_mode {
                                                 ui.monitor_logging = !ui.monitor_logging;
                                                 if ui.monitor_logging {
-                                                    // Create monitor directory and new log file
                                                     let dir = std::path::Path::new(MONITOR_LOG_DIR);
                                                     if !dir.exists() {
                                                         let _ = std::fs::create_dir_all(dir);
@@ -1488,7 +1356,7 @@ pub async fn run_ui(
                                             }
                                         }
                                         KeyCode::Tab => {
-                                            if is_monitor_mode || ui.show_monitor {
+                                            if is_monitor_mode {
                                                 ui.monitor_focus_history = !ui.monitor_focus_history;
                                                 if !ui.monitor_focus_history {
                                                     set_status(&mut ui, t!("run_ui.monitor_stats_mode"));
@@ -1509,7 +1377,7 @@ pub async fn run_ui(
                                         }
                                         KeyCode::Char('v') => {
                                             // 切换当前选中寄存器的值变化模拟开关
-                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                            if !is_monitor_mode && !ui.edit_mode {
                                                 let reg_type = ui.reg_view;
                                                 let addr = ui.selected;
                                                 let reg_len = if reg_type == REG_VIEW_HOLDING {
@@ -1569,7 +1437,7 @@ pub async fn run_ui(
                                         }
                                         // 从设备扫描：l（小写 L）
                                         KeyCode::Char('l') => {
-                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                            if !is_monitor_mode && !ui.edit_mode {
                                                 let s = state.read().await;
                                                 if s.slave_scan_running {
                                                     drop(s);
@@ -1599,7 +1467,7 @@ pub async fn run_ui(
                                         }
                                         // p: 打开当前选中寄存器的模式配置对话框（仅 holding 和 input 视图）
                                         KeyCode::Char('p') => {
-                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                            if !is_monitor_mode && !ui.edit_mode {
                                                 let s = state.read().await;
                                                 let reg_type = ui.reg_view;
                                                 let addr = ui.selected;
@@ -1651,7 +1519,7 @@ pub async fn run_ui(
                                         }
                                         // V: 批量切换当前视图所有寄存器的值变化模拟
                                         KeyCode::Char('V') => {
-                                            if !is_monitor_mode && !ui.edit_mode && !ui.show_monitor {
+                                            if !is_monitor_mode && !ui.edit_mode {
                                                 let reg_type = ui.reg_view;
                                                 if reg_type != REG_VIEW_HOLDING && reg_type != REG_VIEW_INPUT {
                                                     set_status(&mut ui, t!("run_ui.value_change_unsupported"));

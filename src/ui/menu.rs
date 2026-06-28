@@ -1562,45 +1562,114 @@ fn construct_frame(mode: u8, slave: u8, fc: u8, addr: u16, count: u16) -> Vec<u8
     if tcp {
         f.extend_from_slice(&[0, 1, 0, 0, 0, 0]);
         let lp = f.len();
-        f.push(slave); f.push(fc);
-        if req { f.extend_from_slice(&[(addr>>8)as u8,(addr&0xFF)as u8,(count>>8)as u8,(count&0xFF)as u8]); }
-        else { let bc=(count*2).min(252)as u8; f.push(bc); for i in 0..bc/2{let v=addr.wrapping_add(i as u16);f.extend_from_slice(&[(v>>8)as u8,(v&0xFF)as u8]);} }
-        let len=f.len()-6; f[lp-2]=((len>>8)&0xFF)as u8; f[lp-1]=(len&0xFF)as u8;
+        f.push(slave);
+        f.push(fc);
+        if req {
+            f.extend_from_slice(&[
+                (addr >> 8) as u8,
+                (addr & 0xFF) as u8,
+                (count >> 8) as u8,
+                (count & 0xFF) as u8,
+            ]);
+        } else {
+            let bc = (count * 2).min(252) as u8;
+            f.push(bc);
+            for i in 0..bc / 2 {
+                let v = addr.wrapping_add(i as u16);
+                f.extend_from_slice(&[(v >> 8) as u8, (v & 0xFF) as u8]);
+            }
+        }
+        let len = f.len() - 6;
+        f[lp - 2] = ((len >> 8) & 0xFF) as u8;
+        f[lp - 1] = (len & 0xFF) as u8;
     } else {
-        f.push(slave); f.push(fc);
-        if req { f.extend_from_slice(&[(addr>>8)as u8,(addr&0xFF)as u8,(count>>8)as u8,(count&0xFF)as u8]); }
-        else { let bc=(count*2).min(252)as u8; f.push(bc); for i in 0..bc/2{let v=addr.wrapping_add(i as u16);f.extend_from_slice(&[(v>>8)as u8,(v&0xFF)as u8]);} }
-        let c=calc_crc16(&f); f.push((c&0xFF)as u8); f.push((c>>8)as u8);
+        f.push(slave);
+        f.push(fc);
+        if req {
+            f.extend_from_slice(&[
+                (addr >> 8) as u8,
+                (addr & 0xFF) as u8,
+                (count >> 8) as u8,
+                (count & 0xFF) as u8,
+            ]);
+        } else {
+            let bc = (count * 2).min(252) as u8;
+            f.push(bc);
+            for i in 0..bc / 2 {
+                let v = addr.wrapping_add(i as u16);
+                f.extend_from_slice(&[(v >> 8) as u8, (v & 0xFF) as u8]);
+            }
+        }
+        let c = calc_crc16(&f);
+        f.push((c & 0xFF) as u8);
+        f.push((c >> 8) as u8);
     }
     f
 }
 
-const MDS: [&str;4]=["TCP-REQ","TCP-RSP","RTU-REQ","RTU-RSP"];
-const FCS: [u8;8]=[1,2,3,4,5,6,15,16];
+const MDS: [&str; 4] = ["TCP-REQ", "TCP-RSP", "RTU-REQ", "RTU-RSP"];
+const FCS: [u8; 8] = [1, 2, 3, 4, 5, 6, 15, 16];
 
 fn fc_name(fc: u8) -> &'static str {
-    match fc {1=>"Coils",2=>"Discrete",3=>"Holding",4=>"Input",5=>"W-Coil",6=>"W-Reg",15=>"W-M-Coils",16=>"W-M-Reg",_=>"?"}
+    match fc {
+        1 => "Coils",
+        2 => "Discrete",
+        3 => "Holding",
+        4 => "Input",
+        5 => "W-Coil",
+        6 => "W-Reg",
+        15 => "W-M-Coils",
+        16 => "W-M-Reg",
+        _ => "?",
+    }
 }
 
 fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
     let a = f.area();
-    let v = Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Min(4), Constraint::Length(4)]).split(a);
+    let v = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(3),
+        Constraint::Min(4),
+        Constraint::Length(4),
+    ])
+    .split(a);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(t!("construct.title"), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))))
-            .alignment(ratatui::layout::Alignment::Center),
+        Paragraph::new(Line::from(Span::styled(
+            t!("construct.title"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center),
         v[0],
     );
 
     // Fields list
     let fields = [
-        (t!("construct.mode"), MDS[ui.construct_mode.min(3) as usize].to_string()),
-        (t!("construct.func_code"), format!("0x{:02X} {}", ui.construct_func_code, fc_name(ui.construct_func_code))),
-        (t!("construct.slave_id"), format!("{}", ui.construct_slave_id)),
+        (
+            t!("construct.mode"),
+            MDS[ui.construct_mode.min(3) as usize].to_string(),
+        ),
+        (
+            t!("construct.func_code"),
+            format!(
+                "0x{:02X} {}",
+                ui.construct_func_code,
+                fc_name(ui.construct_func_code)
+            ),
+        ),
+        (
+            t!("construct.slave_id"),
+            format!("{}", ui.construct_slave_id),
+        ),
         (t!("construct.addr"), format!("{}", ui.construct_addr)),
         (t!("construct.count"), format!("{}", ui.construct_count)),
     ];
 
-    let block = Block::default().borders(Borders::ALL).title(t!("construct.title")).border_style(Style::default().fg(Color::Cyan));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("construct.title"))
+        .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(block, v[1]);
     let mut lines = Vec::new();
     for (i, (lb, val)) in fields.iter().enumerate() {
@@ -1608,13 +1677,26 @@ fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
         let ed = i == ui.construct_focus && ui.construct_edit_mode;
         let arrow = if sel || ed { " ▸ " } else { "   " };
         let (lbl_style, val_style) = if ed {
-            (Style::default().add_modifier(Modifier::BOLD), Style::default().fg(Color::Yellow).bg(Color::Black))
+            (
+                Style::default().add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Yellow).bg(Color::Black),
+            )
         } else if sel {
-            (Style::default().add_modifier(Modifier::BOLD), Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD))
+            (
+                Style::default().add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
             (Style::default(), Style::default().fg(Color::Green))
         };
-        let dv = if ed { format!("[{}]", ui.construct_edit_buf) } else { val.clone() };
+        let dv = if ed {
+            format!("[{}]", ui.construct_edit_buf)
+        } else {
+            val.clone()
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("{}{}:", arrow, lb), lbl_style),
             Span::raw(" "),
@@ -1624,77 +1706,159 @@ fn render_frame_construct(f: &mut Frame<'_>, ui: &Ui) {
     f.render_widget(Paragraph::new(lines), v[1]);
 
     // Bottom: frame preview — wrap hex across multiple lines
-    let b = construct_frame(ui.construct_mode.min(3), ui.construct_slave_id, ui.construct_func_code, ui.construct_addr, ui.construct_count);
-    let pblock = Block::default().borders(Borders::ALL).title(t!("construct.frame_title")).border_style(Style::default().fg(Color::Cyan));
+    let b = construct_frame(
+        ui.construct_mode.min(3),
+        ui.construct_slave_id,
+        ui.construct_func_code,
+        ui.construct_addr,
+        ui.construct_count,
+    );
+    let pblock = Block::default()
+        .borders(Borders::ALL)
+        .title(t!("construct.frame_title"))
+        .border_style(Style::default().fg(Color::Cyan));
     let inner_w = pblock.inner(v[2]).width as usize;
     let hex: Vec<String> = b.iter().map(|x| format!("{:02X}", x)).collect();
     let chunk_sz = ((inner_w.saturating_sub(3)) / 3).max(1).min(hex.len()); // "XX " per byte
     let mut pl = Vec::new();
     for chunk in hex.chunks(chunk_sz) {
-        pl.push(Line::from(Span::styled(chunk.join(" "), Style::default().fg(Color::Cyan))));
+        pl.push(Line::from(Span::styled(
+            chunk.join(" "),
+            Style::default().fg(Color::Cyan),
+        )));
     }
     pl.push(Line::from(Span::raw("")));
-    pl.push(Line::from(Span::styled(t!("construct.byte_breakdown"), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))));
+    pl.push(Line::from(Span::styled(
+        t!("construct.byte_breakdown"),
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    )));
     let tcp = ui.construct_mode == 0 || ui.construct_mode == 1;
     if tcp && b.len() >= 8 {
         let l = u16::from_be_bytes([b[4], b[5]]);
-        pl.push(Line::from(Span::styled(format!("0-1 {:04X}  Transaction ID", u16::from_be_bytes([b[0], b[1]])), Style::default())));
-        pl.push(Line::from(Span::styled(format!("4-5 {:04X}  Length={}", l, l), Style::default())));
-        pl.push(Line::from(Span::styled(format!("6 {:02X}  Unit  7 {:02X}  FC={}", b[6], b[7], fc_name(b[7])), Style::default())));
+        pl.push(Line::from(Span::styled(
+            format!(
+                "0-1 {:04X}  Transaction ID",
+                u16::from_be_bytes([b[0], b[1]])
+            ),
+            Style::default(),
+        )));
+        pl.push(Line::from(Span::styled(
+            format!("4-5 {:04X}  Length={}", l, l),
+            Style::default(),
+        )));
+        pl.push(Line::from(Span::styled(
+            format!("6 {:02X}  Unit  7 {:02X}  FC={}", b[6], b[7], fc_name(b[7])),
+            Style::default(),
+        )));
     } else if b.len() >= 2 {
-        pl.push(Line::from(Span::styled(format!("0 {:02X}  Slave  1 {:02X}  FC={}", b[0], b[1], fc_name(b[1])), Style::default())));
+        pl.push(Line::from(Span::styled(
+            format!(
+                "0 {:02X}  Slave  1 {:02X}  FC={}",
+                b[0],
+                b[1],
+                fc_name(b[1])
+            ),
+            Style::default(),
+        )));
         if b.len() >= 4 {
             let c = u16::from_le_bytes([b[b.len() - 2], b[b.len() - 1]]);
-            pl.push(Line::from(Span::styled(format!("{}-{}  {:04X}  CRC16", b.len() - 2, b.len() - 1, c), Style::default())));
+            pl.push(Line::from(Span::styled(
+                format!("{}-{}  {:04X}  CRC16", b.len() - 2, b.len() - 1, c),
+                Style::default(),
+            )));
         }
     }
     f.render_widget(Paragraph::new(pl), v[2]);
 
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(t!("construct.help_nav"), Style::default().fg(Color::DarkGray)))).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(Line::from(Span::styled(
+            t!("construct.help_nav"),
+            Style::default().fg(Color::DarkGray),
+        )))
+        .block(Block::default().borders(Borders::ALL)),
         v[3],
     );
 }
 
 fn handle_frame_construct_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelection> {
-    const NF:usize=5;
+    const NF: usize = 5;
     if ui.construct_edit_mode {
         match code {
-            KeyCode::Char(c) if c.is_ascii_digit()=>ui.construct_edit_buf.push(c),
-            KeyCode::Backspace=>{ui.construct_edit_buf.pop();}
-            KeyCode::Enter=>{
-                if let Ok(v)=ui.construct_edit_buf.trim().parse::<u32>(){
-                    match ui.construct_focus{
-                        2 if(1..=247).contains(&v)=>ui.construct_slave_id=v as u8,
-                        3 if v<=65535=>ui.construct_addr=v as u16,
-                        4 if(1..=2000).contains(&v)=>ui.construct_count=v as u16,
-                        _=>set_status(ui,t!("main.invalid_input_value",err="range")),
+            KeyCode::Char(c) if c.is_ascii_digit() => ui.construct_edit_buf.push(c),
+            KeyCode::Backspace => {
+                ui.construct_edit_buf.pop();
+            }
+            KeyCode::Enter => {
+                if let Ok(v) = ui.construct_edit_buf.trim().parse::<u32>() {
+                    match ui.construct_focus {
+                        2 if (1..=247).contains(&v) => ui.construct_slave_id = v as u8,
+                        3 if v <= 65535 => ui.construct_addr = v as u16,
+                        4 if (1..=2000).contains(&v) => ui.construct_count = v as u16,
+                        _ => set_status(ui, t!("main.invalid_input_value", err = "range")),
                     }
                 }
-                ui.construct_edit_mode=false;ui.construct_edit_buf.clear();
+                ui.construct_edit_mode = false;
+                ui.construct_edit_buf.clear();
             }
-            KeyCode::Esc=>{ui.construct_edit_mode=false;ui.construct_edit_buf.clear();}
-            _=>{}
+            KeyCode::Esc => {
+                ui.construct_edit_mode = false;
+                ui.construct_edit_buf.clear();
+            }
+            _ => {}
         }
     } else {
         match code {
-            KeyCode::Up|KeyCode::Char('k')=>ui.construct_focus=ui.construct_focus.saturating_sub(1),
-            KeyCode::Down|KeyCode::Char('j')=>{if ui.construct_focus+1<NF{ui.construct_focus+=1;}}
-            KeyCode::Enter=>match ui.construct_focus{
-                0=>ui.construct_mode=(ui.construct_mode+1)%4,
-                1=>{let p=FCS.iter().position(|&c|c==ui.construct_func_code).unwrap_or(0);ui.construct_func_code=FCS[(p+1)%FCS.len()];}
-                2|3|4=>{ui.construct_edit_mode=true;ui.construct_edit_buf=match ui.construct_focus{2=>format!("{}",ui.construct_slave_id),3=>format!("{}",ui.construct_addr),_=>format!("{}",ui.construct_count)};}
-                _=>{}
-            },
-            KeyCode::Char('c')|KeyCode::Char('C')=>{
-                let b=construct_frame(ui.construct_mode.min(3),ui.construct_slave_id,ui.construct_func_code,ui.construct_addr,ui.construct_count);
-                let s:Vec<String>=b.iter().map(|x|format!("{:02X}",x)).collect();let h=s.join(" ");
-                let _=std::process::Command::new("sh").arg("-c").arg(format!("echo -n '{}'|xclip -sel clip 2>/dev/null||echo -n '{}'|pbcopy 2>/dev/null||true",h,h)).output();
-                set_status(ui,format!("{}: [ {} ]",t!("construct.copied"),h));
+            KeyCode::Up | KeyCode::Char('k') => {
+                ui.construct_focus = ui.construct_focus.saturating_sub(1)
             }
-            KeyCode::Esc=>ui.menu_screen=MenuScreen::Main,
-            KeyCode::Char('q')=>return Some(MenuSelection{main_mode:MainMode::TcpClient,profile_name:None,quit:true}),
-            _=>{}
+            KeyCode::Down | KeyCode::Char('j') => {
+                if ui.construct_focus + 1 < NF {
+                    ui.construct_focus += 1;
+                }
+            }
+            KeyCode::Enter => match ui.construct_focus {
+                0 => ui.construct_mode = (ui.construct_mode + 1) % 4,
+                1 => {
+                    let p = FCS
+                        .iter()
+                        .position(|&c| c == ui.construct_func_code)
+                        .unwrap_or(0);
+                    ui.construct_func_code = FCS[(p + 1) % FCS.len()];
+                }
+                2 | 3 | 4 => {
+                    ui.construct_edit_mode = true;
+                    ui.construct_edit_buf = match ui.construct_focus {
+                        2 => format!("{}", ui.construct_slave_id),
+                        3 => format!("{}", ui.construct_addr),
+                        _ => format!("{}", ui.construct_count),
+                    };
+                }
+                _ => {}
+            },
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                let b = construct_frame(
+                    ui.construct_mode.min(3),
+                    ui.construct_slave_id,
+                    ui.construct_func_code,
+                    ui.construct_addr,
+                    ui.construct_count,
+                );
+                let s: Vec<String> = b.iter().map(|x| format!("{:02X}", x)).collect();
+                let h = s.join(" ");
+                let _=std::process::Command::new("sh").arg("-c").arg(format!("echo -n '{}'|xclip -sel clip 2>/dev/null||echo -n '{}'|pbcopy 2>/dev/null||true",h,h)).output();
+                set_status(ui, format!("{}: [ {} ]", t!("construct.copied"), h));
+            }
+            KeyCode::Esc => ui.menu_screen = MenuScreen::Main,
+            KeyCode::Char('q') => {
+                return Some(MenuSelection {
+                    main_mode: MainMode::TcpClient,
+                    profile_name: None,
+                    quit: true,
+                })
+            }
+            _ => {}
         }
     }
     None

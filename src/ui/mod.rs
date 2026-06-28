@@ -72,17 +72,15 @@ pub fn parse_reg_format(s: &str) -> RegDataFormat {
     }
 }
 
-const UI_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// 菜单屏幕状态
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuScreen {
-    Main,           // 主菜单
-    ProfilePick,    // 选择配置（Server/Client 子菜单）
-    ProfileSet,     // 配置管理设置
-    ProfileEdit,    // 编辑配置字段
-    NamePrompt,     // 输入新增/克隆的配置名
-    Construct, // RTU 主站报文构造 / Statement Builder
+    Main,        // 主菜单
+    ProfilePick, // 选择配置（Server/Client 子菜单）
+    ProfileSet,  // 配置管理设置
+    ProfileEdit, // 编辑配置字段
+    NamePrompt,  // 输入新增/克隆的配置名
+    Construct,   // RTU 主站报文构造 / Statement Builder
 }
 
 /// 菜单选择结果，返回给 main.rs
@@ -103,8 +101,7 @@ pub struct Ui {
     pub status_msg: Option<String>,
     pub show_byte_panel: bool,
 
-    // --- 静默监听 ---
-    pub show_monitor: bool,
+    // --- 监听模式滚动与焦点（纯监听模式用） ---
     /// 历史记录滚动偏移
     pub monitor_scroll: usize,
     /// true=焦点在历史面板, false=焦点在统计面板
@@ -313,7 +310,7 @@ impl Ui {
             edit_buf: String::new(),
             status_msg: None,
             show_byte_panel: false,
-            show_monitor: false,
+
             monitor_scroll: 0,
             monitor_focus_history: true,
 
