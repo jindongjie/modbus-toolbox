@@ -1599,6 +1599,12 @@ mod tests {
             RegChangePattern::Sine,
             RegChangePattern::Square,
             RegChangePattern::Triangle,
+            RegChangePattern::Sawtooth,
+            RegChangePattern::SawtoothDown,
+            RegChangePattern::Noise,
+            RegChangePattern::StairsUp,
+            RegChangePattern::StairsDown,
+            RegChangePattern::Pulse,
         ] {
             let idx = pattern_index(p);
             let back = index_to_pattern(idx);

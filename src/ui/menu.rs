@@ -18,6 +18,27 @@ use ratatui::{
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
+
+/// 根据配置的 main_mode 返回模式标签："tcp" / "rtu" / "all"
+fn profile_mode_tag(args: &Args) -> &'static str {
+    let mode = args.main_mode.to_ascii_lowercase();
+    if mode.starts_with("tcp") {
+        "tcp"
+    } else if mode.starts_with("rtu") {
+        "rtu"
+    } else {
+        "all"
+    }
+}
+
+/// 根据配置的模式标签过滤可编辑字段列表
+fn filtered_profile_fields(args: &Args) -> Vec<ProfileField> {
+    let tag = profile_mode_tag(args);
+    profile_fields()
+        .into_iter()
+        .filter(|f| f.mode == "all" || f.mode == tag)
+        .collect()
+}
 use tokio::time::Duration;
 
 pub fn load_profile_list(config_path: &str) -> Vec<String> {
@@ -478,20 +499,44 @@ fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
     let main =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(vert[1]);
 
-    // 左：配置列表，可设置为默认
+    // 左：配置列表，带模式标签
     let mut items: Vec<Line> = Vec::new();
     for (i, name) in ui.profiles.iter().enumerate() {
+        let mode_tag = load_profile_args(config_path, name)
+            .map(|(_, args)| match profile_mode_tag(&args) {
+                "tcp" => t!("profile_edit.field_mode_tcp"),
+                "rtu" => t!("profile_edit.field_mode_rtu"),
+                _ => t!("profile_edit.field_mode_all"),
+            })
+            .unwrap_or_else(|| t!("profile_edit.field_mode_all"));
         let icon = "○";
         let line = if i == ui.menu_list_idx {
-            Line::from(Span::styled(
-                format!(" {icon} {name}"),
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            Line::from(vec![
+                Span::styled(
+                    format!(" {icon} {name} "),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    mode_tag,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ])
         } else {
-            Line::from(Span::styled(format!(" {icon} {name}"), Style::default()))
+            Line::from(vec![
+                Span::styled(format!(" {icon} {name} "), Style::default()),
+                Span::styled(
+                    mode_tag,
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ])
         };
         items.push(line);
     }
@@ -1023,15 +1068,28 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         vert[0],
     );
 
-    let fields = profile_fields();
+    let args = match ui.edit_args.as_ref() {
+        Some(a) => a,
+        None => return,
+    };
+    let fields = filtered_profile_fields(args);
+    let mode_label = match profile_mode_tag(args) {
+        "tcp" => t!("profile_edit.field_mode_tcp"),
+        "rtu" => t!("profile_edit.field_mode_rtu"),
+        _ => t!("profile_edit.field_mode_all"),
+    };
     let main =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(vert[1]);
 
-    // 左：字段列表（含模式标签）
+    // 左：字段列表（仅显示与配置模式匹配的字段）
     let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("{} {}", t!("profile_edit.filter_hint"), mode_label),
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+    )));
+    lines.push(Line::from(Span::raw("")));
     for (i, field) in fields.iter().enumerate() {
         let is_selected = i == ui.menu_list_idx;
-        let args = ui.edit_args.as_ref().unwrap();
         let val = (field.display)(args);
         let label_key = format!("profile_edit.{}", field.name_key);
         let label = t!(&label_key);
@@ -1072,6 +1130,12 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             ])
         };
         lines.push(line);
+    }
+    if fields.is_empty() {
+        lines.push(Line::from(Span::styled(
+            t!("profile_edit.no_fields"),
+            Style::default().fg(Color::DarkGray),
+        )));
     }
 
     let list_block = Block::default()
@@ -1283,7 +1347,13 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     );
 }
 fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option<MenuSelection> {
-    let fields = profile_fields();
+    let fields = {
+        let args = match ui.edit_args.as_ref() {
+            Some(a) => a,
+            None => return None,
+        };
+        filtered_profile_fields(args)
+    }; // `args` borrow ends here
     let field_count = fields.len();
 
     if ui.field_edit_mode {
@@ -1301,7 +1371,7 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
             KeyCode::Enter => {
                 let val = ui.field_edit_buf.clone();
                 if let Some(ref mut args) = ui.edit_args {
-                    match (fields[field_idx].apply)(args, &val) {
+                    match (field.apply)(args, &val) {
                         Ok(()) => {
                             ui.field_edit_mode = false;
                             ui.field_edit_buf.clear();

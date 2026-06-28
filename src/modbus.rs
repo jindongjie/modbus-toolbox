@@ -1648,6 +1648,8 @@ mod tests {
             input_pattern_freqs: vec![1.0; input],
             holding_pattern_phases: vec![0.0; holding],
             input_pattern_phases: vec![0.0; input],
+            holding_pattern_duties: vec![0.5; holding],
+            input_pattern_duties: vec![0.5; input],
             read_enabled: [false, false, false, false],
             slave_scan_result: None,
             slave_scan_running: false,

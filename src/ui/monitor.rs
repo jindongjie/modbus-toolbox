@@ -387,6 +387,12 @@ pub(crate) fn pattern_index(p: &crate::RegChangePattern) -> usize {
         crate::RegChangePattern::Sine => 2,
         crate::RegChangePattern::Square => 3,
         crate::RegChangePattern::Triangle => 4,
+        crate::RegChangePattern::Sawtooth => 5,
+        crate::RegChangePattern::SawtoothDown => 6,
+        crate::RegChangePattern::Noise => 7,
+        crate::RegChangePattern::StairsUp => 8,
+        crate::RegChangePattern::StairsDown => 9,
+        crate::RegChangePattern::Pulse => 10,
     }
 }
 
@@ -397,7 +403,13 @@ pub(crate) fn index_to_pattern(idx: usize) -> crate::RegChangePattern {
         1 => crate::RegChangePattern::UpDown,
         2 => crate::RegChangePattern::Sine,
         3 => crate::RegChangePattern::Square,
-        _ => crate::RegChangePattern::Triangle,
+        4 => crate::RegChangePattern::Triangle,
+        5 => crate::RegChangePattern::Sawtooth,
+        6 => crate::RegChangePattern::SawtoothDown,
+        7 => crate::RegChangePattern::Noise,
+        8 => crate::RegChangePattern::StairsUp,
+        9 => crate::RegChangePattern::StairsDown,
+        _ => crate::RegChangePattern::Pulse,
     }
 }
 
@@ -411,18 +423,26 @@ pub(crate) fn apply_pattern_dialog(ui: &mut Ui, s: &mut crate::AppState) {
                 s.holding_change_patterns
                     .push(crate::RegChangePattern::Random);
                 s.holding_pattern_freqs.push(1.0);
+                s.holding_pattern_duties.push(0.5);
             }
             s.holding_change_patterns[addr] = pattern;
             s.holding_pattern_freqs[addr] = ui.pattern_dialog_freq;
+            if addr < s.holding_pattern_duties.len() {
+                s.holding_pattern_duties[addr] = ui.pattern_dialog_duty;
+            }
         }
         super::REG_VIEW_INPUT => {
             while s.input_change_patterns.len() <= addr {
                 s.input_change_patterns
                     .push(crate::RegChangePattern::Random);
                 s.input_pattern_freqs.push(1.0);
+                s.input_pattern_duties.push(0.5);
             }
             s.input_change_patterns[addr] = pattern;
             s.input_pattern_freqs[addr] = ui.pattern_dialog_freq;
+            if addr < s.input_pattern_duties.len() {
+                s.input_pattern_duties[addr] = ui.pattern_dialog_duty;
+            }
         }
         _ => {}
     }

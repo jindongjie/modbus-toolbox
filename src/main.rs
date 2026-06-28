@@ -401,20 +401,38 @@ pub enum RegChangePattern {
     UpDown,
     /// 正弦波
     Sine,
-    /// 方波
+    /// 方波（支持占空比调节）
     Square,
     /// 三角波
     Triangle,
+    /// 锯齿波（线性上升，快速归零）
+    Sawtooth,
+    /// 反锯齿波（线性下降，快速跳回）
+    SawtoothDown,
+    /// 白噪声（完全随机 0～65535）
+    Noise,
+    /// 阶梯上升（按步长递增，溢出归零）
+    StairsUp,
+    /// 阶梯下降（按步长递减，溢出回顶）
+    StairsDown,
+    /// 脉冲波（占空比控制高电平宽度）
+    Pulse,
 }
 
 impl std::fmt::Display for RegChangePattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegChangePattern::Random => write!(f, "随机"),
-            RegChangePattern::UpDown => write!(f, "上下"),
-            RegChangePattern::Sine => write!(f, "正弦"),
-            RegChangePattern::Square => write!(f, "方波"),
-            RegChangePattern::Triangle => write!(f, "三角"),
+            RegChangePattern::Random => write!(f, "{}", t!("pattern.random")),
+            RegChangePattern::UpDown => write!(f, "{}", t!("pattern.up_down")),
+            RegChangePattern::Sine => write!(f, "{}", t!("pattern.sine")),
+            RegChangePattern::Square => write!(f, "{}", t!("pattern.square")),
+            RegChangePattern::Triangle => write!(f, "{}", t!("pattern.triangle")),
+            RegChangePattern::Sawtooth => write!(f, "{}", t!("pattern.sawtooth")),
+            RegChangePattern::SawtoothDown => write!(f, "{}", t!("pattern.sawtooth_down")),
+            RegChangePattern::Noise => write!(f, "{}", t!("pattern.noise")),
+            RegChangePattern::StairsUp => write!(f, "{}", t!("pattern.stairs_up")),
+            RegChangePattern::StairsDown => write!(f, "{}", t!("pattern.stairs_down")),
+            RegChangePattern::Pulse => write!(f, "{}", t!("pattern.pulse")),
         }
     }
 }
@@ -518,6 +536,9 @@ pub struct AppState {
     /// 相位累加器（用于波形/上下计数追踪）
     pub holding_pattern_phases: Vec<f64>,
     pub input_pattern_phases: Vec<f64>,
+    /// 波形占空比（0.0～1.0），仅对 Square / Pulse 有效
+    pub holding_pattern_duties: Vec<f64>,
+    pub input_pattern_duties: Vec<f64>,
     /// 客户端模式下各寄存器类型的读取启用状态 [holding, coils, discrete, input]
     pub read_enabled: [bool; 4],
     /// 从设备扫描结果 (slave_id, Option<register_value>)
@@ -566,6 +587,8 @@ impl Default for AppState {
             input_pattern_freqs: Vec::new(),
             holding_pattern_phases: Vec::new(),
             input_pattern_phases: Vec::new(),
+            holding_pattern_duties: Vec::new(),
+            input_pattern_duties: Vec::new(),
             read_enabled: [true, false, false, false],
             slave_scan_result: None,
             slave_scan_running: false,
@@ -864,6 +887,7 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
 fn compute_pattern_value(
     pattern: RegChangePattern,
     freq: f64,
+    duty: f64,
     phase: &mut f64,
     _elapsed: f64,
     tick_secs: f64,
@@ -913,7 +937,9 @@ fn compute_pattern_value(
             if *phase > 2.0 * std::f64::consts::PI * 1000.0 {
                 *phase -= 2.0 * std::f64::consts::PI * 1000.0;
             }
-            if phase.sin() >= 0.0 {
+            // 使用占空比：phase 在 [0, 2π) 周期内，高电平占比 duty
+            let cycle_pos = (*phase % (2.0 * std::f64::consts::PI)) / (2.0 * std::f64::consts::PI);
+            if cycle_pos < duty {
                 65535
             } else {
                 0
@@ -927,6 +953,57 @@ fn compute_pattern_value(
             let t = *phase;
             let val = 2.0 * (t - (t + 0.5).floor()).abs();
             (val * 65535.0) as u16
+        }
+        RegChangePattern::Sawtooth => {
+            *phase += freq * tick_secs;
+            if *phase > 1000.0 {
+                *phase -= 1000.0;
+            }
+            // 线性上升 0→65535，然后 snap 回 0
+            ((*phase / 1000.0) * 65535.0) as u16
+        }
+        RegChangePattern::SawtoothDown => {
+            *phase += freq * tick_secs;
+            if *phase > 1000.0 {
+                *phase -= 1000.0;
+            }
+            // 线性下降 65535→0，然后 snap 回 65535
+            ((1.0 - *phase / 1000.0) * 65535.0) as u16
+        }
+        RegChangePattern::Noise => {
+            // 每个 tick 完全随机 0..=65535
+            rand::random::<u16>()
+        }
+        RegChangePattern::StairsUp => {
+            *phase += freq * tick_secs;
+            if *phase > 1000.0 {
+                *phase -= 1000.0;
+            }
+            let step = 4096u16; // 65536 / 16 级阶梯
+            let n = ((*phase / 1000.0) * 16.0) as u16;
+            n.saturating_mul(step)
+        }
+        RegChangePattern::StairsDown => {
+            *phase += freq * tick_secs;
+            if *phase > 1000.0 {
+                *phase -= 1000.0;
+            }
+            let step = 4096u16;
+            let n = ((*phase / 1000.0) * 16.0) as u16;
+            65535u16.saturating_sub(n.saturating_mul(step))
+        }
+        RegChangePattern::Pulse => {
+            *phase += 2.0 * std::f64::consts::PI * freq * tick_secs;
+            if *phase > 2.0 * std::f64::consts::PI * 1000.0 {
+                *phase -= 2.0 * std::f64::consts::PI * 1000.0;
+            }
+            // 脉冲：占空比很窄时产生窄脉冲
+            let cycle_pos = (*phase % (2.0 * std::f64::consts::PI)) / (2.0 * std::f64::consts::PI);
+            if cycle_pos < duty {
+                65535
+            } else {
+                0
+            }
         }
     }
 }
@@ -955,11 +1032,13 @@ pub async fn run_register_simulator(
             s.holding_change_patterns.push(RegChangePattern::Random);
             s.holding_pattern_freqs.push(1.0);
             s.holding_pattern_phases.push(0.0);
+            s.holding_pattern_duties.push(0.5);
         }
         while s.input_change_patterns.len() < s.input_registers.len() {
             s.input_change_patterns.push(RegChangePattern::Random);
             s.input_pattern_freqs.push(1.0);
             s.input_pattern_phases.push(0.0);
+            s.input_pattern_duties.push(0.5);
         }
         // 确保 reg_change_direction 向量足够长
         while s.reg_change_direction.len() < s.holding.len() + s.input_registers.len() {
@@ -988,6 +1067,7 @@ pub async fn run_register_simulator(
                 1.0
             };
             let mut phase = s.holding_pattern_phases.get(addr).copied().unwrap_or(0.0);
+            let duty = s.holding_pattern_duties.get(addr).copied().unwrap_or(0.5);
             let old = s.holding[addr];
             let mut is_up = s
                 .reg_change_direction
@@ -1001,7 +1081,7 @@ pub async fn run_register_simulator(
             }
 
             let new =
-                compute_pattern_value(pattern, freq, &mut phase, 0.0, tick_secs, old, &mut is_up);
+                compute_pattern_value(pattern, freq, duty, &mut phase, 0.0, tick_secs, old, &mut is_up);
             if addr < s.holding_pattern_phases.len() {
                 s.holding_pattern_phases[addr] = phase;
             }
@@ -1033,6 +1113,7 @@ pub async fn run_register_simulator(
                 1.0
             };
             let mut phase = s.input_pattern_phases.get(addr).copied().unwrap_or(0.0);
+            let duty = s.input_pattern_duties.get(addr).copied().unwrap_or(0.5);
             let offset = s.holding.len();
             let old = s.input_registers[addr];
             let mut is_up = s
@@ -1047,7 +1128,7 @@ pub async fn run_register_simulator(
             }
 
             let new =
-                compute_pattern_value(pattern, freq, &mut phase, 0.0, tick_secs, old, &mut is_up);
+                compute_pattern_value(pattern, freq, duty, &mut phase, 0.0, tick_secs, old, &mut is_up);
             if addr < s.input_pattern_phases.len() {
                 s.input_pattern_phases[addr] = phase;
             }
@@ -1845,6 +1926,8 @@ async fn main() -> Result<()> {
         input_pattern_freqs: vec![1.0; args.input_count],
         holding_pattern_phases: vec![0.0; binding_count],
         input_pattern_phases: vec![0.0; args.input_count],
+        holding_pattern_duties: vec![0.5; binding_count],
+        input_pattern_duties: vec![0.5; args.input_count],
         read_enabled: [true, false, false, false],
         slave_scan_result: None,
         slave_scan_running: false,

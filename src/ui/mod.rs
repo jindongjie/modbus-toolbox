@@ -200,6 +200,12 @@ pub struct Ui {
     pub pattern_dialog_freq_buf: String,
     /// 临时存储的频率值
     pub pattern_dialog_freq: f64,
+    /// 是否正在编辑占空比（仅对 Square / Pulse 有效）
+    pub pattern_dialog_editing_duty: bool,
+    /// 占空比编辑缓存
+    pub pattern_dialog_duty_buf: String,
+    /// 临时存储的占空比值
+    pub pattern_dialog_duty: f64,
     /// 是否显示值变化历史条形图
     pub show_change_bar: bool,
 
@@ -365,6 +371,9 @@ impl Ui {
             pattern_dialog_editing_freq: false,
             pattern_dialog_freq_buf: String::new(),
             pattern_dialog_freq: 1.0,
+            pattern_dialog_editing_duty: false,
+            pattern_dialog_duty_buf: String::new(),
+            pattern_dialog_duty: 0.5,
             show_change_bar: false,
             goto_mode: false,
             goto_buf: String::new(),

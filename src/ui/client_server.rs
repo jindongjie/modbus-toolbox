@@ -443,24 +443,25 @@ pub async fn run_ui(
                                 // --- 显式关闭各对话框 ---
                                 if ui.pattern_dialog_open {
                                     match code {
-                                        KeyCode::Up | KeyCode::Char('k') if !ui.pattern_dialog_editing_freq => {
+                                        KeyCode::Up | KeyCode::Char('k') if !ui.pattern_dialog_editing_freq && !ui.pattern_dialog_editing_duty => {
                                             ui.pattern_dialog_sel = ui.pattern_dialog_sel.saturating_sub(1);
                                         }
-                                        KeyCode::Down | KeyCode::Char('j') if !ui.pattern_dialog_editing_freq => {
-                                            if ui.pattern_dialog_sel < 4 {
+                                        KeyCode::Down | KeyCode::Char('j') if !ui.pattern_dialog_editing_freq && !ui.pattern_dialog_editing_duty => {
+                                            if ui.pattern_dialog_sel < 10 {
                                                 ui.pattern_dialog_sel += 1;
                                             }
                                         }
-                                        KeyCode::Enter if !ui.pattern_dialog_editing_freq => {
-                                            // 切换到频率编辑模式（仅对波形模式）
-                                            if ui.pattern_dialog_sel >= 2 {
+                                        KeyCode::Enter if !ui.pattern_dialog_editing_freq && !ui.pattern_dialog_editing_duty => {
+                                            // 需要频率的波形模式：Sine/Square/Triangle/Sawtooth/SawtoothDown/StairsUp/StairsDown/Pulse
+                                            let needs_freq = ui.pattern_dialog_sel >= 2;
+                                            if needs_freq {
                                                 ui.pattern_dialog_editing_freq = true;
                                                 ui.pattern_dialog_freq_buf = format!("{:.2}", ui.pattern_dialog_freq);
                                             } else {
-                                                // Random/UpDown 无需频率，直接确认
+                                                // Random/UpDown/Noise 无需额外参数，直接确认
                                                 apply_pattern_dialog(&mut ui, &mut *state.write().await);
                                                 ui.pattern_dialog_open = false;
-                                                set_status(&mut ui, "Pattern updated");
+                                                set_status(&mut ui, t!("run_ui.pattern_updated"));
                                             }
                                         }
                                         KeyCode::Enter if ui.pattern_dialog_editing_freq => {
@@ -470,20 +471,44 @@ pub async fn run_ui(
                                                 ui.pattern_dialog_freq = f;
                                             }
                                             ui.pattern_dialog_editing_freq = false;
+                                            // Square 和 Pulse 需要占空比编辑
+                                            if ui.pattern_dialog_sel == 3 || ui.pattern_dialog_sel == 10 {
+                                                ui.pattern_dialog_editing_duty = true;
+                                                ui.pattern_dialog_duty_buf = format!("{:.2}", ui.pattern_dialog_duty);
+                                            } else {
+                                                apply_pattern_dialog(&mut ui, &mut *state.write().await);
+                                                ui.pattern_dialog_open = false;
+                                                set_status(&mut ui, t!("run_ui.pattern_updated"));
+                                            }
+                                        }
+                                        KeyCode::Enter if ui.pattern_dialog_editing_duty => {
+                                            // 确认占空比编辑
+                                            if let Ok(d) = ui.pattern_dialog_duty_buf.parse::<f64>() {
+                                                let d = d.clamp(0.01, 0.99);
+                                                ui.pattern_dialog_duty = d;
+                                            }
+                                            ui.pattern_dialog_editing_duty = false;
                                             apply_pattern_dialog(&mut ui, &mut *state.write().await);
                                             ui.pattern_dialog_open = false;
-                                            set_status(&mut ui, "Pattern updated");
+                                            set_status(&mut ui, t!("run_ui.pattern_updated"));
                                         }
-                                        KeyCode::Char(c) if ui.pattern_dialog_editing_freq && c.is_ascii_digit() || c == '.' => {
+                                        KeyCode::Char(c) if ui.pattern_dialog_editing_freq && (c.is_ascii_digit() || c == '.') => {
                                             ui.pattern_dialog_freq_buf.push(c);
+                                        }
+                                        KeyCode::Char(c) if ui.pattern_dialog_editing_duty && (c.is_ascii_digit() || c == '.') => {
+                                            ui.pattern_dialog_duty_buf.push(c);
                                         }
                                         KeyCode::Backspace if ui.pattern_dialog_editing_freq => {
                                             ui.pattern_dialog_freq_buf.pop();
                                         }
+                                        KeyCode::Backspace if ui.pattern_dialog_editing_duty => {
+                                            ui.pattern_dialog_duty_buf.pop();
+                                        }
                                         KeyCode::Esc => {
                                             ui.pattern_dialog_open = false;
                                             ui.pattern_dialog_editing_freq = false;
-                                            set_status(&mut ui, "Pattern config cancelled");
+                                            ui.pattern_dialog_editing_duty = false;
+                                            set_status(&mut ui, t!("run_ui.pattern_cancelled"));
                                         }
                                         _ => {}
                                     }
@@ -1496,6 +1521,11 @@ pub async fn run_ui(
                                                     } else {
                                                         1.0
                                                     };
+                                                    let duty = if addr < s.holding_pattern_duties.len() {
+                                                        s.holding_pattern_duties[addr]
+                                                    } else {
+                                                        0.5
+                                                    };
                                                     let sel = pattern_index(&pattern);
                                                     drop(s);
                                                     ui.pattern_dialog_open = true;
@@ -1503,8 +1533,10 @@ pub async fn run_ui(
                                                     ui.pattern_dialog_reg_type = REG_VIEW_HOLDING;
                                                     ui.pattern_dialog_sel = sel;
                                                     ui.pattern_dialog_freq = freq;
+                                                    ui.pattern_dialog_duty = duty;
                                                     ui.pattern_dialog_editing_freq = false;
-                                                    set_status(&mut ui, "Pattern config: ↑↓ select Enter confirm Esc cancel");
+                                                    ui.pattern_dialog_editing_duty = false;
+                                                    set_status(&mut ui, t!("run_ui.pattern_help"));
                                                 } else if reg_type == REG_VIEW_INPUT && addr < s.input_registers.len() {
                                                     let pattern = if addr < s.input_change_patterns.len() {
                                                         s.input_change_patterns[addr]
@@ -1516,6 +1548,11 @@ pub async fn run_ui(
                                                     } else {
                                                         1.0
                                                     };
+                                                    let duty = if addr < s.input_pattern_duties.len() {
+                                                        s.input_pattern_duties[addr]
+                                                    } else {
+                                                        0.5
+                                                    };
                                                     let sel = pattern_index(&pattern);
                                                     drop(s);
                                                     ui.pattern_dialog_open = true;
@@ -1523,11 +1560,13 @@ pub async fn run_ui(
                                                     ui.pattern_dialog_reg_type = REG_VIEW_INPUT;
                                                     ui.pattern_dialog_sel = sel;
                                                     ui.pattern_dialog_freq = freq;
+                                                    ui.pattern_dialog_duty = duty;
                                                     ui.pattern_dialog_editing_freq = false;
-                                                    set_status(&mut ui, "Pattern config: ↑↓ select Enter confirm Esc cancel");
+                                                    ui.pattern_dialog_editing_duty = false;
+                                                    set_status(&mut ui, t!("run_ui.pattern_help"));
                                                 } else {
                                                     drop(s);
-                                                    set_status(&mut ui, "Pattern config not available for this register type");
+                                                    set_status(&mut ui, t!("run_ui.pattern_not_available"));
                                                 }
                                             }
                                         }
@@ -1984,7 +2023,19 @@ fn render_change_bar(s: &AppState, addr: usize) -> Vec<Span<'static>> {
 }
 
 fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppState) {
-    let patterns = ["Random", "Up/Down", "Sine", "Square", "Triangle"];
+    let patterns = [
+        t!("pattern.random"),
+        t!("pattern.up_down"),
+        t!("pattern.sine"),
+        t!("pattern.square"),
+        t!("pattern.triangle"),
+        t!("pattern.sawtooth"),
+        t!("pattern.sawtooth_down"),
+        t!("pattern.noise"),
+        t!("pattern.stairs_up"),
+        t!("pattern.stairs_down"),
+        t!("pattern.pulse"),
+    ];
     let addr = ui.pattern_dialog_addr;
 
     let current_val = match ui.pattern_dialog_reg_type {
@@ -1996,14 +2047,14 @@ fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppStat
     };
 
     let reg_name = if ui.pattern_dialog_reg_type == REG_VIEW_HOLDING {
-        "Holding"
+        t!("run_ui.pattern_reg_holding")
     } else {
-        "Input"
+        t!("run_ui.pattern_reg_input")
     };
 
     let mut text = format!(
-        "Register {} [{}]\nCurrent: {}\n\n",
-        addr, reg_name, current_val
+        "{} {} [{}]\n{}: {}\n\n",
+        t!("run_ui.pattern_register"), addr, reg_name, t!("run_ui.pattern_current"), current_val
     );
 
     for (i, name) in patterns.iter().enumerate() {
@@ -2013,6 +2064,8 @@ fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppStat
             "○"
         };
         if i == ui.pattern_dialog_sel && ui.pattern_dialog_editing_freq {
+            text.push_str(&format!("  {} {}   ←\n", marker, name));
+        } else if i == ui.pattern_dialog_sel && ui.pattern_dialog_editing_duty {
             text.push_str(&format!("  {} {}   ←\n", marker, name));
         } else {
             text.push_str(&format!("  {} {}\n", marker, name));
@@ -2025,15 +2078,26 @@ fn render_pattern_dialog(f: &mut ratatui::Frame<'_>, ui: &Ui, s: &crate::AppStat
     } else {
         format!("{:.2} ", ui.pattern_dialog_freq)
     };
-    text.push_str(&format!("Frequency: [{}] Hz\n", freq_str));
-    text.push_str("\n↑↓ select  Enter confirm  Esc cancel");
+    text.push_str(&format!("{} [{}] Hz\n", t!("run_ui.pattern_frequency"), freq_str));
 
-    let dialog_area = centered_rect(50, 50, f.area());
+    let needs_duty = ui.pattern_dialog_sel == 3 || ui.pattern_dialog_sel == 10;
+    if needs_duty {
+        let duty_str = if ui.pattern_dialog_editing_duty {
+            format!("{} ", ui.pattern_dialog_duty_buf)
+        } else {
+            format!("{:.2} ", ui.pattern_dialog_duty)
+        };
+        text.push_str(&format!("{} [{}]\n", t!("run_ui.pattern_duty"), duty_str));
+    }
+
+    text.push_str(&format!("\n{}", t!("run_ui.pattern_dialog_help")));
+
+    let dialog_area = centered_rect(55, 58, f.area());
     let dialog = ratatui::widgets::Paragraph::new(text)
         .block(
             ratatui::widgets::Block::default()
                 .borders(ratatui::widgets::Borders::ALL)
-                .title("Register Change Pattern")
+                .title(t!("run_ui.pattern_title"))
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().fg(Color::White).bg(Color::Black));
