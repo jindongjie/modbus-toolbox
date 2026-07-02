@@ -1,5 +1,3 @@
-use tokio::time::Duration;
-
 use ratatui::layout::{Constraint, Layout, Rect};
 
 // crate
@@ -231,9 +229,9 @@ pub struct Ui {
     /// 协议模式：0=RTU, 1=TCP
     pub construct_mode: u8,
     /// true=请求帧, false=响应帧
-    pub construct_is_request: bool,
+    // pub construct_is_request: bool,
     /// TCP 事务标识符
-    pub construct_transaction_id: u16,
+    // pub construct_transaction_id: u16,
     /// 从站地址
     pub construct_slave_id: u8,
     /// 功能码
@@ -385,8 +383,8 @@ impl Ui {
 
             // RTU 报文构造
             construct_mode: 0,
-            construct_is_request: true,
-            construct_transaction_id: 0,
+            // construct_is_request: true,
+            // construct_transaction_id: 0,
             construct_slave_id: 1,
             construct_func_code: 3,
             construct_addr: 0,
