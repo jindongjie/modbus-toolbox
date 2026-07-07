@@ -1,6 +1,6 @@
 [package]
 name = "modbus_toolbox"
-version = "0.7.3"
+version = "0.7.2"
 edition = "2021"
 description = "TUI modbus TCP/RTU client/server/monitor AIO testing toolbox write in Rust :)"
 license = "MIT"

@@ -787,9 +787,8 @@ pub async fn client_read_write_loop(
         //读取保持寄存器
         if state.read().await.read_enabled[0] {
             let mut offset: usize = 0;
-            let mut read_ok = true;
 
-            while offset < args.holding_count && read_ok {
+            while offset < args.holding_count {
                 let cnt = (args.holding_count - offset).min(once_max_reg_cnt);
                 let addr = offset as u16;
 
@@ -824,18 +823,18 @@ pub async fn client_read_write_loop(
                             }
                             offset += cnt;
                         }
-                        Err(_) => {
-                            // 异常响应，跳过本次读取，下次 tick 重试
-                            read_ok = false;
+                        Err(e) => {
+                            return Err(anyhow!(t!(
+                                "modbus.exception_response",
+                                err = format!("{:?}", e)
+                            )));
                         }
                     },
-                    Ok(Err(_)) => {
-                        // 通讯错误，跳过本次读取，下次 tick 重试
-                        read_ok = false;
+                    Ok(Err(e)) => {
+                        return Err(anyhow!(t!("modbus.client_read_fail", e = e)));
                     }
                     Err(_) => {
-                        // 超时，跳过本次读取，下次 tick 重试
-                        read_ok = false;
+                        return Err(anyhow!(t!("modbus.client_read_timeout")));
                     }
                 }
             }
@@ -844,8 +843,7 @@ pub async fn client_read_write_loop(
         //读取线圈
         if state.read().await.read_enabled[1] {
             let mut offset: usize = 0;
-            let mut read_ok = true;
-            while offset < args.coil_count && read_ok {
+            while offset < args.coil_count {
                 let cnt = (args.coil_count - offset).min(once_max_reg_cnt);
                 let addr = offset as u16;
 
@@ -888,15 +886,18 @@ pub async fn client_read_write_loop(
                             }
                             offset += cnt;
                         }
-                        Err(_) => {
-                            read_ok = false;
+                        Err(e) => {
+                            return Err(anyhow!(t!(
+                                "modbus.exception_response",
+                                err = format!("{:?}", e)
+                            )));
                         }
                     },
-                    Ok(Err(_)) => {
-                        read_ok = false;
+                    Ok(Err(e)) => {
+                        return Err(anyhow!(t!("modbus.client_read_fail", e = e)));
                     }
                     Err(_) => {
-                        read_ok = false;
+                        return Err(anyhow!(t!("modbus.client_read_timeout")));
                     }
                 }
             }
@@ -905,8 +906,7 @@ pub async fn client_read_write_loop(
         //读取离散输入
         if state.read().await.read_enabled[2] {
             let mut offset: usize = 0;
-            let mut read_ok = true;
-            while offset < args.discrete_count && read_ok {
+            while offset < args.discrete_count {
                 let cnt = (args.discrete_count - offset).min(once_max_reg_cnt);
                 let addr = offset as u16;
 
@@ -940,15 +940,18 @@ pub async fn client_read_write_loop(
                             }
                             offset += cnt;
                         }
-                        Err(_) => {
-                            read_ok = false;
+                        Err(e) => {
+                            return Err(anyhow!(t!(
+                                "modbus.exception_response",
+                                err = format!("{:?}", e)
+                            )));
                         }
                     },
-                    Ok(Err(_)) => {
-                        read_ok = false;
+                    Ok(Err(e)) => {
+                        return Err(anyhow!(t!("modbus.client_read_fail", e = e)));
                     }
                     Err(_) => {
-                        read_ok = false;
+                        return Err(anyhow!(t!("modbus.client_read_timeout")));
                     }
                 }
             }
@@ -957,8 +960,7 @@ pub async fn client_read_write_loop(
         //读取输入寄存器
         if state.read().await.read_enabled[3] {
             let mut offset: usize = 0;
-            let mut read_ok = true;
-            while offset < args.input_count && read_ok {
+            while offset < args.input_count {
                 let cnt = (args.input_count - offset).min(once_max_reg_cnt);
                 let addr = offset as u16;
 
@@ -989,15 +991,18 @@ pub async fn client_read_write_loop(
                             }
                             offset += cnt;
                         }
-                        Err(_) => {
-                            read_ok = false;
+                        Err(e) => {
+                            return Err(anyhow!(t!(
+                                "modbus.exception_response",
+                                err = format!("{:?}", e)
+                            )));
                         }
                     },
-                    Ok(Err(_)) => {
-                        read_ok = false;
+                    Ok(Err(e)) => {
+                        return Err(anyhow!(t!("modbus.client_read_fail", e = e)));
                     }
                     Err(_) => {
-                        read_ok = false;
+                        return Err(anyhow!(t!("modbus.client_read_timeout")));
                     }
                 }
             }

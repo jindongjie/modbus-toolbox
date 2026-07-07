@@ -39,7 +39,7 @@ profile_pick.preview_baud: "Baudrate: %{baud}"
 profile_pick.preview_ranges: "Coils:%{c}  Disc:%{d}  Input:%{i}"
 profile_pick.load_fail: "Unable to load profile details"
 profile_pick.select_hint: "Please select a profile"
-profile_pick.help: " ↑↓ Switch  Enter Confirm  e Edit  a Add  c Clone  d Delete  Esc Back "
+profile_pick.help: " ↑ ↓ Switch profile  Enter Confirm  Esc Back "
 profile_pick.no_profiles_hint: "Create profiles in Profile Settings first"
 profile_pick.no_match_hint: "No profile matches this mode, create one or edit profile mode"
 
