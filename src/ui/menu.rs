@@ -473,6 +473,31 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
         .alignment(ratatui::layout::Alignment::Center),
         vert[2],
     );
+
+    // 模式提示和操作键
+    let mode_hint = if let Some(pm) = ui.pending_mode {
+        let mode_label = format!("{:?}", pm);
+        format!("[{}] e=编辑 a=新增 c=克隆 d=删除", mode_label)
+    } else {
+        String::new()
+    };
+    if !mode_hint.is_empty() {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                mode_hint,
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )))
+            .alignment(ratatui::layout::Alignment::Center),
+            ratatui::layout::Rect {
+                x: 0,
+                y: vert[2].y + 1,
+                width: vert[2].width,
+                height: 1,
+            },
+        );
+    }
 }
 
 fn render_profile_settings(f: &mut Frame<'_>, ui: &Ui, config_path: &str) {
@@ -705,7 +730,7 @@ fn handle_main_menu_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Option
 fn handle_profile_pick_key(
     ui: &mut Ui,
     code: KeyCode,
-    _config_path: &str,
+    config_path: &str,
 ) -> Option<MenuSelection> {
     match code {
         KeyCode::Up => {
@@ -731,6 +756,79 @@ fn handle_profile_pick_key(
                 profile_name: profile,
                 quit: false,
             });
+        }
+        KeyCode::Char('e') => {
+            // 编辑选中配置
+            if ui.menu_list_idx < ui.pick_names.len() {
+                let name = ui.pick_names[ui.menu_list_idx].clone();
+                if let Some((_, args)) = load_profile_args(config_path, &name) {
+                    ui.edit_profile_name = Some(name);
+                    ui.edit_args = Some(args);
+                    ui.menu_list_idx = 0;
+                    ui.field_edit_mode = false;
+                    ui.field_edit_buf.clear();
+                    ui.menu_screen = MenuScreen::ProfileEdit;
+                } else {
+                    set_status(ui, t!("profile_settings.load_fail"));
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            // 新增配置
+            ui.name_prompt_buf.clear();
+            ui.name_prompt_is_clone = false;
+            ui.name_prompt_clone_args = None;
+            ui.menu_screen = MenuScreen::NamePrompt;
+        }
+        KeyCode::Char('c') => {
+            // 克隆选中配置
+            if ui.menu_list_idx < ui.pick_names.len() {
+                let name = ui.pick_names[ui.menu_list_idx].clone();
+                if let Some((_, args)) = load_profile_args(config_path, &name) {
+                    ui.name_prompt_buf.clear();
+                    ui.name_prompt_is_clone = true;
+                    ui.name_prompt_clone_args = Some(args);
+                    ui.menu_screen = MenuScreen::NamePrompt;
+                } else {
+                    set_status(ui, t!("profile_settings.load_fail"));
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            // 删除选中配置（需两次确认）
+            if ui.menu_list_idx < ui.pick_names.len() {
+                let name = ui.pick_names[ui.menu_list_idx].clone();
+                let confirm_key = t!("profile_settings.delete_confirm", name = &name);
+                let is_confirming = ui.status_msg.as_deref() == Some(confirm_key.as_ref());
+                if is_confirming {
+                    // 第二次按 d：执行删除
+                    let config_str = std::fs::read_to_string(config_path).unwrap_or_default();
+                    let mut configs: HashMap<String, Args> =
+                        toml::from_str(&config_str).unwrap_or_default();
+                    configs.remove(&name);
+                    if let Ok(s) = toml::to_string_pretty(&configs) {
+                        if std::fs::write(config_path, s).is_ok() {
+                            // 重新加载列表
+                            let mut reloaded = load_profile_list(config_path);
+                            reloaded.sort();
+                            ui.profiles = reloaded;
+                            let (names, briefs) = load_pick_list(config_path, ui.pending_mode);
+                            ui.pick_names = names;
+                            ui.pick_briefs = briefs;
+                            ui.menu_list_idx =
+                                ui.menu_list_idx.min(ui.pick_names.len().saturating_sub(1));
+                            set_status(ui, t!("profile_settings.delete_success", name = &name));
+                        } else {
+                            set_status(ui, t!("profile_settings.delete_fail"));
+                        }
+                    } else {
+                        set_status(ui, t!("profile_settings.delete_fail"));
+                    }
+                } else {
+                    // 第一次按 d：显示确认提示
+                    set_status(ui, confirm_key);
+                }
+            }
         }
         KeyCode::Esc => {
             ui.menu_screen = MenuScreen::Main;
@@ -1450,10 +1548,20 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
                         match save_edited_profile(config_path, name, args) {
                             Ok(()) => {
                                 set_status(ui, t!("profile_edit.save_success", name = name));
-                                // 回退到配置管理
-                                ui.menu_screen = MenuScreen::ProfileSet;
-                                ui.menu_list_idx =
-                                    ui.profiles.iter().position(|p| p == name).unwrap_or(0);
+                                // 回退到配置管理或模式选择列表
+                                if ui.pending_mode.is_some() {
+                                    // 来自模式选择列表，刷新 pick_names 后返回
+                                    let (names, briefs) = load_pick_list(config_path, ui.pending_mode);
+                                    ui.pick_names = names;
+                                    ui.pick_briefs = briefs;
+                                    ui.menu_screen = MenuScreen::ProfilePick;
+                                    ui.menu_list_idx =
+                                        ui.pick_names.iter().position(|p| p == name).unwrap_or(0);
+                                } else {
+                                    ui.menu_screen = MenuScreen::ProfileSet;
+                                    ui.menu_list_idx =
+                                        ui.profiles.iter().position(|p| p == name).unwrap_or(0);
+                                }
                                 ui.edit_profile_name = None;
                                 ui.edit_args = None;
                             }
@@ -1465,13 +1573,25 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
                 }
             }
             KeyCode::Esc => {
-                // 返回配置管理，不保存
-                ui.menu_screen = MenuScreen::ProfileSet;
-                ui.menu_list_idx = ui
-                    .profiles
-                    .iter()
-                    .position(|p| Some(p.as_str()) == ui.edit_profile_name.as_deref())
-                    .unwrap_or(0);
+                // 返回配置管理或模式选择列表，不保存
+                if ui.pending_mode.is_some() {
+                    let (names, briefs) = load_pick_list(config_path, ui.pending_mode);
+                    ui.pick_names = names;
+                    ui.pick_briefs = briefs;
+                    ui.menu_screen = MenuScreen::ProfilePick;
+                    ui.menu_list_idx = ui
+                        .pick_names
+                        .iter()
+                        .position(|p| Some(p.as_str()) == ui.edit_profile_name.as_deref())
+                        .unwrap_or(0);
+                } else {
+                    ui.menu_screen = MenuScreen::ProfileSet;
+                    ui.menu_list_idx = ui
+                        .profiles
+                        .iter()
+                        .position(|p| Some(p.as_str()) == ui.edit_profile_name.as_deref())
+                        .unwrap_or(0);
+                }
                 ui.edit_profile_name = None;
                 ui.edit_args = None;
                 set_status(ui, t!("profile_edit.edit_cancelled"));
