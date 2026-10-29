@@ -224,6 +224,11 @@ pub struct Ui {
     pub show_profile_info: bool,
     /// 当前配置的完整参数（用于弹窗显示）
     pub args: Args,
+    /// 上次绘制时观察到的 state 版本号：仅当版本变化或本地交互后才重绘，
+    /// 避免每帧无谓重绘带来的 CPU 占用与读写锁竞争
+    pub last_seen_version: u64,
+    /// 本地交互（按键）后置位，强制下一次重绘以反映 UI 自身状态变化
+    pub needs_redraw: bool,
 
     // --- RTU 报文构造 ---
     /// 协议模式：0=RTU, 1=TCP
@@ -380,6 +385,8 @@ impl Ui {
             reg_format,
             show_profile_info: false,
             args: crate::Args::default(),
+            last_seen_version: 0,
+            needs_redraw: true,
 
             // RTU 报文构造
             construct_mode: 0,

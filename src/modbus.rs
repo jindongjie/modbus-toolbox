@@ -1,7 +1,7 @@
 use crate::Args;
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, RwLock};
@@ -656,10 +656,16 @@ pub async fn client_read_write_loop(
 ) -> Result<()> {
     let tick = Duration::from_millis(args.client_tick_ms);
     let mut interval = tokio::time::interval(tick);
+    // 单轮读取耗时若超过 tick，错过的心跳不再补发，使实际刷新率 = max(tick, 单轮耗时)，
+    // 而不是 tick + 单轮耗时，避免在慢速串口上被进一步拖慢
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let once_max_reg_cnt: usize = 120;
     loop {
         interval.tick().await;
+        let cycle_start = Instant::now();
+        // 本轮启用的寄存器类型中，是否有任意一次读取成功（判断设备是否在响应）
+        let mut responded = false;
 
         //写入 (处理来自 UI 的待发往服务端的写命令)
         while let Ok(cmd) = rx.try_recv() {
@@ -796,6 +802,7 @@ pub async fn client_read_write_loop(
                 match timeout(IO_TIMEOUT, ctx.read_holding_registers(addr, cnt as u16)).await {
                     Ok(Ok(rsp)) => match rsp {
                         Ok(values) => {
+                            responded = true;
                             let mut s = state.write().await;
                             let end = (offset + values.len()).min(s.holding.len());
                             let write_len = end.saturating_sub(offset);
@@ -852,6 +859,7 @@ pub async fn client_read_write_loop(
                 match timeout(IO_TIMEOUT, ctx.read_coils(addr, cnt as u16)).await {
                     Ok(Ok(rsp)) => match rsp {
                         Ok(values) => {
+                            responded = true;
                             let mut s = state.write().await;
                             let end = (offset + values.len()).min(s.coils.len());
                             let write_len = end.saturating_sub(offset);
@@ -913,6 +921,7 @@ pub async fn client_read_write_loop(
                 match timeout(IO_TIMEOUT, ctx.read_discrete_inputs(addr, cnt as u16)).await {
                     Ok(Ok(rsp)) => match rsp {
                         Ok(values) => {
+                            responded = true;
                             let mut s = state.write().await;
                             let end = (offset + values.len()).min(s.discrete.len());
                             let write_len = end.saturating_sub(offset);
@@ -965,6 +974,7 @@ pub async fn client_read_write_loop(
                 match timeout(IO_TIMEOUT, ctx.read_input_registers(addr, cnt as u16)).await {
                     Ok(Ok(rsp)) => match rsp {
                         Ok(values) => {
+                            responded = true;
                             let mut s = state.write().await;
                             let end = (offset + values.len()).min(s.input_registers.len());
                             let write_len = end.saturating_sub(offset);
@@ -1001,6 +1011,25 @@ pub async fn client_read_write_loop(
                     }
                 }
             }
+        }
+
+        // ── 更新 IO 健康状态：启用了读取却连续未收到响应，提示设备无响应/可能断开 ──
+        {
+            let mut s = state.write().await;
+            let enabled = s.read_enabled.iter().any(|&e| e);
+            if responded {
+                s.io_fail_streak = 0;
+                s.io_status = None;
+            } else if enabled {
+                s.io_fail_streak += 1;
+                if s.io_fail_streak >= 2 {
+                    s.io_status = Some(t!("run_ui.device_no_response").to_string());
+                }
+            }
+            // 记录本轮实际耗时，供 UI 展示真实刷新率（而非设定的轮询间隔）
+            s.last_poll_ms = cycle_start.elapsed().as_millis() as u16;
+            // 每轮递增版本：last_poll_ms / io_status 属于可见状态，需触发重绘
+            s.bump();
         }
     }
 }
@@ -1659,6 +1688,10 @@ mod tests {
             input_swap_words: std::collections::HashMap::new(),
             holding_combinations: std::collections::HashMap::new(),
             input_combinations: std::collections::HashMap::new(),
+            io_status: None,
+            io_fail_streak: 0,
+            last_poll_ms: 0,
+            version: 0,
         }
     }
 

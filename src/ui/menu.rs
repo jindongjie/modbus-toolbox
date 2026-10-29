@@ -477,7 +477,7 @@ fn render_profile_pick(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
     // 模式提示和操作键
     let mode_hint = if let Some(pm) = ui.pending_mode {
         let mode_label = format!("{:?}", pm);
-        format!("[{}] e=编辑 a=新增 c=克隆 d=删除", mode_label)
+        t!("profile_pick.mode_hint", mode = &mode_label).to_string()
     } else {
         String::new()
     };
@@ -834,11 +834,8 @@ fn handle_profile_pick_key(
             ui.menu_screen = MenuScreen::Main;
         }
         KeyCode::Char('q') => {
-            return Some(MenuSelection {
-                main_mode: MainMode::TcpClient,
-                profile_name: None,
-                quit: true,
-            });
+            // 子菜单中 q 返回主菜单，而非退出整个程序
+            ui.menu_screen = MenuScreen::Main;
         }
         _ => {}
     }
@@ -930,11 +927,8 @@ fn handle_profile_set_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
             ui.menu_screen = MenuScreen::Main;
         }
         KeyCode::Char('q') => {
-            return Some(MenuSelection {
-                main_mode: MainMode::TcpClient,
-                profile_name: None,
-                quit: true,
-            });
+            // 子菜单中 q 返回主菜单，而非退出整个程序
+            ui.menu_screen = MenuScreen::Main;
         }
         _ => {}
     }
@@ -996,7 +990,7 @@ fn profile_fields() -> Vec<ProfileField> {
             "rtu-server" | "rs" => a.main_mode = "rtu-server".into(),
             "rtu-client" | "rc" => a.main_mode = "rtu-client".into(),
             "rtu-monitor" | "rm" => a.main_mode = "rtu-monitor".into(),
-            _ => return Err(format!("无效模式: {v} (ts/tc/tm/rs/rc/rm)")),
+            _ => return Err(t!("profile_edit.err_invalid_mode", v = v).to_string()),
         }
         Ok(())
     }
@@ -1005,13 +999,15 @@ fn profile_fields() -> Vec<ProfileField> {
     }
     fn num_apply<T: std::str::FromStr + 'static>(
         set: fn(&mut Args, T),
-        name: &'static str,
+        field_key: &'static str,
     ) -> FieldApply {
         Box::new(move |a, v| {
             let v = v.trim();
+            let label_key = format!("profile_edit.{field_key}");
+            let label = t!(&label_key).to_string();
             v.parse::<T>()
                 .map(|val| set(a, val))
-                .map_err(|_| format!("{name} 必须是有效数字"))
+                .map_err(|_| t!("profile_edit.err_valid_number", field = &label).to_string())
         })
     }
     fn str_apply(set: fn(&mut Args, String)) -> FieldApply {
@@ -1032,7 +1028,7 @@ fn profile_fields() -> Vec<ProfileField> {
             name_key: "tcp_port",
             mode: "tcp",
             display: num_display(|a: &Args| a.tcp_port),
-            apply: num_apply(|a: &mut Args, v| a.tcp_port = v, "TCP端口"),
+            apply: num_apply(|a: &mut Args, v| a.tcp_port = v, "tcp_port"),
         },
         ProfileField {
             name_key: "tcp_host",
@@ -1044,19 +1040,19 @@ fn profile_fields() -> Vec<ProfileField> {
             name_key: "unit",
             mode: "all",
             display: num_display(|a: &Args| a.unit),
-            apply: num_apply(|a: &mut Args, v| a.unit = v, "从站地址"),
+            apply: num_apply(|a: &mut Args, v| a.unit = v, "unit"),
         },
         ProfileField {
             name_key: "holding_count",
             mode: "all",
             display: num_display(|a: &Args| a.holding_count),
-            apply: num_apply(|a: &mut Args, v| a.holding_count = v, "寄存器数"),
+            apply: num_apply(|a: &mut Args, v| a.holding_count = v, "holding_count"),
         },
         ProfileField {
             name_key: "client_tick_ms",
             mode: "all",
             display: num_display(|a: &Args| a.client_tick_ms),
-            apply: num_apply(|a: &mut Args, v| a.client_tick_ms = v, "轮询间隔"),
+            apply: num_apply(|a: &mut Args, v| a.client_tick_ms = v, "client_tick_ms"),
         },
         ProfileField {
             name_key: "device",
@@ -1068,7 +1064,7 @@ fn profile_fields() -> Vec<ProfileField> {
             name_key: "baudrate",
             mode: "rtu",
             display: num_display(|a: &Args| a.baudrate),
-            apply: num_apply(|a: &mut Args, v| a.baudrate = v, "波特率"),
+            apply: num_apply(|a: &mut Args, v| a.baudrate = v, "baudrate"),
         },
         ProfileField {
             name_key: "parity",
@@ -1080,7 +1076,7 @@ fn profile_fields() -> Vec<ProfileField> {
                     "n" | "none" => a.parity = "n".into(),
                     "e" | "even" => a.parity = "e".into(),
                     "o" | "odd" => a.parity = "o".into(),
-                    _ => return Err(format!("无效校验位: {v} (n/e/o)")),
+                    _ => return Err(t!("profile_edit.err_invalid_parity", v = v).to_string()),
                 }
                 Ok(())
             }),
@@ -1095,7 +1091,7 @@ fn profile_fields() -> Vec<ProfileField> {
                     "none" => a.flow = "none".into(),
                     "hardware" | "hard" => a.flow = "hardware".into(),
                     "software" | "soft" => a.flow = "software".into(),
-                    _ => return Err(format!("无效流控: {v} (none/hard/soft)")),
+                    _ => return Err(t!("profile_edit.err_invalid_flow", v = v).to_string()),
                 }
                 Ok(())
             }),
@@ -1108,9 +1104,9 @@ fn profile_fields() -> Vec<ProfileField> {
                 let val: u8 = v
                     .trim()
                     .parse()
-                    .map_err(|_| "数据位必须是数字".to_string())?;
+                    .map_err(|_| t!("profile_edit.err_databits_number").to_string())?;
                 if ![5, 6, 7, 8].contains(&val) {
-                    return Err("数据位必须是 5/6/7/8".to_string());
+                    return Err(t!("profile_edit.err_databits_range").to_string());
                 }
                 a.databits = val;
                 Ok(())
@@ -1124,9 +1120,9 @@ fn profile_fields() -> Vec<ProfileField> {
                 let val: u8 = v
                     .trim()
                     .parse()
-                    .map_err(|_| "停止位必须是数字".to_string())?;
+                    .map_err(|_| t!("profile_edit.err_stopbits_number").to_string())?;
                 if val != 1 && val != 2 {
-                    return Err("停止位必须是 1 或 2".to_string());
+                    return Err(t!("profile_edit.err_stopbits_range").to_string());
                 }
                 a.stopbits = val;
                 Ok(())
@@ -1306,12 +1302,12 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
             edit_lines.push(Line::from(Span::raw("")));
             if is_baudrate {
                 edit_lines.push(Line::from(Span::styled(
-                    "输入数字或 ← → ↑ ↓ Tab 选择常见波特率  Enter 确认  Esc 取消",
+                    t!("profile_edit.hint_baudrate").to_string(),
                     Style::default().fg(Color::DarkGray),
                 )));
             } else {
                 edit_lines.push(Line::from(Span::styled(
-                    "← → ↑ ↓ Tab 切换选项  Enter 确认  Esc 取消",
+                    t!("profile_edit.hint_options").to_string(),
                     Style::default().fg(Color::DarkGray),
                 )));
             }
@@ -1331,10 +1327,25 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )));
-                for port in ui.serial_ports.iter() {
-                    let selected_port =
-                        &ui.serial_ports[ui.serial_port_idx % ui.serial_ports.len()];
-                    if port == selected_port {
+                let len = ui.serial_ports.len();
+                let sel = ui.serial_port_idx % len;
+                const WINDOW: usize = 6;
+                let window = WINDOW.min(len);
+                // 视口尽量以选中项居中并夹在列表边界内，超出部分用 ⋮ 提示可滚动
+                let start = if len > window {
+                    (sel.saturating_sub(2)).min(len - window)
+                } else {
+                    0
+                };
+                if start > 0 {
+                    edit_lines.push(Line::from(Span::styled(
+                        "  ⋮",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                for i in start..(start + window) {
+                    let port = &ui.serial_ports[i];
+                    if i == sel {
                         edit_lines.push(Line::from(vec![
                             Span::styled(" ● ", Style::default().fg(Color::Cyan)),
                             Span::styled(
@@ -1350,6 +1361,12 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
                             Span::styled(port.clone(), Style::default().fg(Color::DarkGray)),
                         ]));
                     }
+                }
+                if start + window < len {
+                    edit_lines.push(Line::from(Span::styled(
+                        "  ⋮",
+                        Style::default().fg(Color::DarkGray),
+                    )));
                 }
                 edit_lines.push(Line::from(Span::raw("")));
                 edit_lines.push(Line::from(Span::styled(
@@ -1368,12 +1385,12 @@ fn render_profile_edit(f: &mut Frame<'_>, ui: &Ui, _config_path: &str) {
 
             // 如有校验提示，添加提示信息
             let hint = match field.name_key {
-                "main_mode" => "ts/tc/tm/rs/rc/rm 或 tcp-client/tcp-server/tcp-monitor/rtu-client/rtu-server/rtu-monitor",
-                "parity" => "n(even) / e(ven) / o(dd)",
-                "flow" => "none / hard(ware) / soft(ware)",
-                "databits" => "5 / 6 / 7 / 8",
-                "stopbits" => "1 / 2",
-                _ => "",
+                "main_mode" => t!("profile_edit.hint_main_mode"),
+                "parity" => t!("profile_edit.hint_parity"),
+                "flow" => t!("profile_edit.hint_flow"),
+                "databits" => t!("profile_edit.hint_databits"),
+                "stopbits" => t!("profile_edit.hint_stopbits"),
+                _ => std::borrow::Cow::from(""),
             };
             if !hint.is_empty() {
                 edit_lines.push(Line::from(Span::styled(
@@ -1483,6 +1500,18 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
             }
             KeyCode::Backspace if !has_options || field.name_key == "baudrate" => {
                 ui.field_edit_buf.pop();
+            }
+            // 刷新串口列表（仅 device 字段编辑时有效；其他字段 r 仍可正常输入）
+            KeyCode::Char('r') if field.name_key == "device" => {
+                ui.serial_ports = tokio_serial::available_ports()
+                    .ok()
+                    .map(|ports| ports.into_iter().map(|p| p.port_name).collect())
+                    .unwrap_or_default();
+                ui.serial_port_idx = 0;
+                if let Some(p) = ui.serial_ports.first() {
+                    ui.field_edit_buf = p.clone();
+                }
+                set_status(ui, t!("profile_edit.ports_refreshed", n = ui.serial_ports.len()));
             }
             KeyCode::Char(ch)
                 if !has_options || (field.name_key == "baudrate" && ch.is_ascii_digit()) =>
@@ -1597,11 +1626,11 @@ fn handle_profile_edit_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opt
                 set_status(ui, t!("profile_edit.edit_cancelled"));
             }
             KeyCode::Char('q') => {
-                return Some(MenuSelection {
-                    main_mode: MainMode::TcpClient,
-                    profile_name: None,
-                    quit: true,
-                });
+                // 子菜单中 q 返回主菜单（放弃编辑，不退出程序）
+                ui.edit_profile_name = None;
+                ui.edit_args = None;
+                ui.field_edit_mode = false;
+                ui.menu_screen = MenuScreen::Main;
             }
             _ => {}
         }
@@ -1723,11 +1752,8 @@ fn handle_name_prompt_key(ui: &mut Ui, code: KeyCode, config_path: &str) -> Opti
             ui.name_prompt_buf.pop();
         }
         KeyCode::Char('q') => {
-            return Some(MenuSelection {
-                main_mode: MainMode::TcpClient,
-                profile_name: None,
-                quit: true,
-            });
+            // 子菜单中 q 返回主菜单，而非退出整个程序
+            ui.menu_screen = MenuScreen::Main;
         }
         KeyCode::Char(ch) => {
             if ch.is_alphanumeric() || ch == '_' || ch == '-' {
@@ -2040,14 +2066,7 @@ fn handle_frame_construct_key(ui: &mut Ui, code: KeyCode) -> Option<MenuSelectio
                 let _=std::process::Command::new("sh").arg("-c").arg(format!("echo -n '{}'|xclip -sel clip 2>/dev/null||echo -n '{}'|pbcopy 2>/dev/null||true",h,h)).output();
                 set_status(ui, format!("{}: [ {} ]", t!("construct.copied"), h));
             }
-            KeyCode::Esc => ui.menu_screen = MenuScreen::Main,
-            KeyCode::Char('q') => {
-                return Some(MenuSelection {
-                    main_mode: MainMode::TcpClient,
-                    profile_name: None,
-                    quit: true,
-                })
-            }
+            KeyCode::Esc | KeyCode::Char('q') => ui.menu_screen = MenuScreen::Main,
             _ => {}
         }
     }

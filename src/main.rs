@@ -561,6 +561,15 @@ pub struct AppState {
     pub holding_combinations: HashMap<usize, RegDataFormat>,
     /// Input 寄存器组合配置 (primary address → format)
     pub input_combinations: HashMap<usize, RegDataFormat>,
+    /// 客户端轮询 IO 状态提示（设备无响应/断开时写入，恢复后清空）
+    pub io_status: Option<String>,
+    /// 连续 IO 失败计数（区分瞬态超时与持续断开）
+    pub io_fail_streak: u32,
+    /// 上一轮客户端轮询实际耗时（ms），用于在 UI 透明展示真实刷新率
+    pub last_poll_ms: u16,
+    /// 可见数据版本号：任何会影响 UI 显示的数据变化都会使其递增，
+    /// UI 仅在版本变化或本地交互后重绘，避免无谓高频刷新与锁竞争
+    pub version: u64,
 }
 
 impl Default for AppState {
@@ -600,7 +609,19 @@ impl Default for AppState {
             input_swap_words: HashMap::new(),
             holding_combinations: HashMap::new(),
             input_combinations: HashMap::new(),
+            io_status: None,
+            io_fail_streak: 0,
+            last_poll_ms: 0,
+            version: 0,
         }
+    }
+}
+
+impl AppState {
+    /// 递增可见数据版本号。任何会改变 UI 显示的数据写入后应调用，
+    /// UI 端据此判断是否需要重绘。
+    pub fn bump(&mut self) {
+        self.version = self.version.wrapping_add(1);
     }
 }
 
@@ -881,6 +902,8 @@ pub fn record_reg_change(state: &mut AppState, addr: usize, old_value: u16, new_
         bar.remove(0);
     }
     bar.push(new_value);
+    // 值变化会影响 UI 高亮/历史，通知 UI 重绘
+    state.bump();
 }
 
 /// 计算单个寄存器的值（基于其变化模式）
@@ -1141,6 +1164,8 @@ pub async fn run_register_simulator(
             }
             if old != new {
                 s.input_registers[addr] = new;
+                // 输入寄存器值变化同样需要通知 UI 重绘
+                s.bump();
             }
         }
     }
@@ -1939,6 +1964,10 @@ async fn main() -> Result<()> {
         input_swap_words,
         holding_combinations,
         input_combinations,
+        io_status: None,
+        io_fail_streak: 0,
+        last_poll_ms: 0,
+        version: 0,
     }));
 
     let server_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));

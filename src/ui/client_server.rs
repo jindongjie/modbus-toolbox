@@ -112,6 +112,11 @@ pub async fn run_ui(
                         let server_err = server_status.read().await.clone();
                         let is_monitor_mode = args.main_mode.to_ascii_lowercase().contains("monitor");
                         let is_client_mode = args.main_mode.to_ascii_lowercase().contains("client");
+                        // 仅当数据版本变化或本地交互后才渲染整帧，否则跳过昂贵的重绘
+                        // （把 CPU 占用与读写锁竞争从"每帧"降到"有变化才渲染"）
+                        if s.version == ui.last_seen_version && !ui.needs_redraw {
+                            continue;
+                        }
                     terminal.draw(|f| {
 
                         // --- 预计算帮助文本（用于动态高度和值变化状态指示） ---
@@ -273,8 +278,14 @@ pub async fn run_ui(
                             let help_index = area_idx;
 
                             // --- 状态栏 ---
-                            let status_line = if let Some(m) = server_err.as_deref() {
+                            let mut status_line = (if let Some(m) = server_err.as_deref() {
                                 t!("run_ui.error_prefix", msg = m)
+                            } else if is_client_mode && s.io_fail_streak >= 2 {
+                                // 设备无响应 / 串口可能已断开：醒目提示，优先于其他状态
+                                match s.io_status.as_deref() {
+                                    Some(m) => std::borrow::Cow::Owned(m.to_string()),
+                                    None => t!("run_ui.device_no_response"),
+                                }
                             } else if ui.search_mode {
                                 std::borrow::Cow::Owned(format!("/{}", ui.search_buf))
                             } else if let Some(m) = ui.status_msg.as_deref() {
@@ -343,12 +354,22 @@ pub async fn run_ui(
                                     String::new()
                                 };
                                 t!("run_ui.status_waiting", base = ui.reg_format.short_label(), fmt = fmt, sw = sw)
-                            };
+                            })
+                            .into_owned();
+                            // 客户端模式追加真实轮询间隔（实际耗时/设定值），透明展示实际刷新率
+                            if is_client_mode {
+                                status_line.push_str(&format!(
+                                    " | poll: {}ms/{}ms",
+                                    s.last_poll_ms, args.client_tick_ms
+                                ));
+                            }
 
                             f.render_widget(
-                                ratatui::widgets::Paragraph::new(status_line)
+                                ratatui::widgets::Paragraph::new(status_line.as_str())
                                     .block(Block::default().borders(Borders::ALL).title(t!("run_ui.status_title")))
-                                    .style(if server_err.is_some() {
+                                    .style(if server_err.is_some()
+                                        || (is_client_mode && s.io_fail_streak >= 2)
+                                    {
                                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                                     } else {
                                         Style::default()
@@ -401,6 +422,8 @@ pub async fn run_ui(
                                 render_pattern_dialog(f, &ui, &s);
                             }
                         })?;
+                        ui.last_seen_version = s.version;
+                        ui.needs_redraw = false;
                     }
 
                     maybe_ev = events.next() => {
@@ -414,6 +437,8 @@ pub async fn run_ui(
                                 if kind != crossterm::event::KeyEventKind::Press {
                                     continue;
                                 }
+                                // 按键可能改变选中/对话框/输入等 UI 状态，标记需要重绘
+                                ui.needs_redraw = true;
 
                                 if !ui.edit_mode
                                     && code == KeyCode::Char('c')
