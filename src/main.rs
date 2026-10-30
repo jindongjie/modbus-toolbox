@@ -1835,37 +1835,47 @@ async fn main() -> Result<()> {
     // 设置界面语言
     rust_i18n::set_locale(&cli_args.lang);
 
-    // 配置路径（Clone 以避免 move）
-    let config_path_base = cli_args.config.clone();
+    let config_path = cli_args.config.clone();
 
-    // 如果 CLI 指定了 --profile，直接使用（跳过菜单）
-    let (main_mode, args, profile_name) = if let Some(profile_name) = &cli_args.profile {
-        let config_str = std::fs::read_to_string(&cli_args.config)
-            .with_context(|| t!("main.read_config_fail", path = &cli_args.config))?;
+    // 如果 CLI 指定了 --profile，直接使用（跳过菜单），只运行一次
+    if let Some(profile_name) = &cli_args.profile {
+        let config_str = std::fs::read_to_string(&config_path)
+            .with_context(|| t!("main.read_config_fail", path = &config_path))?;
         let configs = toml::from_str::<HashMap<String, Args>>(&config_str)
-            .with_context(|| t!("main.parse_config_fail", path = &cli_args.config))?;
-        if let Some(profile_args) = configs.get(profile_name) {
-            let mut args = profile_args.clone();
-            let main_mode = parse_mainmode(&args.main_mode)?;
-            args.config = config_path_base;
-            (main_mode, args, cli_args.profile.clone())
-        } else {
-            anyhow::bail!(t!("main.profile_not_found", name = profile_name));
-        }
+            .with_context(|| t!("main.parse_config_fail", path = &config_path))?;
+        let profile_args = match configs.get(profile_name) {
+            Some(p) => p,
+            None => anyhow::bail!(t!("main.profile_not_found", name = profile_name)),
+        };
+        let mut args = profile_args.clone();
+        let main_mode = parse_mainmode(&args.main_mode)?;
+        args.config = config_path.clone();
+        run_session(main_mode, args, cli_args.profile.clone(), config_path).await
     } else {
-        // 加载配置列表
-        let profiles = load_profile_list(&cli_args.config);
-
-        // 显示菜单
-        let sel = run_menu(&cli_args.config, profiles).await?;
-        if sel.quit {
-            return Ok(());
+        // 菜单流程：在寄存器视图按 q 返回主菜单，而不是退出整个程序
+        loop {
+            let profiles = load_profile_list(&config_path);
+            let sel = run_menu(&config_path, profiles).await?;
+            if sel.quit {
+                return Ok(());
+            }
+            let pname = sel.profile_name.clone();
+            // 用户选择的配置解析
+            let (main_mode, args) = resolve_selection(&config_path, &sel)?;
+            // run_session 返回 Ok(()) 表示用户在寄存器视图按了 q —— 回到主菜单
+            run_session(main_mode, args, pname, config_path.clone()).await?;
         }
-        let pname = sel.profile_name.clone();
-        // 用户选择的配置解析
-        let (main_mode, args) = resolve_selection(&cli_args.config, &sel)?;
-        (main_mode, args, pname)
-    };
+    }
+}
+
+// 运行一次会话：按所选模式/配置建立状态、启动后端任务并显示寄存器视图。
+// 返回 Ok(()) 表示正常退出视图（如寄存器视图按 q），由调用方决定下一步。
+async fn run_session(
+    main_mode: MainMode,
+    args: Args,
+    profile_name: Option<String>,
+    config_path: String,
+) -> Result<()> {
 
     let binding_count = args.holding_count;
     let max_count = binding_count
@@ -1976,15 +1986,17 @@ async fn main() -> Result<()> {
     let (server_tx, server_rx) = mpsc::unbounded_channel::<RegCmd>();
     tokio::spawn(reg_worker_loop(Arc::clone(&state), server_rx));
 
-    // 服务端模式下启动寄存器值模拟器（随机变化）
+    // 服务端模式下启动寄存器值模拟器（随机变化），保存句柄以便会话结束时 abort
     let is_server = matches!(main_mode, MainMode::TcpServer | MainMode::RTUServer);
-    if is_server {
+    let sim_task = if is_server {
         let sim_state = Arc::clone(&state);
         let hc = args.holding_count;
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             run_register_simulator(sim_state, hc, /* 每 500ms 变化一次 */ 500).await;
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     let (client_tx, inner_rx) = mpsc::unbounded_channel::<RegCmd>();
 
@@ -2011,7 +2023,6 @@ async fn main() -> Result<()> {
         r
     });
     // 加载配置列表（供监听模式使用）
-    let config_path = cli_args.config.clone();
     let profiles = load_profile_list(&config_path);
     let ui_res = if main_mode == MainMode::TcpClient
         || main_mode == MainMode::RTUClient
@@ -2041,6 +2052,9 @@ async fn main() -> Result<()> {
         .await
     };
 
+    if let Some(t) = sim_task {
+        t.abort();
+    }
     inner_task.abort();
     let _ = inner_task.await;
 
